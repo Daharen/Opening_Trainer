@@ -1,7 +1,7 @@
 from .session import TrainingSession
 
 
-def run():
+def run() -> None:
     print("Opening Trainer v1")
 
     session = TrainingSession()
