@@ -1,4 +1,5 @@
 import random
+import sys
 import chess
 
 from .board import GameBoard
@@ -61,14 +62,15 @@ class TrainingSession:
             raise RuntimeError(f"Unexpected session state: {self.state}")
 
     def _handle_player_turn(self) -> None:
-        print()
-        print(self.board)
-        print()
+        print("", flush=True)
+        print(self.board, flush=True)
+        print("", flush=True)
 
-        move_str = input("Your move: ").strip()
+        print("Your move: ", end="", flush=True)
+        move_str = input().strip()
 
         if not self.board.is_legal(move_str):
-            print("Illegal move. Try again.")
+            print("Illegal move. Try again.", flush=True)
             return
 
         move = self.board.push(move_str)
@@ -111,7 +113,7 @@ class TrainingSession:
         san = self.board.board.san(move)
         self.board.board.push(move)
 
-        print(f"Opponent plays: {san}")
+        print(f"Opponent plays: {san}", flush=True)
 
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
@@ -119,35 +121,35 @@ class TrainingSession:
             self.state = SessionState.OPPONENT_TURN
 
     def _resolve_fail(self) -> None:
-        print()
-        print("FAIL")
+        print("", flush=True)
+        print("FAIL", flush=True)
         if self.last_outcome is not None:
-            print(self.last_outcome.reason)
+            print(self.last_outcome.reason, flush=True)
             if self.last_outcome.preferred_move:
-                print(f"Preferred move: {self.last_outcome.preferred_move}")
-        print("Restarting training game...")
+                print(f"Preferred move: {self.last_outcome.preferred_move}", flush=True)
+        print("Restarting training game...", flush=True)
         self.state = SessionState.RESTART_PENDING
 
     def _resolve_success(self) -> None:
-        print()
-        print("SUCCESS")
+        print("", flush=True)
+        print("SUCCESS", flush=True)
         if self.last_outcome is not None:
-            print(self.last_outcome.reason)
-        print("Opening window cleared. Restarting training game...")
+            print(self.last_outcome.reason, flush=True)
+        print("Opening window cleared. Restarting training game...", flush=True)
         self.state = SessionState.RESTART_PENDING
 
     def _print_new_game_banner(self) -> None:
-        print()
-        print("=== New Training Game ===")
+        print("", flush=True)
+        print("=== New Training Game ===", flush=True)
         if self.player_color == chess.WHITE:
-            print("You are WHITE")
+            print("You are WHITE", flush=True)
         else:
-            print("You are BLACK")
+            print("You are BLACK", flush=True)
 
     def _print_evaluation_feedback(self, evaluation: EvaluationResult) -> None:
         judgment_name = evaluation.judgment.name
         accepted_text = "ACCEPTED" if evaluation.accepted else "REJECTED"
-        print(f"{judgment_name} — {accepted_text}")
-        print(evaluation.reason)
+        print(f"{judgment_name} — {accepted_text}", flush=True)
+        print(evaluation.reason, flush=True)
         if evaluation.preferred_move:
-            print(f"Preferred move: {evaluation.preferred_move}")
+            print(f"Preferred move: {evaluation.preferred_move}", flush=True)
