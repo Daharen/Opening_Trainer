@@ -2,7 +2,7 @@ from .session import TrainingSession
 
 
 def run() -> None:
-    print("Opening Trainer v1")
+    print("Opening Trainer v1", flush=True)
 
     session = TrainingSession()
 
