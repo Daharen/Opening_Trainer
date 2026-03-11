@@ -11,8 +11,8 @@ Runs succeed after five accepted player moves and then also restart immediately.
 2. Current Stage
 
 Checkpoint v1
-Sprint 1 Step 2
-Training-session state machine baseline
+Sprint 1 Step 2.5
+Startup contract compatibility baseline
 
 3. Current Implemented Behavior
 
@@ -24,8 +24,20 @@ The application currently provides:
 4. Explicit session states for player turn, opponent turn, fail, success, and restart
 5. Provisional opponent move generation
 6. Provisional evaluator contract with transparent reasoning output
+7. Repo-root launcher compatibility for existing PowerShell wrapper scripts
 
-4. Not Yet Implemented
+4. Supported Run Modes
+
+The repository can currently be started in the following ways:
+
+1. python main.py
+2. python run_trainer.py
+
+If Python path/package installation is configured later, the project can also support:
+
+3. python -m opening_trainer
+
+5. Not Yet Implemented
 
 The following systems are still provisional:
 
@@ -35,9 +47,8 @@ The following systems are still provisional:
 4. Tuned fail thresholds
 5. Rich UI and feedback presentation
 
-5. Run
+6. Notes
 
-Install dependencies and launch:
-
-pip install -r requirements.txt
-python run_trainer.py
+The repo includes a src-layout package.
+Repo-root launcher files insert the src directory into sys.path so the trainer
+can be run directly without requiring packaging metadata yet.
