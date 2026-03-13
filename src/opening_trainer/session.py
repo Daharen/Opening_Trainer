@@ -1,5 +1,4 @@
 import random
-import sys
 import chess
 
 from .board import GameBoard
