@@ -6,6 +6,8 @@ from pathlib import Path
 
 import chess
 
+from opening_trainer.zstd_compat import compress as zstd_compress
+
 from opening_trainer.corpus import CorpusIngestor, RatingBandPolicy, load_artifact, normalize_position_key, save_artifact
 from opening_trainer.opponent import CorpusBackedOpponentProvider
 from opening_trainer.evaluation import (
@@ -44,6 +46,24 @@ BOOK_MISS = BookAuthorityResult(
     reason_text="Book authority unavailable for this position.",
     metadata={"book_available": False},
 )
+
+
+def test_plain_pgn_ingestion_still_works():
+    artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
+
+    assert artifact.source_files == (str(FIXTURE_PATH),)
+    assert len(artifact.positions) > 0
+
+
+def test_pgn_zst_ingestion_works(tmp_path):
+    compressed_path = tmp_path / "sample_corpus.pgn.zst"
+    compressed_path.write_bytes(zstd_compress(FIXTURE_PATH.read_bytes()))
+
+    artifact = CorpusIngestor().build_artifact([str(compressed_path)])
+    plain_artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
+
+    assert artifact.positions == plain_artifact.positions
+    assert artifact.source_files == (str(compressed_path),)
 
 
 def test_rating_band_policy_requires_both_players_in_band():

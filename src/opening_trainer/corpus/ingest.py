@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator, TextIO
 
 import chess
 import chess.pgn
+
+from opening_trainer.zstd_compat import open_text_reader
 
 from .constants import ARTIFACT_SCHEMA_VERSION
 from .keys import fallback_position_key, normalize_position_key
 from .models import CandidateMoveRecord, CorpusArtifact, PositionRecord
 from .policy import RatingBandPolicy, SparseWeightPolicy, retained_ply_depth
+
+
+@contextmanager
+def open_pgn_text(path: str | Path) -> Iterator[TextIO]:
+    source_path = Path(path)
+    if source_path.suffix == ".zst" and source_path.name.endswith(".pgn.zst"):
+        with source_path.open("rb") as compressed_handle:
+            with open_text_reader(compressed_handle) as text_handle:
+                yield text_handle
+        return
+
+    with source_path.open("r", encoding="utf-8") as text_handle:
+        yield text_handle
 
 
 class CorpusIngestor:
@@ -28,7 +45,7 @@ class CorpusIngestor:
         side_to_move_by_position: dict[str, str] = {}
 
         for path in [Path(item) for item in pgn_paths]:
-            with path.open("r", encoding="utf-8") as handle:
+            with open_pgn_text(path) as handle:
                 while True:
                     game = chess.pgn.read_game(handle)
                     if game is None:
