@@ -5,20 +5,27 @@ import random
 import chess
 
 from .board import GameBoard
-from .evaluation import CanonicalJudgment, EvaluatorConfig, format_evaluation_feedback
+from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, SessionOutcome, SessionState, SessionView
 from .opponent import OpponentProvider
+from .runtime import RuntimeContext, RuntimeOverrides, load_runtime_config
 
 
 class TrainingSession:
     restart_delay_ms = 900
 
-    def __init__(self):
+    def __init__(self, runtime_context: RuntimeContext | None = None, mode: str = "cli"):
+        self.runtime_context = runtime_context or load_runtime_config(RuntimeOverrides())
+        self.mode = mode
         self.board = GameBoard()
-        self.opponent = OpponentProvider(rng=random)
-        self.evaluator = MoveEvaluator()
-        self.config = EvaluatorConfig()
+        self.config = self.runtime_context.evaluator_config
+        self.opponent = OpponentProvider(artifact_path=self.runtime_context.corpus.path or "data/opening_corpus.json", rng=random)
+        self.evaluator = MoveEvaluator(
+            config=self.config,
+            book_authority=OpeningBookAuthority(self.runtime_context.book.path if self.runtime_context.book.available else None),
+            engine_authority=EngineAuthority(self.config),
+        )
         self.required_player_moves = self.config.active_envelope_player_moves
 
         self.player_color = chess.WHITE
@@ -40,6 +47,7 @@ class TrainingSession:
 
         self._print_new_game_banner()
         print(self.opponent.status_message, flush=True)
+        self._print_startup_summary()
 
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
@@ -264,6 +272,13 @@ class TrainingSession:
             print("You are WHITE", flush=True)
         else:
             print("You are BLACK", flush=True)
+
+    def _print_startup_summary(self) -> None:
+        color_name = "WHITE" if self.player_color == chess.WHITE else "BLACK"
+        status = self.runtime_context.startup_status(mode=self.mode.upper(), user_color=color_name)
+        print("--- Runtime Startup Summary ---", flush=True)
+        for line in status.lines:
+            print(line, flush=True)
 
     def _print_evaluation_feedback(self, evaluation: EvaluationResult) -> None:
         for line in format_evaluation_feedback(evaluation):

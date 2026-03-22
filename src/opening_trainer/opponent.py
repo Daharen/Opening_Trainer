@@ -8,6 +8,7 @@ from typing import Protocol
 import chess
 
 from .corpus import DEFAULT_ARTIFACT_PATH, PositionRecord, load_artifact, normalize_position_key
+from .runtime import corpus_status_detail
 
 
 @dataclass(frozen=True)
@@ -111,14 +112,14 @@ class OpponentProvider:
         self.random_provider = RandomOpponentProvider(rng=self.rng)
         self.corpus_provider: CorpusBackedOpponentProvider | None = None
         self.mode = "random_fallback"
-        self.status_message = (
-            "Corpus artifact not loaded; opponent provider is using explicit provisional random fallback."
-        )
+        self.status_message = "Corpus artifact not loaded; opponent provider is using explicit provisional random fallback."
         self.last_choice: OpponentMoveChoice | None = None
         if self.artifact_path.exists():
             self.corpus_provider = CorpusBackedOpponentProvider(self.artifact_path, rng=self.rng)
             self.mode = "corpus"
-            self.status_message = f"Corpus-backed opponent provider loaded from {self.artifact_path}."
+            self.status_message = corpus_status_detail(self.artifact_path)
+        else:
+            self.status_message = corpus_status_detail(None)
 
     def choose_move(self, board: chess.Board) -> chess.Move:
         self.last_choice = self.choose_move_with_context(board)
