@@ -13,6 +13,7 @@ class SessionState(Enum):
     OPPONENT_TURN = auto()
     FAIL_RESOLUTION = auto()
     SUCCESS_RESOLUTION = auto()
+    AUTHORITY_UNAVAILABLE_RESOLUTION = auto()
     RESTART_PENDING = auto()
 
 
@@ -22,6 +23,7 @@ class SessionOutcome:
     reason: str
     preferred_move: str | None = None
     evaluation: EvaluationResult | None = None
+    terminal_kind: str = "fail"
 
 
 @dataclass(frozen=True)
@@ -44,8 +46,8 @@ class SessionView:
 
     @property
     def run_failed(self) -> bool:
-        return self.last_outcome is not None and not self.last_outcome.passed
+        return self.last_outcome is not None and self.last_outcome.terminal_kind == "fail"
 
     @property
     def run_passed(self) -> bool:
-        return self.last_outcome is not None and self.last_outcome.passed
+        return self.last_outcome is not None and self.last_outcome.terminal_kind == "pass"

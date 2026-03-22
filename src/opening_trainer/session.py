@@ -5,7 +5,7 @@ import random
 import chess
 
 from .board import GameBoard
-from .evaluation import EvaluatorConfig, format_evaluation_feedback
+from .evaluation import CanonicalJudgment, EvaluatorConfig, format_evaluation_feedback
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, SessionOutcome, SessionState, SessionView
 from .opponent import OpponentProvider
@@ -16,7 +16,7 @@ class TrainingSession:
 
     def __init__(self):
         self.board = GameBoard()
-        self.opponent = OpponentProvider()
+        self.opponent = OpponentProvider(rng=random)
         self.evaluator = MoveEvaluator()
         self.config = EvaluatorConfig()
         self.required_player_moves = self.config.active_envelope_player_moves
@@ -27,6 +27,7 @@ class TrainingSession:
 
         self.last_evaluation: EvaluationResult | None = None
         self.last_outcome: SessionOutcome | None = None
+        self.last_opponent_choice = None
 
     def start_new_game(self) -> SessionView:
         self.state = SessionState.STARTING_GAME
@@ -35,8 +36,10 @@ class TrainingSession:
         self.player_move_count = 0
         self.last_evaluation = None
         self.last_outcome = None
+        self.last_opponent_choice = None
 
         self._print_new_game_banner()
+        print(self.opponent.status_message, flush=True)
 
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
@@ -77,12 +80,17 @@ class TrainingSession:
 
     def has_failed(self) -> bool:
         return self.state == SessionState.FAIL_RESOLUTION or (
-            self.last_outcome is not None and not self.last_outcome.passed
+            self.last_outcome is not None and self.last_outcome.terminal_kind == "fail"
         )
 
     def has_passed(self) -> bool:
         return self.state == SessionState.SUCCESS_RESOLUTION or (
-            self.last_outcome is not None and self.last_outcome.passed
+            self.last_outcome is not None and self.last_outcome.terminal_kind == "pass"
+        )
+
+    def has_authority_unavailable(self) -> bool:
+        return self.state == SessionState.AUTHORITY_UNAVAILABLE_RESOLUTION or (
+            self.last_outcome is not None and self.last_outcome.terminal_kind == "authority_unavailable"
         )
 
     def run_session(self, input_func=None) -> None:
@@ -103,6 +111,10 @@ class TrainingSession:
 
             if self.state == SessionState.SUCCESS_RESOLUTION:
                 self._resolve_success()
+                return
+
+            if self.state == SessionState.AUTHORITY_UNAVAILABLE_RESOLUTION:
+                self._resolve_authority_unavailable()
                 return
 
             if self.state == SessionState.RESTART_PENDING:
@@ -143,7 +155,7 @@ class TrainingSession:
             print("Illegal move. Try again.", flush=True)
             return self.get_view()
 
-        board_before_move = self.board.board.copy(stack=False)
+        board_before_move = self.board.board.copy(stack=True)
         move = self.board.push(move_str)
         self.player_move_count += 1
 
@@ -156,12 +168,25 @@ class TrainingSession:
 
         self._print_evaluation_feedback(evaluation)
 
+        if evaluation.canonical_judgment == CanonicalJudgment.AUTHORITY_UNAVAILABLE:
+            self.last_outcome = SessionOutcome(
+                passed=False,
+                reason=evaluation.reason_text,
+                preferred_move=None,
+                evaluation=evaluation,
+                terminal_kind="authority_unavailable",
+            )
+            self.state = SessionState.AUTHORITY_UNAVAILABLE_RESOLUTION
+            self._resolve_authority_unavailable()
+            return self.get_view()
+
         if not evaluation.accepted:
             self.last_outcome = SessionOutcome(
                 passed=False,
                 reason=evaluation.reason_text,
                 preferred_move=evaluation.preferred_move_san or evaluation.preferred_move_uci,
                 evaluation=evaluation,
+                terminal_kind="fail",
             )
             self.state = SessionState.FAIL_RESOLUTION
             self._resolve_fail()
@@ -175,6 +200,7 @@ class TrainingSession:
                 ),
                 preferred_move=None,
                 evaluation=evaluation,
+                terminal_kind="pass",
             )
             self.state = SessionState.SUCCESS_RESOLUTION
             self._resolve_success()
@@ -186,10 +212,19 @@ class TrainingSession:
 
     def _handle_opponent_turn(self) -> None:
         move = self.opponent.choose_move(self.board.board)
+        choice = getattr(self.opponent, "last_choice", None)
+        if choice is not None and getattr(choice, "move", None) == move:
+            detail = f" via {choice.selected_via}"
+            if choice.total_observed_count:
+                detail += f" [count={choice.raw_count}/{choice.total_observed_count}]"
+            self.last_opponent_choice = choice
+        else:
+            detail = ""
+            self.last_opponent_choice = None
         san = self.board.board.san(move)
         self.board.board.push(move)
 
-        print(f"Opponent plays: {san}", flush=True)
+        print(f"Opponent plays: {san}{detail}", flush=True)
 
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
@@ -212,6 +247,14 @@ class TrainingSession:
         if self.last_outcome is not None:
             print(self.last_outcome.reason, flush=True)
         print("Opening window cleared. Restarting training game...", flush=True)
+        self.state = SessionState.RESTART_PENDING
+
+    def _resolve_authority_unavailable(self) -> None:
+        print("", flush=True)
+        print("AUTHORITY UNAVAILABLE", flush=True)
+        if self.last_outcome is not None:
+            print(self.last_outcome.reason, flush=True)
+        print("Run paused explicitly because engine authority is unavailable; no fail was recorded.", flush=True)
         self.state = SessionState.RESTART_PENDING
 
     def _print_new_game_banner(self) -> None:
