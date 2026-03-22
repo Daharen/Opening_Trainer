@@ -155,13 +155,47 @@ If `--output` is omitted, the default runtime artifact path is:
 data/opening_corpus.json
 ```
 
+## Workspace-Root Runtime Asset Model
+
+The canonical source of truth remains the Git repo checked out in the `repo` folder.
+Large local runtime assets are intentionally allowed to live outside Git in the workspace root that contains that repo clone and the outer launcher scripts.
+
+The intended operating model is:
+
+- workspace root contains launcher scripts, logs, and local runtime assets
+- repo root contains the canonical committed application code
+- local runtime assets are not alternate code branches and should not be treated as canonical source
+
+### Conventional discovery order
+
+Runtime discovery keeps explicit precedence. For each asset class, the winner is selected in this order:
+
+1. explicit CLI flag
+2. explicit runtime config file path passed by CLI
+3. environment variable
+4. workspace-root `runtime.local.json`
+5. conventional workspace-root asset path
+6. repo-local default path
+7. `PATH` lookup where applicable
+
+### Workspace-root defaults
+
+Ordinary launcher-driven runs now auto-discover these workspace-root conventions when present:
+
+- runtime config: `../runtime.local.json`
+- Stockfish engine: `../tools/stockfish/stockfish-windows-x86-64-avx2.exe`
+- corpus artifact: `../data/opening_corpus.json` or `../artifacts/opening_corpus.json`
+- opening book: `../runtime/opening_book.bin`, `../assets/opening_book.bin`, or `../data/opening_book.bin`
+
+If a workspace-root asset is absent, startup stays explicit and degrades cleanly to the existing repo-local fallback doctrine.
+Manual CLI flags still override discovered workspace defaults.
+
 ## Runtime Opponent Sourcing
 
-At startup, the session attempts to load `data/opening_corpus.json`.
+At startup, the session first checks workspace-root corpus artifact conventions, then repo-local defaults such as `data/opening_corpus.json`.
 
-- If the artifact exists, the trainer uses the corpus-backed opponent provider.
-- If the artifact does not exist, the trainer prints a clear message and uses the
-  explicit provisional random fallback provider.
+- If an artifact exists at one of those conventional paths, the trainer uses the corpus-backed opponent provider.
+- If no artifact exists, the trainer prints a clear message and uses the explicit provisional random fallback provider.
 
 When the corpus-backed provider is active, it:
 

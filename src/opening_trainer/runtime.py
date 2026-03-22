@@ -11,15 +11,30 @@ from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact
 from .evaluation import EvaluatorConfig
 
 DEFAULT_RUNTIME_CONFIG_PATH = Path("runtime/runtime_config.json")
+WORKSPACE_RUNTIME_CONFIG_PATH = Path("runtime.local.json")
+WORKSPACE_BOOK_PATHS = (
+    Path("runtime/opening_book.bin"),
+    Path("assets/opening_book.bin"),
+    Path("data/opening_book.bin"),
+)
 DEFAULT_BOOK_PATHS = (
     Path("runtime/opening_book.bin"),
     Path("assets/opening_book.bin"),
     Path("data/opening_book.bin"),
 )
+WORKSPACE_ENGINE_PATHS = (
+    Path("tools/stockfish/stockfish-windows-x86-64-avx2.exe"),
+    Path("tools/stockfish/stockfish-windows-x86-64.exe"),
+    Path("tools/stockfish/stockfish.exe"),
+)
 DEFAULT_ENGINE_PATHS = (
     Path("runtime/engine/stockfish"),
     Path("runtime/stockfish"),
     Path("assets/stockfish"),
+)
+WORKSPACE_CORPUS_PATHS = (
+    Path("data/opening_corpus.json"),
+    Path("artifacts/opening_corpus.json"),
 )
 ENV_RUNTIME_CONFIG = "OPENING_TRAINER_RUNTIME_CONFIG"
 ENV_CORPUS_PATH = "OPENING_TRAINER_CORPUS_PATH"
@@ -123,7 +138,6 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     file_config = RuntimeConfig()
     if config_path is not None and config_path.exists():
         file_config = RuntimeConfig.from_mapping(json.loads(config_path.read_text(encoding="utf-8")))
-        config_source = f"config file: {config_path}"
 
     strict_assets = _resolve_bool(overrides.strict_assets, file_config.strict_assets, os.getenv(ENV_STRICT_ASSETS))
     config = RuntimeConfig(
@@ -172,14 +186,16 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     corpus = _resolve_file_asset(
         explicit_path=config.corpus_artifact_path,
         env_name=ENV_CORPUS_PATH,
-        default_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
+        workspace_candidates=WORKSPACE_CORPUS_PATHS,
+        repo_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
         label="corpus artifact",
     )
     engine = _resolve_engine_asset(config.engine_executable_path)
     book = _resolve_file_asset(
         explicit_path=config.opening_book_path,
         env_name=ENV_BOOK_PATH,
-        default_candidates=DEFAULT_BOOK_PATHS,
+        workspace_candidates=WORKSPACE_BOOK_PATHS,
+        repo_candidates=DEFAULT_BOOK_PATHS,
         label="opening book",
     )
 
@@ -211,16 +227,29 @@ def corpus_status_detail(path: str | Path | None) -> str:
 
 def _resolve_config_file_path(override_path: str | None) -> tuple[Path | None, str]:
     if override_path:
-        return Path(override_path), f"cli flag: {override_path}"
+        return Path(override_path), f"CLI flag --runtime-config: {override_path}"
     env_path = os.getenv(ENV_RUNTIME_CONFIG)
     if env_path:
         return Path(env_path), f"environment variable {ENV_RUNTIME_CONFIG}: {env_path}"
-    if DEFAULT_RUNTIME_CONFIG_PATH.exists():
-        return DEFAULT_RUNTIME_CONFIG_PATH, f"default config path: {DEFAULT_RUNTIME_CONFIG_PATH}"
+
+    workspace_root = _workspace_root()
+    workspace_candidate = workspace_root / WORKSPACE_RUNTIME_CONFIG_PATH
+    if workspace_candidate.exists():
+        return workspace_candidate, f"workspace-root default runtime config: {workspace_candidate}"
+
+    repo_candidate = _repo_root() / DEFAULT_RUNTIME_CONFIG_PATH
+    if repo_candidate.exists():
+        return repo_candidate, f"repo-local default runtime config: {repo_candidate}"
     return None, "built-in defaults"
 
 
-def _resolve_file_asset(explicit_path: str | None, env_name: str, default_candidates: tuple[Path, ...], label: str) -> ResolvedAssetPath:
+def _resolve_file_asset(
+    explicit_path: str | None,
+    env_name: str,
+    workspace_candidates: tuple[Path, ...],
+    repo_candidates: tuple[Path, ...],
+    label: str,
+) -> ResolvedAssetPath:
     if explicit_path:
         probe_path = _local_probe_path(explicit_path)
         available = probe_path.exists()
@@ -232,21 +261,35 @@ def _resolve_file_asset(explicit_path: str | None, env_name: str, default_candid
         available = probe_path.exists()
         detail = _explicit_asset_detail(label, env_path, probe_path, available, env_name)
         return ResolvedAssetPath(label=label, path=env_path, source="environment", available=available, detail=detail)
-    for candidate in default_candidates:
+    workspace_root = _workspace_root()
+    repo_root = _repo_root()
+    workspace_probes = tuple(workspace_root / candidate for candidate in workspace_candidates)
+    repo_probes = tuple(repo_root / candidate for candidate in repo_candidates)
+    for candidate in workspace_probes:
         if candidate.exists():
             return ResolvedAssetPath(
                 label=label,
                 path=candidate.resolve(),
-                source="default",
+                source="workspace-default",
                 available=True,
-                detail=f"{label} loaded from default path {candidate}",
+                detail=f"{label} loaded from workspace-root default path {candidate.resolve()}",
             )
+    for candidate in repo_probes:
+        if candidate.exists():
+            return ResolvedAssetPath(
+                label=label,
+                path=candidate.resolve(),
+                source="repo-default",
+                available=True,
+                detail=f"{label} loaded from repo-local default path {candidate.resolve()}",
+            )
+    checked = [str(path) for path in (*workspace_probes, *repo_probes)]
     return ResolvedAssetPath(
         label=label,
-        path=default_candidates[0].resolve() if default_candidates else None,
+        path=workspace_probes[0].resolve() if workspace_probes else (repo_probes[0].resolve() if repo_probes else None),
         source="default",
         available=False,
-        detail=f"{label} not found; checked default path(s): {', '.join(str(path) for path in default_candidates)}",
+        detail=f"{label} not found; checked workspace-root default(s) then repo-local default(s): {', '.join(checked)}",
     )
 
 
@@ -269,9 +312,20 @@ def _resolve_engine_asset(explicit_path: str | None) -> ResolvedAssetPath:
             available,
             _explicit_engine_detail(env_path, probe_path, available, env_name=ENV_ENGINE_PATH, which_match=which_match),
         )
-    for candidate in DEFAULT_ENGINE_PATHS:
+    workspace_root = _workspace_root()
+    repo_root = _repo_root()
+    for candidate in tuple(workspace_root / path for path in WORKSPACE_ENGINE_PATHS):
         if candidate.exists():
-            return ResolvedAssetPath("engine", candidate.resolve(), "default", True, f"engine resolved from default path {candidate.resolve()}")
+            return ResolvedAssetPath(
+                "engine",
+                candidate.resolve(),
+                "workspace-default",
+                True,
+                f"engine resolved from workspace-root default path {candidate.resolve()}",
+            )
+    for candidate in tuple(repo_root / path for path in DEFAULT_ENGINE_PATHS):
+        if candidate.exists():
+            return ResolvedAssetPath("engine", candidate.resolve(), "repo-default", True, f"engine resolved from repo-local default path {candidate.resolve()}")
     which_stockfish = shutil.which("stockfish")
     if which_stockfish:
         return ResolvedAssetPath("engine", Path(which_stockfish).resolve(), "default", True, f"engine resolved from PATH stockfish at {which_stockfish}")
@@ -280,8 +334,17 @@ def _resolve_engine_asset(explicit_path: str | None) -> ResolvedAssetPath:
         Path("stockfish"),
         "default",
         False,
-        "engine not found; checked CLI/config/env winner, repo defaults, and PATH stockfish",
+        "engine not found; checked CLI/config/env winner, workspace-root defaults, repo-local defaults, and PATH stockfish",
     )
+
+
+
+def _repo_root() -> Path:
+    return Path.cwd().resolve()
+
+
+def _workspace_root() -> Path:
+    return _repo_root().parent
 
 
 def _first_non_none(*values: Any) -> Any:
