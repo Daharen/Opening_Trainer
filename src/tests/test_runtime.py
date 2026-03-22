@@ -246,6 +246,99 @@ def test_explicit_runtime_config_overrides_workspace_runtime_local(tmp_path, mon
     assert runtime.config_source == f"CLI flag --runtime-config: {explicit_config}"
 
 
+def test_environment_engine_override_beats_workspace_runtime_local_config(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace_engine = tmp_path / "workspace-stockfish"
+    workspace_engine.write_text("", encoding="utf-8")
+    env_engine = repo_root / "bin" / "env-stockfish"
+    env_engine.parent.mkdir(parents=True)
+    env_engine.write_text("", encoding="utf-8")
+    (tmp_path / "runtime.local.json").write_text(
+        json.dumps({"engine_executable_path": str(workspace_engine)}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("OPENING_TRAINER_ENGINE_PATH", str(env_engine))
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.engine_executable_path == str(env_engine)
+    assert runtime.engine.path == str(env_engine)
+    assert runtime.engine.source == "environment"
+    assert runtime.config_source == f"workspace-root default runtime config: {tmp_path / 'runtime.local.json'}"
+    assert "environment winner" in runtime.engine.detail
+
+
+
+def test_explicit_runtime_config_engine_beats_environment_override(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    explicit_engine = repo_root / "bin" / "explicit-stockfish"
+    explicit_engine.parent.mkdir(parents=True)
+    explicit_engine.write_text("", encoding="utf-8")
+    env_engine = repo_root / "bin" / "env-stockfish"
+    env_engine.write_text("", encoding="utf-8")
+    explicit_config = repo_root / "explicit-runtime.json"
+    explicit_config.write_text(json.dumps({"engine_executable_path": str(explicit_engine)}), encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("OPENING_TRAINER_ENGINE_PATH", str(env_engine))
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_config_path=str(explicit_config)))
+
+    assert runtime.config.engine_executable_path == str(explicit_engine)
+    assert runtime.engine.path == str(explicit_engine)
+    assert runtime.engine.source == "runtime-config"
+    assert "runtime-config winner" in runtime.engine.detail
+
+
+
+def test_workspace_runtime_local_config_beats_default_discovery_without_env_override(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace_default_engine = tmp_path / "tools" / "stockfish" / "stockfish-windows-x86-64-avx2.exe"
+    workspace_default_engine.parent.mkdir(parents=True)
+    workspace_default_engine.write_text("", encoding="utf-8")
+    configured_engine = tmp_path / "configured-stockfish"
+    configured_engine.write_text("", encoding="utf-8")
+    (tmp_path / "runtime.local.json").write_text(
+        json.dumps({"engine_executable_path": str(configured_engine)}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.engine_executable_path == str(configured_engine)
+    assert runtime.engine.path == str(configured_engine)
+    assert runtime.engine.source == "workspace-runtime-config"
+    assert "workspace runtime.local.json winner" in runtime.engine.detail
+
+
+
+def test_environment_book_override_beats_workspace_runtime_local_config(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace_book = tmp_path / "workspace-book.bin"
+    workspace_book.write_bytes(b"workspace-book")
+    env_book = repo_root / "books" / "env-book.bin"
+    env_book.parent.mkdir(parents=True)
+    env_book.write_bytes(b"env-book")
+    (tmp_path / "runtime.local.json").write_text(
+        json.dumps({"opening_book_path": str(workspace_book)}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("OPENING_TRAINER_BOOK_PATH", str(env_book))
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.opening_book_path == str(env_book)
+    assert runtime.book.path == str(env_book)
+    assert runtime.book.source == "environment"
+    assert "environment winner" in runtime.book.detail
+
+
 def test_workspace_engine_default_discovery(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
