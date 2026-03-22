@@ -105,8 +105,18 @@ function Ensure-Pytest {
         [string]$VenvPip
     )
 
-    & $VenvPython -c "import pytest" *> $null
-    if ($LASTEXITCODE -eq 0) {
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+        $script:ErrorActionPreference = "Continue"
+
+        & $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" *> $null
+        $hasPytest = ($LASTEXITCODE -eq 0)
+    }
+    finally {
+        $script:ErrorActionPreference = $oldErrorActionPreference
+    }
+
+    if ($hasPytest) {
         return
     }
 
