@@ -134,34 +134,51 @@ class RuntimeContext:
 
 def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeContext:
     overrides = overrides or RuntimeOverrides()
-    config_path, config_source = _resolve_config_file_path(overrides.runtime_config_path)
+    config_resolution = _resolve_config_file_path(overrides.runtime_config_path)
     file_config = RuntimeConfig()
-    if config_path is not None and config_path.exists():
-        file_config = RuntimeConfig.from_mapping(json.loads(config_path.read_text(encoding="utf-8")))
+    if config_resolution.path is not None and config_resolution.path.exists():
+        file_config = RuntimeConfig.from_mapping(json.loads(config_resolution.path.read_text(encoding="utf-8")))
 
-    strict_assets = _resolve_bool(overrides.strict_assets, file_config.strict_assets, os.getenv(ENV_STRICT_ASSETS))
+    config_prefers_file_assets = config_resolution.kind == "explicit"
+    strict_assets = _resolve_bool(
+        overrides.strict_assets,
+        file_config.strict_assets,
+        os.getenv(ENV_STRICT_ASSETS),
+        prefer_file_value=config_prefers_file_assets,
+    )
     config = RuntimeConfig(
-        corpus_artifact_path=_first_non_none(
-            overrides.corpus_artifact_path,
-            file_config.corpus_artifact_path,
-            os.getenv(ENV_CORPUS_PATH),
+        corpus_artifact_path=_pick_asset_value(
+            override_value=overrides.corpus_artifact_path,
+            file_value=file_config.corpus_artifact_path,
+            env_value=os.getenv(ENV_CORPUS_PATH),
+            prefer_file_value=config_prefers_file_assets,
         ),
-        engine_executable_path=_first_non_none(
-            overrides.engine_executable_path,
-            file_config.engine_executable_path,
-            os.getenv(ENV_ENGINE_PATH),
+        engine_executable_path=_pick_asset_value(
+            override_value=overrides.engine_executable_path,
+            file_value=file_config.engine_executable_path,
+            env_value=os.getenv(ENV_ENGINE_PATH),
+            prefer_file_value=config_prefers_file_assets,
         ),
-        opening_book_path=_first_non_none(
-            overrides.opening_book_path,
-            file_config.opening_book_path,
-            os.getenv(ENV_BOOK_PATH),
+        opening_book_path=_pick_asset_value(
+            override_value=overrides.opening_book_path,
+            file_value=file_config.opening_book_path,
+            env_value=os.getenv(ENV_BOOK_PATH),
+            prefer_file_value=config_prefers_file_assets,
         ),
-        engine_depth=_coerce_int(_first_non_none(overrides.engine_depth, file_config.engine_depth, os.getenv(ENV_ENGINE_DEPTH))),
+        engine_depth=_coerce_int(
+            _pick_asset_value(
+                override_value=overrides.engine_depth,
+                file_value=file_config.engine_depth,
+                env_value=os.getenv(ENV_ENGINE_DEPTH),
+                prefer_file_value=config_prefers_file_assets,
+            )
+        ),
         engine_time_limit_seconds=_coerce_float(
-            _first_non_none(
-                overrides.engine_time_limit_seconds,
-                file_config.engine_time_limit_seconds,
-                os.getenv(ENV_ENGINE_TIME_LIMIT),
+            _pick_asset_value(
+                override_value=overrides.engine_time_limit_seconds,
+                file_value=file_config.engine_time_limit_seconds,
+                env_value=os.getenv(ENV_ENGINE_TIME_LIMIT),
+                prefer_file_value=config_prefers_file_assets,
             )
         ),
         strict_assets=strict_assets,
@@ -187,8 +204,10 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         selected_path=config.corpus_artifact_path,
         selected_source=_configured_asset_source(
             override_value=overrides.corpus_artifact_path,
-            config_value=file_config.corpus_artifact_path,
+            file_value=file_config.corpus_artifact_path,
             env_name=ENV_CORPUS_PATH,
+            prefer_file_value=config_prefers_file_assets,
+            file_source=config_resolution.asset_source,
         ),
         env_name=ENV_CORPUS_PATH,
         workspace_candidates=WORKSPACE_CORPUS_PATHS,
@@ -199,16 +218,20 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         selected_path=config.engine_executable_path,
         selected_source=_configured_asset_source(
             override_value=overrides.engine_executable_path,
-            config_value=file_config.engine_executable_path,
+            file_value=file_config.engine_executable_path,
             env_name=ENV_ENGINE_PATH,
+            prefer_file_value=config_prefers_file_assets,
+            file_source=config_resolution.asset_source,
         ),
     )
     book = _resolve_file_asset(
         selected_path=config.opening_book_path,
         selected_source=_configured_asset_source(
             override_value=overrides.opening_book_path,
-            config_value=file_config.opening_book_path,
+            file_value=file_config.opening_book_path,
             env_name=ENV_BOOK_PATH,
+            prefer_file_value=config_prefers_file_assets,
+            file_source=config_resolution.asset_source,
         ),
         env_name=ENV_BOOK_PATH,
         workspace_candidates=WORKSPACE_BOOK_PATHS,
@@ -224,7 +247,7 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         corpus=corpus,
         book=book,
         engine=engine,
-        config_source=config_source,
+        config_source=config_resolution.description,
     )
 
 
@@ -242,22 +265,40 @@ def corpus_status_detail(path: str | Path | None) -> str:
     )
 
 
-def _resolve_config_file_path(override_path: str | None) -> tuple[Path | None, str]:
+@dataclass(frozen=True)
+class ResolvedConfigFile:
+    path: Path | None
+    description: str
+    kind: str
+    asset_source: str | None
+
+
+def _resolve_config_file_path(override_path: str | None) -> ResolvedConfigFile:
     if override_path:
-        return Path(override_path), f"CLI flag --runtime-config: {override_path}"
+        return ResolvedConfigFile(Path(override_path), f"CLI flag --runtime-config: {override_path}", "explicit", "runtime-config")
     env_path = os.getenv(ENV_RUNTIME_CONFIG)
     if env_path:
-        return Path(env_path), f"environment variable {ENV_RUNTIME_CONFIG}: {env_path}"
+        return ResolvedConfigFile(Path(env_path), f"environment variable {ENV_RUNTIME_CONFIG}: {env_path}", "explicit", "runtime-config")
 
     workspace_root = _workspace_root()
     workspace_candidate = workspace_root / WORKSPACE_RUNTIME_CONFIG_PATH
     if workspace_candidate.exists():
-        return workspace_candidate, f"workspace-root default runtime config: {workspace_candidate}"
+        return ResolvedConfigFile(
+            workspace_candidate,
+            f"workspace-root default runtime config: {workspace_candidate}",
+            "auto-workspace",
+            "workspace-runtime-config",
+        )
 
     repo_candidate = _repo_root() / DEFAULT_RUNTIME_CONFIG_PATH
     if repo_candidate.exists():
-        return repo_candidate, f"repo-local default runtime config: {repo_candidate}"
-    return None, "built-in defaults"
+        return ResolvedConfigFile(
+            repo_candidate,
+            f"repo-local default runtime config: {repo_candidate}",
+            "auto-repo",
+            "repo-runtime-config",
+        )
+    return ResolvedConfigFile(None, "built-in defaults", "defaults", None)
 
 
 def _resolve_file_asset(
@@ -371,16 +412,21 @@ def _resolve_explicit_engine_path(selected_path: str | None, selected_source: st
 
 
 def _configured_asset_source(
-    override_value: str | None,
-    config_value: str | None,
+    override_value: str | int | float | None,
+    file_value: str | int | float | None,
     env_name: str,
+    prefer_file_value: bool,
+    file_source: str | None,
 ) -> str | None:
     if override_value is not None:
         return "cli"
-    if config_value is not None:
-        return "runtime-config"
-    if os.getenv(env_name) is not None:
+    env_value = os.getenv(env_name)
+    if prefer_file_value and file_value is not None:
+        return file_source
+    if env_value is not None:
         return "environment"
+    if file_value is not None:
+        return file_source
     return None
 
 
@@ -391,6 +437,19 @@ def _repo_root() -> Path:
 
 def _workspace_root() -> Path:
     return _repo_root().parent
+
+
+def _pick_asset_value(
+    override_value: Any,
+    file_value: Any,
+    env_value: Any,
+    prefer_file_value: bool,
+) -> Any:
+    if override_value is not None:
+        return override_value
+    if prefer_file_value:
+        return _first_non_none(file_value, env_value)
+    return _first_non_none(env_value, file_value)
 
 
 def _first_non_none(*values: Any) -> Any:
@@ -408,12 +467,15 @@ def _coerce_float(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
-def _resolve_bool(override: bool | None, file_value: bool, env_value: str | None) -> bool:
+def _resolve_bool(override: bool | None, file_value: bool, env_value: str | None, prefer_file_value: bool) -> bool:
     if override is not None:
         return override
+    parsed_env = None
     if env_value is not None:
-        return env_value.strip().lower() in {"1", "true", "yes", "on"}
-    return file_value
+        parsed_env = env_value.strip().lower() in {"1", "true", "yes", "on"}
+    if prefer_file_value:
+        return file_value if file_value is not None else bool(parsed_env)
+    return parsed_env if parsed_env is not None else file_value
 
 
 def _local_probe_path(raw_path: str) -> Path:
@@ -463,6 +525,10 @@ def _winner_label(selected_source: str | None) -> str:
         return "CLI winner"
     if selected_source == "runtime-config":
         return "runtime-config winner"
+    if selected_source == "workspace-runtime-config":
+        return "workspace runtime.local.json winner"
+    if selected_source == "repo-runtime-config":
+        return "repo runtime config winner"
     if selected_source == "environment":
         return "environment winner"
     return "configured winner"
