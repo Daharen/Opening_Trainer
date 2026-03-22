@@ -83,8 +83,13 @@ def test_engine_path_environment_remains_literal_when_probed(tmp_path, monkeypat
     assert f"configured value={engine_path}" in runtime.engine.detail
 
 
-def test_invalid_engine_path_returns_authority_unavailable_not_fail():
-    authority = EngineAuthority(load_runtime_config(RuntimeOverrides(engine_executable_path="/definitely/missing/stockfish")).evaluator_config)
+def test_invalid_engine_path_returns_authority_unavailable_not_fail(tmp_path):
+    overrides = RuntimeOverrides(
+        engine_executable_path="/definitely/missing/stockfish",
+        opening_book_path=str(tmp_path / "definitely-missing-book.bin"),
+    )
+    runtime = load_runtime_config(overrides)
+    authority = EngineAuthority(runtime.evaluator_config)
     board = chess.Board()
     move = chess.Move.from_uci("e2e4")
 
@@ -92,7 +97,8 @@ def test_invalid_engine_path_returns_authority_unavailable_not_fail():
 
     assert result.available is False
     assert result.reason_code == ReasonCode.ENGINE_UNAVAILABLE
-    session = TrainingSession(runtime_context=load_runtime_config(RuntimeOverrides(engine_executable_path="/definitely/missing/stockfish")))
+    assert runtime.book.available is False
+    session = TrainingSession(runtime_context=runtime)
     session.player_color = chess.WHITE
     session.state = session.state.PLAYER_TURN
     view = session.submit_user_move_uci("e2e4")
