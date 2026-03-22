@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact
+from .evaluation import EvaluatorConfig
+
+DEFAULT_RUNTIME_CONFIG_PATH = Path("runtime/runtime_config.json")
+DEFAULT_BOOK_PATHS = (
+    Path("runtime/opening_book.bin"),
+    Path("assets/opening_book.bin"),
+    Path("data/opening_book.bin"),
+)
+DEFAULT_ENGINE_PATHS = (
+    Path("runtime/engine/stockfish"),
+    Path("runtime/stockfish"),
+    Path("assets/stockfish"),
+)
+ENV_RUNTIME_CONFIG = "OPENING_TRAINER_RUNTIME_CONFIG"
+ENV_CORPUS_PATH = "OPENING_TRAINER_CORPUS_PATH"
+ENV_ENGINE_PATH = "OPENING_TRAINER_ENGINE_PATH"
+ENV_BOOK_PATH = "OPENING_TRAINER_BOOK_PATH"
+ENV_STRICT_ASSETS = "OPENING_TRAINER_STRICT_ASSETS"
+ENV_ENGINE_DEPTH = "OPENING_TRAINER_ENGINE_DEPTH"
+ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
+
+
+@dataclass(frozen=True)
+class ResolvedAssetPath:
+    label: str
+    path: Path | None
+    source: str
+    available: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    corpus_artifact_path: str | None = None
+    engine_executable_path: str | None = None
+    opening_book_path: str | None = None
+    engine_depth: int | None = None
+    engine_time_limit_seconds: float | None = None
+    strict_assets: bool = False
+
+    @classmethod
+    def from_mapping(cls, payload: dict[str, Any]) -> "RuntimeConfig":
+        return cls(
+            corpus_artifact_path=payload.get("corpus_artifact_path"),
+            engine_executable_path=payload.get("engine_executable_path"),
+            opening_book_path=payload.get("opening_book_path"),
+            engine_depth=payload.get("engine_depth"),
+            engine_time_limit_seconds=payload.get("engine_time_limit_seconds"),
+            strict_assets=bool(payload.get("strict_assets", False)),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeOverrides:
+    corpus_artifact_path: str | None = None
+    engine_executable_path: str | None = None
+    opening_book_path: str | None = None
+    runtime_config_path: str | None = None
+    engine_depth: int | None = None
+    engine_time_limit_seconds: float | None = None
+    strict_assets: bool | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeStartupStatus:
+    mode: str
+    user_color: str
+    corpus_status: str
+    book_status: str
+    engine_status: str
+    doctrine_status: str
+    lines: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    config: RuntimeConfig
+    evaluator_config: EvaluatorConfig
+    corpus: ResolvedAssetPath
+    book: ResolvedAssetPath
+    engine: ResolvedAssetPath
+    config_source: str
+
+    def startup_status(self, mode: str, user_color: str) -> RuntimeStartupStatus:
+        fully_capable = self.corpus.available and self.engine.available
+        doctrine_status = (
+            "Doctrine-capable: corpus-backed opponent source + engine tolerance active."
+            if fully_capable
+            else "Degraded mode: one or more runtime authorities are unavailable; status lines below explain why."
+        )
+        lines = (
+            f"Mode: {mode}",
+            f"User color: {user_color}",
+            f"Corpus: {self.corpus.detail}",
+            f"Book: {self.book.detail}",
+            f"Engine: {self.engine.detail}",
+            doctrine_status,
+        )
+        return RuntimeStartupStatus(
+            mode=mode,
+            user_color=user_color,
+            corpus_status=self.corpus.detail,
+            book_status=self.book.detail,
+            engine_status=self.engine.detail,
+            doctrine_status=doctrine_status,
+            lines=lines,
+        )
+
+
+def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeContext:
+    overrides = overrides or RuntimeOverrides()
+    config_path, config_source = _resolve_config_file_path(overrides.runtime_config_path)
+    file_config = RuntimeConfig()
+    if config_path is not None and config_path.exists():
+        file_config = RuntimeConfig.from_mapping(json.loads(config_path.read_text(encoding="utf-8")))
+        config_source = f"config file: {config_path}"
+
+    strict_assets = _resolve_bool(overrides.strict_assets, file_config.strict_assets, os.getenv(ENV_STRICT_ASSETS))
+    config = RuntimeConfig(
+        corpus_artifact_path=_first_non_none(
+            overrides.corpus_artifact_path,
+            file_config.corpus_artifact_path,
+            os.getenv(ENV_CORPUS_PATH),
+        ),
+        engine_executable_path=_first_non_none(
+            overrides.engine_executable_path,
+            file_config.engine_executable_path,
+            os.getenv(ENV_ENGINE_PATH),
+        ),
+        opening_book_path=_first_non_none(
+            overrides.opening_book_path,
+            file_config.opening_book_path,
+            os.getenv(ENV_BOOK_PATH),
+        ),
+        engine_depth=_coerce_int(_first_non_none(overrides.engine_depth, file_config.engine_depth, os.getenv(ENV_ENGINE_DEPTH))),
+        engine_time_limit_seconds=_coerce_float(
+            _first_non_none(
+                overrides.engine_time_limit_seconds,
+                file_config.engine_time_limit_seconds,
+                os.getenv(ENV_ENGINE_TIME_LIMIT),
+            )
+        ),
+        strict_assets=strict_assets,
+    )
+
+    evaluator_base = EvaluatorConfig()
+    evaluator_config = EvaluatorConfig(
+        better_max_cp_loss=evaluator_base.better_max_cp_loss,
+        overlay_best_max_cp_loss=evaluator_base.overlay_best_max_cp_loss,
+        overlay_excellent_max_cp_loss=evaluator_base.overlay_excellent_max_cp_loss,
+        overlay_good_max_cp_loss=evaluator_base.overlay_good_max_cp_loss,
+        overlay_mistake_min_cp_loss=evaluator_base.overlay_mistake_min_cp_loss,
+        overlay_blunder_min_cp_loss=evaluator_base.overlay_blunder_min_cp_loss,
+        missed_win_enabled=evaluator_base.missed_win_enabled,
+        missed_win_mate_ply_cap_by_mode=evaluator_base.missed_win_mate_ply_cap_by_mode,
+        engine_depth=config.engine_depth or evaluator_base.engine_depth,
+        engine_time_limit_seconds=config.engine_time_limit_seconds or evaluator_base.engine_time_limit_seconds,
+        engine_path=config.engine_executable_path or evaluator_base.engine_path,
+        active_envelope_player_moves=evaluator_base.active_envelope_player_moves,
+    )
+
+    corpus = _resolve_file_asset(
+        explicit_path=config.corpus_artifact_path,
+        env_name=ENV_CORPUS_PATH,
+        default_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
+        label="corpus artifact",
+    )
+    engine = _resolve_engine_asset(config.engine_executable_path)
+    book = _resolve_file_asset(
+        explicit_path=config.opening_book_path,
+        env_name=ENV_BOOK_PATH,
+        default_candidates=DEFAULT_BOOK_PATHS,
+        label="opening book",
+    )
+
+    return RuntimeContext(
+        config=config,
+        evaluator_config=EvaluatorConfig(**{**evaluator_config.snapshot(), "engine_path": str(engine.path) if engine.path else evaluator_config.engine_path}),
+        corpus=corpus,
+        book=book,
+        engine=engine,
+        config_source=config_source,
+    )
+
+
+def corpus_status_detail(path: Path | None) -> str:
+    if path is None or not path.exists():
+        return "no artifact found; using explicit provisional fallback"
+    artifact = load_artifact(path)
+    return (
+        f"loaded {path} via artifact (source={path}, schema={artifact.schema_version}, "
+        f"rating_policy={artifact.rating_policy}, retained_ply_depth={artifact.retained_ply_depth}, "
+        f"positions={len(artifact.positions)})"
+    )
+
+
+def _resolve_config_file_path(override_path: str | None) -> tuple[Path | None, str]:
+    if override_path:
+        return Path(override_path), f"cli flag: {override_path}"
+    env_path = os.getenv(ENV_RUNTIME_CONFIG)
+    if env_path:
+        return Path(env_path), f"environment variable {ENV_RUNTIME_CONFIG}: {env_path}"
+    if DEFAULT_RUNTIME_CONFIG_PATH.exists():
+        return DEFAULT_RUNTIME_CONFIG_PATH, f"default config path: {DEFAULT_RUNTIME_CONFIG_PATH}"
+    return None, "built-in defaults"
+
+
+def _resolve_file_asset(explicit_path: str | None, env_name: str, default_candidates: tuple[Path, ...], label: str) -> ResolvedAssetPath:
+    if explicit_path:
+        path = Path(explicit_path).expanduser()
+        path = path.resolve() if path.exists() else path
+        available = path.exists()
+        detail = f"{label} {'loaded' if available else 'missing'} from CLI/config/env winner {path}"
+        return ResolvedAssetPath(label=label, path=path, source="explicit", available=available, detail=detail)
+    env_path = os.getenv(env_name)
+    if env_path:
+        path = Path(env_path).expanduser()
+        path = path.resolve() if path.exists() else path
+        available = path.exists()
+        detail = f"{label} {'loaded' if available else 'missing'} from environment variable {env_name}={path}"
+        return ResolvedAssetPath(label=label, path=path, source="environment", available=available, detail=detail)
+    for candidate in default_candidates:
+        if candidate.exists():
+            return ResolvedAssetPath(
+                label=label,
+                path=candidate.resolve(),
+                source="default",
+                available=True,
+                detail=f"{label} loaded from default path {candidate}",
+            )
+    return ResolvedAssetPath(
+        label=label,
+        path=default_candidates[0].resolve() if default_candidates else None,
+        source="default",
+        available=False,
+        detail=f"{label} not found; checked default path(s): {', '.join(str(path) for path in default_candidates)}",
+    )
+
+
+def _resolve_engine_asset(explicit_path: str | None) -> ResolvedAssetPath:
+    if explicit_path:
+        path = Path(explicit_path).expanduser()
+        available = path.exists() or shutil.which(explicit_path) is not None
+        detail = f"engine {'resolved' if available else 'missing'} from CLI/config/env winner {explicit_path}"
+        return ResolvedAssetPath("engine", path if path.exists() else Path(explicit_path), "explicit", available, detail)
+    env_path = os.getenv(ENV_ENGINE_PATH)
+    if env_path:
+        available = Path(env_path).exists() or shutil.which(env_path) is not None
+        return ResolvedAssetPath(
+            "engine",
+            Path(env_path).resolve() if Path(env_path).exists() else Path(env_path),
+            "environment",
+            available,
+            f"engine {'resolved' if available else 'missing'} from environment variable {ENV_ENGINE_PATH}={env_path}",
+        )
+    for candidate in DEFAULT_ENGINE_PATHS:
+        if candidate.exists():
+            return ResolvedAssetPath("engine", candidate.resolve(), "default", True, f"engine resolved from default path {candidate.resolve()}")
+    which_stockfish = shutil.which("stockfish")
+    if which_stockfish:
+        return ResolvedAssetPath("engine", Path(which_stockfish).resolve(), "default", True, f"engine resolved from PATH stockfish at {which_stockfish}")
+    return ResolvedAssetPath(
+        "engine",
+        Path("stockfish"),
+        "default",
+        False,
+        "engine not found; checked CLI/config/env winner, repo defaults, and PATH stockfish",
+    )
+
+
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _coerce_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _resolve_bool(override: bool | None, file_value: bool, env_value: str | None) -> bool:
+    if override is not None:
+        return override
+    if env_value is not None:
+        return env_value.strip().lower() in {"1", "true", "yes", "on"}
+    return file_value

@@ -6,6 +6,7 @@ from tkinter import simpledialog
 import chess
 
 from ..models import SessionState
+from ..runtime import RuntimeContext
 from ..session import TrainingSession
 from .board_view import BoardView
 
@@ -18,8 +19,8 @@ PROMOTION_CHOICES = {
 
 
 class OpeningTrainerGUI:
-    def __init__(self, session: TrainingSession | None = None):
-        self.session = session or TrainingSession()
+    def __init__(self, session: TrainingSession | None = None, runtime_context: RuntimeContext | None = None):
+        self.session = session or TrainingSession(runtime_context=runtime_context, mode="gui")
         self.root = tk.Tk()
         self.root.title("Opening Trainer")
         self.board_view = BoardView(self.root)
@@ -132,6 +133,6 @@ class OpeningTrainerGUI:
         return None
 
 
-def launch_gui() -> None:
-    gui = OpeningTrainerGUI()
+def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
+    gui = OpeningTrainerGUI(runtime_context=runtime_context)
     gui.run()

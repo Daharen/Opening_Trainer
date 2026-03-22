@@ -227,3 +227,96 @@ It is meant to accelerate human opening-validation reps, not to serve as a polis
 - Board orientation follows the randomized assigned player color.
 - Console feedback remains active for canonical judgment, overlay label, reason text, and preferred move output.
 - If Tkinter is unavailable at runtime, the app prints a clear fallback message and continues in CLI mode.
+
+
+## Runtime Asset Configuration
+
+Ordinary runs now resolve runtime assets through one shared configuration flow used by both CLI and GUI startup.
+You do **not** need to edit source files for local setup.
+
+### Supported runtime assets
+
+- corpus artifact path
+- engine executable path
+- optional Polyglot opening-book path
+- optional engine depth and time-limit overrides
+- optional strict-assets mode for fail-fast local validation
+
+### Discovery order
+
+Each asset is resolved in this deterministic order:
+
+1. explicit CLI flag
+2. explicit JSON runtime config setting
+3. environment variable
+4. conventional default path
+
+Winning paths are surfaced in startup diagnostics so local runs never silently switch authorities.
+
+### CLI flags
+
+```bash
+python main.py --cli   --corpus-artifact data/opening_corpus.json   --engine-path /path/to/stockfish   --book-path data/opening_book.bin
+```
+
+Optional diagnostics/build helpers:
+
+```bash
+python main.py --show-runtime
+python main.py --build-corpus path/to/games.pgn --build-corpus-output data/opening_corpus.json
+```
+
+### JSON runtime config
+
+Create `runtime/runtime_config.json` or point to a file with `--runtime-config`.
+Example:
+
+```json
+{
+  "corpus_artifact_path": "data/opening_corpus.json",
+  "engine_executable_path": "/path/to/stockfish",
+  "opening_book_path": "data/opening_book.bin",
+  "engine_depth": 12,
+  "engine_time_limit_seconds": 0.2,
+  "strict_assets": false
+}
+```
+
+### Environment variables
+
+- `OPENING_TRAINER_RUNTIME_CONFIG`
+- `OPENING_TRAINER_CORPUS_PATH`
+- `OPENING_TRAINER_ENGINE_PATH`
+- `OPENING_TRAINER_BOOK_PATH`
+- `OPENING_TRAINER_ENGINE_DEPTH`
+- `OPENING_TRAINER_ENGINE_TIME_LIMIT`
+- `OPENING_TRAINER_STRICT_ASSETS`
+
+### Conventional default paths
+
+- corpus artifact: `data/opening_corpus.json`
+- opening book: `runtime/opening_book.bin`, `assets/opening_book.bin`, then `data/opening_book.bin`
+- engine executable: `runtime/engine/stockfish`, `runtime/stockfish`, `assets/stockfish`, then `stockfish` on `PATH`
+
+## Startup Summary and Degraded Mode
+
+Every new run now prints a compact runtime startup summary that reports:
+
+- current mode
+- assigned user color
+- corpus authority status
+- book authority status
+- engine authority status
+- whether the trainer is fully doctrine-capable or running in declared degraded mode
+
+### Reading the startup messages
+
+- **Corpus loaded**: corpus-backed opponent sourcing is active.
+- **Corpus not found / provisional fallback**: opponent moves come from the explicit temporary random fallback.
+- **Book loaded**: moves can pass via actual opening-book membership.
+- **Book missing**: no book authority is available, so only engine-backed Better evaluation can approve non-book moves.
+- **Engine resolved**: engine tolerance is available for Better evaluation.
+- **Engine missing / unavailable**: the trainer pauses with `AuthorityUnavailable` when book does not approve a move.
+- **Degraded mode**: one or more runtime authorities are unavailable; the trainer says so explicitly instead of pretending the run is fully configured.
+
+This lane does **not** add review persistence or final evaluation retuning.
