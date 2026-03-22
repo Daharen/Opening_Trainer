@@ -2,18 +2,19 @@ import random
 import chess
 
 from .board import GameBoard
+from .evaluation import EvaluatorConfig, format_evaluation_feedback
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, SessionOutcome, SessionState
 from .opponent import OpponentProvider
 
 
 class TrainingSession:
-    REQUIRED_PLAYER_MOVES = 5
-
     def __init__(self):
         self.board = GameBoard()
         self.opponent = OpponentProvider()
         self.evaluator = MoveEvaluator()
+        self.config = EvaluatorConfig()
+        self.required_player_moves = self.config.active_envelope_player_moves
 
         self.player_color = chess.WHITE
         self.player_move_count = 0
@@ -72,11 +73,12 @@ class TrainingSession:
             print("Illegal move. Try again.", flush=True)
             return
 
+        board_before_move = self.board.board.copy(stack=False)
         move = self.board.push(move_str)
         self.player_move_count += 1
 
         evaluation = self.evaluator.evaluate(
-            self.board.board,
+            board_before_move,
             move,
             self.player_move_count,
         )
@@ -87,20 +89,22 @@ class TrainingSession:
         if not evaluation.accepted:
             self.last_outcome = SessionOutcome(
                 passed=False,
-                reason=evaluation.reason,
-                preferred_move=evaluation.preferred_move,
+                reason=evaluation.reason_text,
+                preferred_move=evaluation.preferred_move_san or evaluation.preferred_move_uci,
+                evaluation=evaluation,
             )
             self.state = SessionState.FAIL_RESOLUTION
             return
 
-        if self.player_move_count >= self.REQUIRED_PLAYER_MOVES:
+        if self.player_move_count >= self.required_player_moves:
             self.last_outcome = SessionOutcome(
                 passed=True,
                 reason=(
-                    f"Completed {self.REQUIRED_PLAYER_MOVES} accepted player moves "
+                    f"Completed {self.required_player_moves} accepted player moves "
                     f"inside the opening window."
                 ),
                 preferred_move=None,
+                evaluation=evaluation,
             )
             self.state = SessionState.SUCCESS_RESOLUTION
             return
@@ -146,9 +150,5 @@ class TrainingSession:
             print("You are BLACK", flush=True)
 
     def _print_evaluation_feedback(self, evaluation: EvaluationResult) -> None:
-        judgment_name = evaluation.judgment.name
-        accepted_text = "ACCEPTED" if evaluation.accepted else "REJECTED"
-        print(f"{judgment_name} — {accepted_text}", flush=True)
-        print(evaluation.reason, flush=True)
-        if evaluation.preferred_move:
-            print(f"Preferred move: {evaluation.preferred_move}", flush=True)
+        for line in format_evaluation_feedback(evaluation):
+            print(line, flush=True)
