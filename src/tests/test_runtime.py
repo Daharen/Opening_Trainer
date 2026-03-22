@@ -213,3 +213,130 @@ def test_cli_and_gui_share_same_runtime_resolution(tmp_path):
     assert cli_runtime.corpus.path == gui_runtime.corpus.path
     assert cli_runtime.engine.path == gui_runtime.engine.path
     assert cli_runtime.book.path == gui_runtime.book.path
+
+
+def test_workspace_runtime_local_config_auto_discovery(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    workspace_root = tmp_path
+    repo_root.mkdir()
+    (workspace_root / "runtime.local.json").write_text(
+        json.dumps({"engine_executable_path": "/tmp/workspace-stockfish", "engine_depth": 18}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.engine_executable_path == "/tmp/workspace-stockfish"
+    assert runtime.config_source == f"workspace-root default runtime config: {workspace_root / 'runtime.local.json'}"
+    assert runtime.evaluator_config.engine_depth == 18
+
+
+def test_explicit_runtime_config_overrides_workspace_runtime_local(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (tmp_path / "runtime.local.json").write_text(json.dumps({"engine_executable_path": "/tmp/workspace-stockfish"}), encoding="utf-8")
+    explicit_config = repo_root / "explicit-runtime.json"
+    explicit_config.write_text(json.dumps({"engine_executable_path": "/tmp/explicit-stockfish"}), encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_config_path=str(explicit_config)))
+
+    assert runtime.config.engine_executable_path == "/tmp/explicit-stockfish"
+    assert runtime.config_source == f"CLI flag --runtime-config: {explicit_config}"
+
+
+def test_workspace_engine_default_discovery(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    engine_path = tmp_path / "tools" / "stockfish" / "stockfish-windows-x86-64-avx2.exe"
+    engine_path.parent.mkdir(parents=True)
+    engine_path.write_text("", encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.engine.available is True
+    assert runtime.engine.path == engine_path.resolve()
+    assert runtime.engine.source == "workspace-default"
+    assert "workspace-root default path" in runtime.engine.detail
+
+
+def test_workspace_corpus_default_discovery(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
+    artifact_path = save_artifact(artifact, tmp_path / "artifacts" / "opening_corpus.json")
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.corpus.available is True
+    assert runtime.corpus.path == artifact_path
+    assert runtime.corpus.source == "workspace-default"
+    assert "workspace-root default path" in runtime.corpus.detail
+
+
+def test_workspace_book_default_discovery(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    book_path = tmp_path / "runtime" / "opening_book.bin"
+    book_path.parent.mkdir(parents=True)
+    book_path.write_bytes(b"book")
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.book.available is True
+    assert runtime.book.path == book_path.resolve()
+    assert runtime.book.source == "workspace-default"
+    assert "workspace-root default path" in runtime.book.detail
+
+
+def test_cli_asset_override_beats_workspace_defaults(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace_engine = tmp_path / "tools" / "stockfish" / "stockfish-windows-x86-64-avx2.exe"
+    workspace_engine.parent.mkdir(parents=True)
+    workspace_engine.write_text("", encoding="utf-8")
+    cli_engine = repo_root / "bin" / "stockfish-cli"
+    cli_engine.parent.mkdir(parents=True)
+    cli_engine.write_text("", encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides(engine_executable_path=str(cli_engine)))
+
+    assert runtime.engine.path == str(cli_engine)
+    assert runtime.engine.source == "explicit"
+    assert "configured value=" in runtime.engine.detail
+
+
+def test_show_runtime_reports_workspace_default_activation(tmp_path, monkeypatch, capsys):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (tmp_path / "runtime.local.json").write_text(json.dumps({"engine_executable_path": "/tmp/workspace-stockfish"}), encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+
+    from opening_trainer.main import run
+
+    run(["--show-runtime"])
+    output = capsys.readouterr().out
+
+    assert "Runtime config source: workspace-root default runtime config:" in output
+
+
+def test_degraded_mode_remains_explicit_without_workspace_assets(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+    summary = runtime.startup_status(mode="CLI", user_color="WHITE")
+
+    assert runtime.corpus.available is False
+    assert runtime.book.available is False
+    assert runtime.engine.available is False
+    assert "workspace-root default(s)" in runtime.corpus.detail
+    assert "workspace-root default(s)" in runtime.book.detail
+    assert "workspace-root defaults" in runtime.engine.detail
+    assert "Degraded mode" in summary.doctrine_status
