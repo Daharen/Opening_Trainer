@@ -184,15 +184,20 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     )
 
     corpus = _resolve_file_asset(
-        explicit_path=config.corpus_artifact_path,
+        selected_path=config.corpus_artifact_path,
+        selected_source=_configured_asset_source(overrides.corpus_artifact_path, file_config.corpus_artifact_path, ENV_CORPUS_PATH),
         env_name=ENV_CORPUS_PATH,
         workspace_candidates=WORKSPACE_CORPUS_PATHS,
         repo_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
         label="corpus artifact",
     )
-    engine = _resolve_engine_asset(config.engine_executable_path)
+    engine = _resolve_engine_asset(
+        selected_path=config.engine_executable_path,
+        selected_source=_configured_asset_source(overrides.engine_executable_path, file_config.engine_executable_path, ENV_ENGINE_PATH),
+    )
     book = _resolve_file_asset(
-        explicit_path=config.opening_book_path,
+        selected_path=config.opening_book_path,
+        selected_source=_configured_asset_source(overrides.opening_book_path, file_config.opening_book_path, ENV_BOOK_PATH),
         env_name=ENV_BOOK_PATH,
         workspace_candidates=WORKSPACE_BOOK_PATHS,
         repo_candidates=DEFAULT_BOOK_PATHS,
@@ -244,23 +249,17 @@ def _resolve_config_file_path(override_path: str | None) -> tuple[Path | None, s
 
 
 def _resolve_file_asset(
-    explicit_path: str | None,
+    selected_path: str | None,
+    selected_source: str | None,
     env_name: str,
     workspace_candidates: tuple[Path, ...],
     repo_candidates: tuple[Path, ...],
     label: str,
 ) -> ResolvedAssetPath:
-    if explicit_path:
-        probe_path = _local_probe_path(explicit_path)
-        available = probe_path.exists()
-        detail = _explicit_asset_detail(label, explicit_path, probe_path, available)
-        return ResolvedAssetPath(label=label, path=explicit_path, source="explicit", available=available, detail=detail)
-    env_path = os.getenv(env_name)
-    if env_path:
-        probe_path = _local_probe_path(env_path)
-        available = probe_path.exists()
-        detail = _explicit_asset_detail(label, env_path, probe_path, available, env_name)
-        return ResolvedAssetPath(label=label, path=env_path, source="environment", available=available, detail=detail)
+    winning_explicit = _resolve_explicit_asset_path(selected_path=selected_path, selected_source=selected_source, env_name=env_name, label=label)
+    if winning_explicit is not None:
+        return winning_explicit
+
     workspace_root = _workspace_root()
     repo_root = _repo_root()
     workspace_probes = tuple(workspace_root / candidate for candidate in workspace_candidates)
@@ -293,25 +292,11 @@ def _resolve_file_asset(
     )
 
 
-def _resolve_engine_asset(explicit_path: str | None) -> ResolvedAssetPath:
-    if explicit_path:
-        probe_path = _local_probe_path(explicit_path)
-        which_match = shutil.which(explicit_path)
-        available = probe_path.exists() or which_match is not None
-        detail = _explicit_engine_detail(explicit_path, probe_path, available, which_match=which_match)
-        return ResolvedAssetPath("engine", explicit_path, "explicit", available, detail)
-    env_path = os.getenv(ENV_ENGINE_PATH)
-    if env_path:
-        probe_path = _local_probe_path(env_path)
-        which_match = shutil.which(env_path)
-        available = probe_path.exists() or which_match is not None
-        return ResolvedAssetPath(
-            "engine",
-            env_path,
-            "environment",
-            available,
-            _explicit_engine_detail(env_path, probe_path, available, env_name=ENV_ENGINE_PATH, which_match=which_match),
-        )
+def _resolve_engine_asset(selected_path: str | None, selected_source: str | None) -> ResolvedAssetPath:
+    winning_explicit = _resolve_explicit_engine_path(selected_path=selected_path, selected_source=selected_source)
+    if winning_explicit is not None:
+        return winning_explicit
+
     workspace_root = _workspace_root()
     repo_root = _repo_root()
     for candidate in tuple(workspace_root / path for path in WORKSPACE_ENGINE_PATHS):
@@ -336,6 +321,49 @@ def _resolve_engine_asset(explicit_path: str | None) -> ResolvedAssetPath:
         False,
         "engine not found; checked CLI/config/env winner, workspace-root defaults, repo-local defaults, and PATH stockfish",
     )
+
+
+def _resolve_explicit_asset_path(selected_path: str | None, selected_source: str | None, env_name: str, label: str) -> ResolvedAssetPath | None:
+    if selected_path is None or selected_source is None:
+        return None
+
+    local_probe_path = _local_probe_path(selected_path)
+    available = local_probe_path.exists()
+    detail = _explicit_asset_detail(
+        label,
+        selected_path,
+        local_probe_path,
+        available,
+        env_name=env_name if selected_source == "environment" else None,
+    )
+    return ResolvedAssetPath(label=label, path=selected_path, source=selected_source, available=available, detail=detail)
+
+
+def _resolve_explicit_engine_path(selected_path: str | None, selected_source: str | None) -> ResolvedAssetPath | None:
+    if selected_path is None or selected_source is None:
+        return None
+
+    local_probe_path = _local_probe_path(selected_path)
+    path_lookup_match = shutil.which(selected_path)
+    available = local_probe_path.exists() or path_lookup_match is not None
+    detail = _explicit_engine_detail(
+        selected_path,
+        local_probe_path,
+        available,
+        env_name=ENV_ENGINE_PATH if selected_source == "environment" else None,
+        which_match=path_lookup_match,
+    )
+    return ResolvedAssetPath("engine", selected_path, selected_source, available, detail)
+
+
+def _configured_asset_source(override_value: str | None, config_value: str | None, env_name: str) -> str | None:
+    if override_value is not None:
+        return "explicit"
+    if config_value is not None:
+        return "explicit"
+    if os.getenv(env_name) is not None:
+        return "environment"
+    return None
 
 
 
@@ -382,8 +410,10 @@ def _explicit_asset_detail(
     available: bool,
     env_name: str | None = None,
 ) -> str:
-    source = f"environment variable {env_name}" if env_name else "CLI/config/env winner"
+    source = "CLI/config/env winner"
     detail = f"{label} {'loaded' if available else 'missing'} from {source}; configured value={configured_value}"
+    if env_name:
+        detail = f"{detail}; source detail=environment variable {env_name}"
     probe_note = _probe_note(configured_value, probe_path)
     return f"{detail}; {probe_note}" if probe_note else detail
 
@@ -395,8 +425,10 @@ def _explicit_engine_detail(
     env_name: str | None = None,
     which_match: str | None = None,
 ) -> str:
-    source = f"environment variable {env_name}" if env_name else "CLI/config/env winner"
+    source = "CLI/config/env winner"
     detail = f"engine {'resolved' if available else 'missing'} from {source}; configured value={configured_value}"
+    if env_name:
+        detail = f"{detail}; source detail=environment variable {env_name}"
     probe_parts: list[str] = []
     probe_note = _probe_note(configured_value, probe_path)
     if probe_note:
