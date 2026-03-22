@@ -311,6 +311,64 @@ def test_cli_asset_override_beats_workspace_defaults(tmp_path, monkeypatch):
     assert "configured value=" in runtime.engine.detail
 
 
+def test_runtime_config_engine_override_beats_workspace_default(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace_engine = tmp_path / "tools" / "stockfish" / "stockfish-windows-x86-64-avx2.exe"
+    workspace_engine.parent.mkdir(parents=True)
+    workspace_engine.write_text("", encoding="utf-8")
+    config_path = repo_root / "runtime.json"
+    config_path.write_text(json.dumps({"engine_executable_path": "/tmp/config-stockfish"}), encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_config_path=str(config_path)))
+
+    assert runtime.config.engine_executable_path == "/tmp/config-stockfish"
+    assert runtime.engine.path == "/tmp/config-stockfish"
+    assert runtime.engine.source == "explicit"
+    assert "configured value=/tmp/config-stockfish" in runtime.engine.detail
+
+
+def test_environment_engine_override_beats_workspace_default(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace_engine = tmp_path / "tools" / "stockfish" / "stockfish-windows-x86-64-avx2.exe"
+    workspace_engine.parent.mkdir(parents=True)
+    workspace_engine.write_text("", encoding="utf-8")
+    env_engine = repo_root / "bin" / "env-stockfish"
+    env_engine.parent.mkdir(parents=True)
+    env_engine.write_text("", encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("OPENING_TRAINER_ENGINE_PATH", str(env_engine))
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.engine_executable_path == str(env_engine)
+    assert runtime.engine.path == str(env_engine)
+    assert runtime.engine.source == "environment"
+    assert "configured value=" in runtime.engine.detail
+
+
+def test_environment_book_override_beats_workspace_default(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace_book = tmp_path / "runtime" / "opening_book.bin"
+    workspace_book.parent.mkdir(parents=True)
+    workspace_book.write_bytes(b"workspace-book")
+    env_book = repo_root / "books" / "env-book.bin"
+    env_book.parent.mkdir(parents=True)
+    env_book.write_bytes(b"env-book")
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("OPENING_TRAINER_BOOK_PATH", str(env_book))
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.opening_book_path == str(env_book)
+    assert runtime.book.path == str(env_book)
+    assert runtime.book.source == "environment"
+    assert "configured value=" in runtime.book.detail
+
+
 def test_show_runtime_reports_workspace_default_activation(tmp_path, monkeypatch, capsys):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
