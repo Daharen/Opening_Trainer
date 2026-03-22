@@ -51,7 +51,36 @@ def test_engine_path_configured_and_passed_through(tmp_path, monkeypatch):
 
     assert session.config.engine_path == "/tmp/custom-stockfish"
     assert session.evaluator.engine_authority.config.engine_path == "/tmp/custom-stockfish"
+    assert runtime.engine.path == "/tmp/custom-stockfish"
+    assert "configured value=/tmp/custom-stockfish" in runtime.engine.detail
     assert session.config.engine_depth == 16
+
+
+def test_engine_path_cli_override_remains_literal_when_probed(tmp_path):
+    engine_path = tmp_path / "bin" / "stockfish"
+    engine_path.parent.mkdir(parents=True)
+    engine_path.write_text("", encoding="utf-8")
+
+    runtime = load_runtime_config(RuntimeOverrides(engine_executable_path=str(engine_path)))
+
+    assert runtime.engine.path == str(engine_path)
+    assert runtime.engine.available is True
+    assert f"configured value={engine_path}" in runtime.engine.detail
+
+
+def test_engine_path_environment_remains_literal_when_probed(tmp_path, monkeypatch):
+    engine_path = tmp_path / "env" / "stockfish"
+    engine_path.parent.mkdir(parents=True)
+    engine_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("OPENING_TRAINER_ENGINE_PATH", str(engine_path))
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.engine_executable_path == str(engine_path)
+    assert runtime.engine.path == str(engine_path)
+    assert runtime.engine.available is True
+    assert "CLI/config/env winner" in runtime.engine.detail
+    assert f"configured value={engine_path}" in runtime.engine.detail
 
 
 def test_invalid_engine_path_returns_authority_unavailable_not_fail():
@@ -74,11 +103,28 @@ def test_invalid_engine_path_returns_authority_unavailable_not_fail():
 
 def test_book_path_configured_and_passed_through(tmp_path):
     book_path = tmp_path / "book.bin"
+    book_path.write_bytes(b"book")
     runtime = load_runtime_config(RuntimeOverrides(opening_book_path=str(book_path)))
     session = TrainingSession(runtime_context=runtime)
 
-    assert session.runtime_context.book.path == book_path
-    assert session.evaluator.book_authority.book_path is None
+    assert session.runtime_context.book.path == str(book_path)
+    assert session.runtime_context.book.available is True
+    assert session.evaluator.book_authority.book_path == book_path
+    assert f"configured value={book_path}" in session.runtime_context.book.detail
+
+
+def test_corpus_path_environment_remains_literal_when_probed(tmp_path, monkeypatch):
+    artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
+    artifact_path = save_artifact(artifact, tmp_path / "artifacts" / "opening_corpus.json")
+    monkeypatch.setenv("OPENING_TRAINER_CORPUS_PATH", str(artifact_path))
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.corpus_artifact_path == str(artifact_path)
+    assert runtime.corpus.path == str(artifact_path)
+    assert runtime.corpus.available is True
+    assert "CLI/config/env winner" in runtime.corpus.detail
+    assert f"configured value={artifact_path}" in runtime.corpus.detail
 
 
 def test_missing_book_path_explicit_no_book_state(tmp_path):
@@ -141,6 +187,9 @@ def test_startup_diagnostics_reflect_active_authorities(tmp_path):
     assert "loaded" in summary.corpus_status
     assert "missing" in summary.book_status
     assert "missing" in summary.engine_status
+    assert "configured value=" in summary.corpus_status
+    assert "configured value=" in summary.book_status
+    assert "configured value=" in summary.engine_status
     assert "Degraded mode" in summary.doctrine_status
     assert any(line.startswith("Corpus:") for line in summary.lines)
 
