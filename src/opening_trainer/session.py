@@ -1,14 +1,19 @@
+from __future__ import annotations
+
 import random
+
 import chess
 
 from .board import GameBoard
 from .evaluation import EvaluatorConfig, format_evaluation_feedback
 from .evaluator import MoveEvaluator
-from .models import EvaluationResult, SessionOutcome, SessionState
+from .models import EvaluationResult, SessionOutcome, SessionState, SessionView
 from .opponent import OpponentProvider
 
 
 class TrainingSession:
+    restart_delay_ms = 900
+
     def __init__(self):
         self.board = GameBoard()
         self.opponent = OpponentProvider()
@@ -23,7 +28,7 @@ class TrainingSession:
         self.last_evaluation: EvaluationResult | None = None
         self.last_outcome: SessionOutcome | None = None
 
-    def start_new_game(self) -> None:
+    def start_new_game(self) -> SessionView:
         self.state = SessionState.STARTING_GAME
         self.board.reset()
         self.player_color = random.choice([chess.WHITE, chess.BLACK])
@@ -37,15 +42,59 @@ class TrainingSession:
             self.state = SessionState.PLAYER_TURN
         else:
             self.state = SessionState.OPPONENT_TURN
+            self.advance_until_user_turn()
 
-    def run_session(self) -> None:
+        return self.get_view()
+
+    def get_view(self) -> SessionView:
+        return SessionView(
+            board_fen=self.board.board.fen(),
+            player_color=self.player_color,
+            state=self.state,
+            player_move_count=self.player_move_count,
+            required_player_moves=self.required_player_moves,
+            last_evaluation=self.last_evaluation,
+            last_outcome=self.last_outcome,
+        )
+
+    def current_board(self) -> chess.Board:
+        return self.board.board.copy(stack=True)
+
+    def get_current_player_color(self) -> chess.Color:
+        return self.player_color
+
+    def get_current_session_phase(self) -> SessionState:
+        return self.state
+
+    def get_last_evaluation_result(self) -> EvaluationResult | None:
+        return self.last_evaluation
+
+    def is_awaiting_user_input(self) -> bool:
+        return self.state == SessionState.PLAYER_TURN
+
+    def is_processing_opponent_motion(self) -> bool:
+        return self.state == SessionState.OPPONENT_TURN
+
+    def has_failed(self) -> bool:
+        return self.state == SessionState.FAIL_RESOLUTION or (
+            self.last_outcome is not None and not self.last_outcome.passed
+        )
+
+    def has_passed(self) -> bool:
+        return self.state == SessionState.SUCCESS_RESOLUTION or (
+            self.last_outcome is not None and self.last_outcome.passed
+        )
+
+    def run_session(self, input_func=None) -> None:
+        if input_func is None:
+            input_func = input
         while True:
             if self.state == SessionState.PLAYER_TURN:
-                self._handle_player_turn()
+                self._handle_player_turn(input_func)
                 continue
 
             if self.state == SessionState.OPPONENT_TURN:
-                self._handle_opponent_turn()
+                self.advance_until_user_turn()
                 continue
 
             if self.state == SessionState.FAIL_RESOLUTION:
@@ -61,17 +110,38 @@ class TrainingSession:
 
             raise RuntimeError(f"Unexpected session state: {self.state}")
 
-    def _handle_player_turn(self) -> None:
+    def submit_user_move_uci(self, move_uci: str) -> SessionView:
+        return self._submit_user_move(move_uci.strip())
+
+    def submit_user_move(self, move_text: str) -> SessionView:
+        return self._submit_user_move(move_text.strip())
+
+    def advance_until_user_turn(self) -> SessionView:
+        while self.state == SessionState.OPPONENT_TURN:
+            self._handle_opponent_turn()
+        return self.get_view()
+
+    def legal_moves_from(self, square: chess.Square) -> list[chess.Move]:
+        return self.board.legal_moves_from(square)
+
+    def _handle_player_turn(self, input_func=None) -> None:
+        if input_func is None:
+            input_func = input
         print("", flush=True)
         print(self.board, flush=True)
         print("", flush=True)
 
         print("Your move: ", end="", flush=True)
-        move_str = input().strip()
+        move_str = input_func().strip()
+        self._submit_user_move(move_str)
+
+    def _submit_user_move(self, move_str: str) -> SessionView:
+        if self.state != SessionState.PLAYER_TURN:
+            raise RuntimeError("Cannot submit a user move when the session is not awaiting player input.")
 
         if not self.board.is_legal(move_str):
             print("Illegal move. Try again.", flush=True)
-            return
+            return self.get_view()
 
         board_before_move = self.board.board.copy(stack=False)
         move = self.board.push(move_str)
@@ -94,22 +164,25 @@ class TrainingSession:
                 evaluation=evaluation,
             )
             self.state = SessionState.FAIL_RESOLUTION
-            return
+            self._resolve_fail()
+            return self.get_view()
 
         if self.player_move_count >= self.required_player_moves:
             self.last_outcome = SessionOutcome(
                 passed=True,
                 reason=(
-                    f"Completed {self.required_player_moves} accepted player moves "
-                    f"inside the opening window."
+                    f"Completed {self.required_player_moves} accepted player moves inside the opening window."
                 ),
                 preferred_move=None,
                 evaluation=evaluation,
             )
             self.state = SessionState.SUCCESS_RESOLUTION
-            return
+            self._resolve_success()
+            return self.get_view()
 
         self.state = SessionState.OPPONENT_TURN
+        self.advance_until_user_turn()
+        return self.get_view()
 
     def _handle_opponent_turn(self) -> None:
         move = self.opponent.choose_move(self.board.board)

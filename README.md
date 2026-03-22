@@ -106,5 +106,31 @@ The following systems are still out of scope for this lane:
 1. Real low-ELO corpus-based opponent move sampling.
 2. Bundled opening-book assets or corpus ingestion.
 3. Persistent review queues or failure storage.
-4. Advanced UI.
+4. Heavyweight or polished production UI.
 5. Great / Brilliant overlays.
+
+
+## Local GUI Validation Surface
+
+The default launch path now attempts to open a lightweight local Tkinter board GUI first.
+This GUI is intentionally a thin validation surface over the same trainer session and evaluator pipeline used by the CLI.
+It is meant to accelerate human opening-validation reps, not to serve as a polished end-user platform UI.
+
+### Launch GUI mode
+
+- `python main.py`
+- `python -m opening_trainer`
+- `python run_trainer.py`
+- `python main.py --gui`
+
+### Launch CLI mode
+
+- `python main.py --cli`
+- `python -m opening_trainer --cli`
+
+### GUI behavior notes
+
+- The board uses click source square then click destination square move entry.
+- Board orientation follows the randomized assigned player color.
+- Console feedback remains active for canonical judgment, overlay label, reason text, and preferred move output.
+- If Tkinter is unavailable at runtime, the app prints a clear fallback message and continues in CLI mode.

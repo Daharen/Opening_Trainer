@@ -279,7 +279,7 @@ def test_session_consumes_structured_result_without_duplicate_acceptance_logic(m
 
     session._handle_player_turn()
 
-    assert session.state == SessionState.FAIL_RESOLUTION
+    assert session.state == SessionState.RESTART_PENDING
     assert session.last_outcome is not None
     assert session.last_outcome.passed is False
     assert session.last_outcome.evaluation is session.last_evaluation

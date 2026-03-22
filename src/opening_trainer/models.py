@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum, auto
 
+import chess
+
 from .evaluation import EvaluationResult
 
 
@@ -20,3 +22,30 @@ class SessionOutcome:
     reason: str
     preferred_move: str | None = None
     evaluation: EvaluationResult | None = None
+
+
+@dataclass(frozen=True)
+class SessionView:
+    board_fen: str
+    player_color: chess.Color
+    state: SessionState
+    player_move_count: int
+    required_player_moves: int
+    last_evaluation: EvaluationResult | None
+    last_outcome: SessionOutcome | None
+
+    @property
+    def awaiting_user_input(self) -> bool:
+        return self.state == SessionState.PLAYER_TURN
+
+    @property
+    def processing_opponent(self) -> bool:
+        return self.state == SessionState.OPPONENT_TURN
+
+    @property
+    def run_failed(self) -> bool:
+        return self.last_outcome is not None and not self.last_outcome.passed
+
+    @property
+    def run_passed(self) -> bool:
+        return self.last_outcome is not None and self.last_outcome.passed
