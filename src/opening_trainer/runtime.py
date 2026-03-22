@@ -33,7 +33,7 @@ ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
 @dataclass(frozen=True)
 class ResolvedAssetPath:
     label: str
-    path: Path | None
+    path: str | Path | None
     source: str
     available: bool
     detail: str
@@ -185,7 +185,9 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
 
     return RuntimeContext(
         config=config,
-        evaluator_config=EvaluatorConfig(**{**evaluator_config.snapshot(), "engine_path": str(engine.path) if engine.path else evaluator_config.engine_path}),
+        evaluator_config=EvaluatorConfig(
+            **{**evaluator_config.snapshot(), "engine_path": str(engine.path) if engine.path else evaluator_config.engine_path}
+        ),
         corpus=corpus,
         book=book,
         engine=engine,
@@ -193,10 +195,13 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     )
 
 
-def corpus_status_detail(path: Path | None) -> str:
-    if path is None or not path.exists():
+def corpus_status_detail(path: str | Path | None) -> str:
+    if path is None:
         return "no artifact found; using explicit provisional fallback"
-    artifact = load_artifact(path)
+    local_path = Path(path)
+    if not local_path.exists():
+        return "no artifact found; using explicit provisional fallback"
+    artifact = load_artifact(local_path)
     return (
         f"loaded {path} via artifact (source={path}, schema={artifact.schema_version}, "
         f"rating_policy={artifact.rating_policy}, retained_ply_depth={artifact.retained_ply_depth}, "
@@ -217,18 +222,16 @@ def _resolve_config_file_path(override_path: str | None) -> tuple[Path | None, s
 
 def _resolve_file_asset(explicit_path: str | None, env_name: str, default_candidates: tuple[Path, ...], label: str) -> ResolvedAssetPath:
     if explicit_path:
-        path = Path(explicit_path).expanduser()
-        path = path.resolve() if path.exists() else path
-        available = path.exists()
-        detail = f"{label} {'loaded' if available else 'missing'} from CLI/config/env winner {path}"
-        return ResolvedAssetPath(label=label, path=path, source="explicit", available=available, detail=detail)
+        probe_path = _local_probe_path(explicit_path)
+        available = probe_path.exists()
+        detail = _explicit_asset_detail(label, explicit_path, probe_path, available)
+        return ResolvedAssetPath(label=label, path=explicit_path, source="explicit", available=available, detail=detail)
     env_path = os.getenv(env_name)
     if env_path:
-        path = Path(env_path).expanduser()
-        path = path.resolve() if path.exists() else path
-        available = path.exists()
-        detail = f"{label} {'loaded' if available else 'missing'} from environment variable {env_name}={path}"
-        return ResolvedAssetPath(label=label, path=path, source="environment", available=available, detail=detail)
+        probe_path = _local_probe_path(env_path)
+        available = probe_path.exists()
+        detail = _explicit_asset_detail(label, env_path, probe_path, available, env_name)
+        return ResolvedAssetPath(label=label, path=env_path, source="environment", available=available, detail=detail)
     for candidate in default_candidates:
         if candidate.exists():
             return ResolvedAssetPath(
@@ -249,19 +252,22 @@ def _resolve_file_asset(explicit_path: str | None, env_name: str, default_candid
 
 def _resolve_engine_asset(explicit_path: str | None) -> ResolvedAssetPath:
     if explicit_path:
-        path = Path(explicit_path).expanduser()
-        available = path.exists() or shutil.which(explicit_path) is not None
-        detail = f"engine {'resolved' if available else 'missing'} from CLI/config/env winner {explicit_path}"
-        return ResolvedAssetPath("engine", path if path.exists() else Path(explicit_path), "explicit", available, detail)
+        probe_path = _local_probe_path(explicit_path)
+        which_match = shutil.which(explicit_path)
+        available = probe_path.exists() or which_match is not None
+        detail = _explicit_engine_detail(explicit_path, probe_path, available, which_match=which_match)
+        return ResolvedAssetPath("engine", explicit_path, "explicit", available, detail)
     env_path = os.getenv(ENV_ENGINE_PATH)
     if env_path:
-        available = Path(env_path).exists() or shutil.which(env_path) is not None
+        probe_path = _local_probe_path(env_path)
+        which_match = shutil.which(env_path)
+        available = probe_path.exists() or which_match is not None
         return ResolvedAssetPath(
             "engine",
-            Path(env_path).resolve() if Path(env_path).exists() else Path(env_path),
+            env_path,
             "environment",
             available,
-            f"engine {'resolved' if available else 'missing'} from environment variable {ENV_ENGINE_PATH}={env_path}",
+            _explicit_engine_detail(env_path, probe_path, available, env_name=ENV_ENGINE_PATH, which_match=which_match),
         )
     for candidate in DEFAULT_ENGINE_PATHS:
         if candidate.exists():
@@ -299,3 +305,46 @@ def _resolve_bool(override: bool | None, file_value: bool, env_value: str | None
     if env_value is not None:
         return env_value.strip().lower() in {"1", "true", "yes", "on"}
     return file_value
+
+
+def _local_probe_path(raw_path: str) -> Path:
+    candidate = Path(raw_path).expanduser()
+    return candidate.resolve() if candidate.exists() else candidate
+
+
+def _explicit_asset_detail(
+    label: str,
+    configured_value: str,
+    probe_path: Path,
+    available: bool,
+    env_name: str | None = None,
+) -> str:
+    source = f"environment variable {env_name}" if env_name else "CLI/config/env winner"
+    detail = f"{label} {'loaded' if available else 'missing'} from {source}; configured value={configured_value}"
+    probe_note = _probe_note(configured_value, probe_path)
+    return f"{detail}; {probe_note}" if probe_note else detail
+
+
+def _explicit_engine_detail(
+    configured_value: str,
+    probe_path: Path,
+    available: bool,
+    env_name: str | None = None,
+    which_match: str | None = None,
+) -> str:
+    source = f"environment variable {env_name}" if env_name else "CLI/config/env winner"
+    detail = f"engine {'resolved' if available else 'missing'} from {source}; configured value={configured_value}"
+    probe_parts: list[str] = []
+    probe_note = _probe_note(configured_value, probe_path)
+    if probe_note:
+        probe_parts.append(probe_note)
+    if which_match is not None:
+        probe_parts.append(f"PATH lookup match={which_match}")
+    return f"{detail}; {'; '.join(probe_parts)}" if probe_parts else detail
+
+
+def _probe_note(configured_value: str, probe_path: Path) -> str:
+    probe_value = str(probe_path)
+    if probe_value != configured_value:
+        return f"local probe candidate={probe_value}"
+    return ""
