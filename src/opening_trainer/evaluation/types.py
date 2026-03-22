@@ -9,6 +9,7 @@ class CanonicalJudgment(str, Enum):
     BOOK = "Book"
     BETTER = "Better"
     FAIL = "Fail"
+    AUTHORITY_UNAVAILABLE = "AuthorityUnavailable"
 
 
 class OverlayLabel(str, Enum):
@@ -20,6 +21,7 @@ class OverlayLabel(str, Enum):
     MISTAKE = "Mistake"
     BLUNDER = "Blunder"
     MISSED_WIN = "MissedWin"
+    AUTHORITY_UNAVAILABLE = "AuthorityUnavailable"
 
 
 class AuthoritySource(str, Enum):

@@ -1,0 +1,35 @@
+[Event "Band Match 1"]
+[Site "Local"]
+[Date "2024.01.01"]
+[Round "1"]
+[White "BandA"]
+[Black "BandB"]
+[Result "1-0"]
+[WhiteElo "500"]
+[BlackElo "510"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. c3 Nf6 5. d3 d6 6. O-O O-O 7. Re1 a6 8. a4 Ba7 1-0
+
+[Event "Band Match 2"]
+[Site "Local"]
+[Date "2024.01.02"]
+[Round "1"]
+[White "BandC"]
+[Black "BandD"]
+[Result "0-1"]
+[WhiteElo "490"]
+[BlackElo "505"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. d3 Bc5 5. O-O O-O 6. c3 d6 7. Re1 a6 8. Bb3 Ba7 0-1
+
+[Event "Out Of Band"]
+[Site "Local"]
+[Date "2024.01.03"]
+[Round "1"]
+[White "TooHigh"]
+[Black "BandE"]
+[Result "1-0"]
+[WhiteElo "700"]
+[BlackElo "500"]
+
+1. d4 d5 2. c4 e6 1-0

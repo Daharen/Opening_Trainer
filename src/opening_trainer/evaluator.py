@@ -55,11 +55,17 @@ class MoveEvaluator:
         book_result = self.book_authority.evaluate(board_before_move, played_move)
         engine_result = self.engine_authority.evaluate(board_before_move, played_move)
         accepted, canonical_judgment, authority_source = resolve_canonical_judgment(book_result, engine_result)
-        overlay_label, overlay_reason_code, overlay_reason_text = self.overlay_classifier.classify(
-            canonical_judgment,
-            engine_result,
-            mode,
-        )
+
+        if canonical_judgment == CanonicalJudgment.AUTHORITY_UNAVAILABLE:
+            overlay_label = OverlayLabel.AUTHORITY_UNAVAILABLE
+            overlay_reason_code = engine_result.reason_code
+            overlay_reason_text = engine_result.reason_text
+        else:
+            overlay_label, overlay_reason_code, overlay_reason_text = self.overlay_classifier.classify(
+                canonical_judgment,
+                engine_result,
+                mode,
+            )
 
         if canonical_judgment == CanonicalJudgment.BOOK:
             reason_code = book_result.reason_code
@@ -73,7 +79,7 @@ class MoveEvaluator:
 
         preferred_move_uci = None
         preferred_move_san = None
-        if not accepted:
+        if canonical_judgment == CanonicalJudgment.FAIL:
             preferred_move_uci = book_result.candidate_move_uci or engine_result.best_move_uci
             preferred_move_san = engine_result.best_move_san if preferred_move_uci == engine_result.best_move_uci else None
 

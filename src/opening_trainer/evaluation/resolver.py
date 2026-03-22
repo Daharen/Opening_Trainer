@@ -13,4 +13,7 @@ def resolve_canonical_judgment(
     if engine_result.accepted:
         return True, CanonicalJudgment.BETTER, AuthoritySource.ENGINE
 
+    if not engine_result.available:
+        return False, CanonicalJudgment.AUTHORITY_UNAVAILABLE, AuthoritySource.ENGINE
+
     return False, CanonicalJudgment.FAIL, AuthoritySource.NONE
