@@ -79,7 +79,7 @@ def test_engine_path_environment_remains_literal_when_probed(tmp_path, monkeypat
     assert runtime.config.engine_executable_path == str(engine_path)
     assert runtime.engine.path == str(engine_path)
     assert runtime.engine.available is True
-    assert "CLI/config/env winner" in runtime.engine.detail
+    assert "environment winner" in runtime.engine.detail
     assert f"configured value={engine_path}" in runtime.engine.detail
 
 
@@ -123,7 +123,7 @@ def test_corpus_path_environment_remains_literal_when_probed(tmp_path, monkeypat
     assert runtime.config.corpus_artifact_path == str(artifact_path)
     assert runtime.corpus.path == str(artifact_path)
     assert runtime.corpus.available is True
-    assert "CLI/config/env winner" in runtime.corpus.detail
+    assert "environment winner" in runtime.corpus.detail
     assert f"configured value={artifact_path}" in runtime.corpus.detail
 
 
@@ -307,7 +307,8 @@ def test_cli_asset_override_beats_workspace_defaults(tmp_path, monkeypatch):
     runtime = load_runtime_config(RuntimeOverrides(engine_executable_path=str(cli_engine)))
 
     assert runtime.engine.path == str(cli_engine)
-    assert runtime.engine.source == "explicit"
+    assert runtime.engine.source == "cli"
+    assert "CLI winner" in runtime.engine.detail
     assert "configured value=" in runtime.engine.detail
 
 
@@ -325,7 +326,8 @@ def test_runtime_config_engine_override_beats_workspace_default(tmp_path, monkey
 
     assert runtime.config.engine_executable_path == "/tmp/config-stockfish"
     assert runtime.engine.path == "/tmp/config-stockfish"
-    assert runtime.engine.source == "explicit"
+    assert runtime.engine.source == "runtime-config"
+    assert "runtime-config winner" in runtime.engine.detail
     assert "configured value=/tmp/config-stockfish" in runtime.engine.detail
 
 
@@ -346,6 +348,7 @@ def test_environment_engine_override_beats_workspace_default(tmp_path, monkeypat
     assert runtime.config.engine_executable_path == str(env_engine)
     assert runtime.engine.path == str(env_engine)
     assert runtime.engine.source == "environment"
+    assert "environment winner" in runtime.engine.detail
     assert "configured value=" in runtime.engine.detail
 
 

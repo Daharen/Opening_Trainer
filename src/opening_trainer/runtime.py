@@ -185,7 +185,11 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
 
     corpus = _resolve_file_asset(
         selected_path=config.corpus_artifact_path,
-        selected_source=_configured_asset_source(overrides.corpus_artifact_path, file_config.corpus_artifact_path, ENV_CORPUS_PATH),
+        selected_source=_configured_asset_source(
+            override_value=overrides.corpus_artifact_path,
+            config_value=file_config.corpus_artifact_path,
+            env_name=ENV_CORPUS_PATH,
+        ),
         env_name=ENV_CORPUS_PATH,
         workspace_candidates=WORKSPACE_CORPUS_PATHS,
         repo_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
@@ -193,11 +197,19 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     )
     engine = _resolve_engine_asset(
         selected_path=config.engine_executable_path,
-        selected_source=_configured_asset_source(overrides.engine_executable_path, file_config.engine_executable_path, ENV_ENGINE_PATH),
+        selected_source=_configured_asset_source(
+            override_value=overrides.engine_executable_path,
+            config_value=file_config.engine_executable_path,
+            env_name=ENV_ENGINE_PATH,
+        ),
     )
     book = _resolve_file_asset(
         selected_path=config.opening_book_path,
-        selected_source=_configured_asset_source(overrides.opening_book_path, file_config.opening_book_path, ENV_BOOK_PATH),
+        selected_source=_configured_asset_source(
+            override_value=overrides.opening_book_path,
+            config_value=file_config.opening_book_path,
+            env_name=ENV_BOOK_PATH,
+        ),
         env_name=ENV_BOOK_PATH,
         workspace_candidates=WORKSPACE_BOOK_PATHS,
         repo_candidates=DEFAULT_BOOK_PATHS,
@@ -334,6 +346,7 @@ def _resolve_explicit_asset_path(selected_path: str | None, selected_source: str
         selected_path,
         local_probe_path,
         available,
+        selected_source=selected_source,
         env_name=env_name if selected_source == "environment" else None,
     )
     return ResolvedAssetPath(label=label, path=selected_path, source=selected_source, available=available, detail=detail)
@@ -350,17 +363,22 @@ def _resolve_explicit_engine_path(selected_path: str | None, selected_source: st
         selected_path,
         local_probe_path,
         available,
+        selected_source=selected_source,
         env_name=ENV_ENGINE_PATH if selected_source == "environment" else None,
         which_match=path_lookup_match,
     )
     return ResolvedAssetPath("engine", selected_path, selected_source, available, detail)
 
 
-def _configured_asset_source(override_value: str | None, config_value: str | None, env_name: str) -> str | None:
+def _configured_asset_source(
+    override_value: str | None,
+    config_value: str | None,
+    env_name: str,
+) -> str | None:
     if override_value is not None:
-        return "explicit"
+        return "cli"
     if config_value is not None:
-        return "explicit"
+        return "runtime-config"
     if os.getenv(env_name) is not None:
         return "environment"
     return None
@@ -408,9 +426,10 @@ def _explicit_asset_detail(
     configured_value: str,
     probe_path: Path,
     available: bool,
+    selected_source: str,
     env_name: str | None = None,
 ) -> str:
-    source = "CLI/config/env winner"
+    source = _winner_label(selected_source)
     detail = f"{label} {'loaded' if available else 'missing'} from {source}; configured value={configured_value}"
     if env_name:
         detail = f"{detail}; source detail=environment variable {env_name}"
@@ -422,10 +441,11 @@ def _explicit_engine_detail(
     configured_value: str,
     probe_path: Path,
     available: bool,
+    selected_source: str,
     env_name: str | None = None,
     which_match: str | None = None,
 ) -> str:
-    source = "CLI/config/env winner"
+    source = _winner_label(selected_source)
     detail = f"engine {'resolved' if available else 'missing'} from {source}; configured value={configured_value}"
     if env_name:
         detail = f"{detail}; source detail=environment variable {env_name}"
@@ -436,6 +456,16 @@ def _explicit_engine_detail(
     if which_match is not None:
         probe_parts.append(f"PATH lookup match={which_match}")
     return f"{detail}; {'; '.join(probe_parts)}" if probe_parts else detail
+
+
+def _winner_label(selected_source: str | None) -> str:
+    if selected_source == "cli":
+        return "CLI winner"
+    if selected_source == "runtime-config":
+        return "runtime-config winner"
+    if selected_source == "environment":
+        return "environment winner"
+    return "configured winner"
 
 
 def _probe_note(configured_value: str, probe_path: Path) -> str:
