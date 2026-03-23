@@ -6,7 +6,8 @@ from pathlib import Path
 import chess
 
 from opening_trainer.corpus import CorpusIngestor, save_artifact
-from opening_trainer.evaluation import CanonicalJudgment, ReasonCode
+from opening_trainer.evaluation import AuthoritySource, CanonicalJudgment, EvaluationResult, OverlayLabel, ReasonCode
+from opening_trainer.opponent import OpponentMoveChoice
 from opening_trainer.evaluation.book import OpeningBookAuthority
 from opening_trainer.evaluation.engine import EngineAuthority
 from opening_trainer.runtime import RuntimeOverrides, corpus_status_detail, load_runtime_config
@@ -683,3 +684,123 @@ def test_startup_summary_mentions_opponent_source_order(tmp_path):
 
     assert any("Opponent source order:" in line for line in summary.lines)
     assert any("Random fallback remains enabled only as the last-ditch opponent source." == line for line in summary.lines)
+
+
+def _accepted_evaluation(move_uci: str) -> EvaluationResult:
+    return EvaluationResult(
+        accepted=True,
+        canonical_judgment=CanonicalJudgment.BETTER,
+        overlay_label=OverlayLabel.GOOD,
+        reason_code=ReasonCode.ENGINE_PASS,
+        reason_text="accepted for session-flow regression test",
+        authority_source=AuthoritySource.ENGINE,
+        move_uci=move_uci,
+        legal_move_confirmed=True,
+    )
+
+
+def test_session_opponent_turn_uses_bundle_move_for_black_start_position(tmp_path, monkeypatch, capsys):
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(),
+        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+    session.board.reset()
+    session.player_color = chess.BLACK
+    session.state = session.state.OPPONENT_TURN
+    monkeypatch.setattr(session.opponent.stockfish_provider, "choose_move", lambda board: (_ for _ in ()).throw(AssertionError("stockfish should not be used on corpus hit")))
+
+    session.advance_until_user_turn()
+    output = capsys.readouterr().out
+
+    assert session.board.board.move_stack[0].uci() == "e2e4"
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via == "corpus_aggregate_bundle"
+    assert session.last_opponent_choice.corpus_lookup_reason_code == "corpus_hit"
+    assert "reason=corpus_hit" in output
+    assert "candidate_rows=1" in output
+    assert "legal_candidates=1" in output
+
+
+def test_session_player_move_reply_uses_bundle_move_for_white(tmp_path, monkeypatch):
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(),
+        [{"position_key": chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").fen(), "candidate_moves": [{"uci": "e7e5", "raw_count": 4}], "total_observed_count": 4}],
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+    session.board.reset()
+    session.player_color = chess.WHITE
+    session.state = session.state.PLAYER_TURN
+    monkeypatch.setattr(session.evaluator, "evaluate", lambda board, move, count: _accepted_evaluation(move.uci()))
+    monkeypatch.setattr(session.opponent.stockfish_provider, "choose_move", lambda board: (_ for _ in ()).throw(AssertionError("stockfish should not be used on corpus hit")))
+
+    session.submit_user_move_uci("e2e4")
+
+    assert len(session.board.board.move_stack) == 2
+    assert session.board.board.move_stack[1].uci() == "e7e5"
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via == "corpus_aggregate_bundle"
+    assert session.last_opponent_choice.corpus_lookup_reason_code == "corpus_hit"
+
+
+def test_session_opponent_turn_falls_back_to_stockfish_after_bundle_miss(tmp_path, monkeypatch):
+    bundle_dir = _write_bundle(tmp_path / "bundle", _sample_bundle_manifest(), [])
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+    session.board.reset()
+    session.player_color = chess.BLACK
+    session.state = session.state.OPPONENT_TURN
+    monkeypatch.setattr(
+        session.opponent.stockfish_provider,
+        "choose_move",
+        lambda board: OpponentMoveChoice(
+            move=chess.Move.from_uci("d2d4"),
+            position_key=board.fen(),
+            selected_via="stockfish_fallback",
+            corpus_lookup_reason_code="stockfish_fallback_used_after_corpus_miss",
+            normalized_position_key=board.fen(),
+            candidate_row_count=0,
+            legal_candidate_count=1,
+            raw_count=0,
+            effective_weight=1.0,
+            total_observed_count=0,
+            sparse=False,
+            sparse_reason=None,
+            fallback_applied=True,
+            candidate_summaries=({"uci": "d2d4", "raw_count": 0, "effective_weight": 1.0},),
+        ),
+    )
+
+    session.advance_until_user_turn()
+
+    assert session.board.board.move_stack[0].uci() == "d2d4"
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via == "stockfish_fallback"
+    assert session.last_opponent_choice.corpus_lookup_reason_code == "stockfish_fallback_used_after_corpus_miss"
+
+
+def test_session_opponent_turn_uses_random_after_bundle_miss_and_stockfish_failure(tmp_path, monkeypatch):
+    bundle_dir = _write_bundle(tmp_path / "bundle", _sample_bundle_manifest(), [])
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+    session.board.reset()
+    session.player_color = chess.BLACK
+    session.state = session.state.OPPONENT_TURN
+    monkeypatch.setattr(
+        session.opponent.stockfish_provider,
+        "choose_move",
+        lambda board: (_ for _ in ()).throw(FileNotFoundError("no engine")),
+    )
+    monkeypatch.setattr(session.opponent.random_provider.rng, "choice", lambda legal_moves: chess.Move.from_uci("g1f3"))
+
+    session.advance_until_user_turn()
+
+    assert session.board.board.move_stack[0].uci() == "g1f3"
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via == "random_legal_move"
+    assert session.last_opponent_choice.corpus_lookup_reason_code == "random_fallback_used_after_all_failures"
+    assert "Stockfish fallback failed" in (session.last_opponent_choice.sparse_reason or "")

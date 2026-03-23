@@ -224,25 +224,32 @@ class TrainingSession:
         return self.get_view()
 
     def _handle_opponent_turn(self) -> None:
-        move = self.opponent.choose_move(self.board.board)
-        choice = getattr(self.opponent, "last_choice", None)
-        if choice is not None and getattr(choice, "move", None) == move:
-            detail = f" via {choice.selected_via}"
-            if choice.total_observed_count:
-                detail += f" [count={choice.raw_count}/{choice.total_observed_count}]"
-            self.last_opponent_choice = choice
-        else:
-            detail = ""
-            self.last_opponent_choice = None
+        choice = self.opponent.choose_move_with_context(self.board.board)
+        move = choice.move
+        self.last_opponent_choice = choice
         san = self.board.board.san(move)
         self.board.board.push(move)
 
-        print(f"Opponent plays: {san}{detail}", flush=True)
+        print(f"Opponent plays: {san}{self._format_opponent_choice_detail(choice)}", flush=True)
 
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
         else:
             self.state = SessionState.OPPONENT_TURN
+
+    def _format_opponent_choice_detail(self, choice) -> str:
+        detail_parts = [f"via {choice.selected_via}"]
+        if choice.total_observed_count:
+            detail_parts.append(f"count={choice.raw_count}/{choice.total_observed_count}")
+        detail_parts.extend(
+            [
+                f"reason={choice.corpus_lookup_reason_code}",
+                f"position={choice.normalized_position_key}",
+                f"candidate_rows={choice.candidate_row_count}",
+                f"legal_candidates={choice.legal_candidate_count}",
+            ]
+        )
+        return " [" + " | ".join(detail_parts) + "]"
 
     def _resolve_fail(self) -> None:
         print("", flush=True)
