@@ -65,6 +65,7 @@ class FakeSession:
         self.start_calls = 0
         self.settings = TrainerSettings()
         self._max_depth = 5
+        self.required_player_moves = 5
         self.saved_settings = None
         self.settings_store = self
 
@@ -430,11 +431,11 @@ def test_load_selected_bundle_invokes_loading_state(monkeypatch, tmp_path):
         'update_settings': lambda self, settings: settings,
     })())
     gui._build_runtime_for_bundle = lambda bundle_path: {'bundle': bundle_path}
-    gui._show_loading = lambda message: seen.setdefault('message', message)
+    gui._start_loading_job = lambda **kwargs: seen.update(kwargs)
 
     gui._load_selected_bundle(str(tmp_path / 'bundle'))
 
-    assert 'Loading corpus bundle' in seen['message']
+    assert 'Loading corpus bundle' in seen['initial_message']
 
 
 
@@ -447,3 +448,138 @@ def test_initialize_app_shell_recovers_when_remembered_bundle_missing(tmp_path):
     gui._initialize_app_shell()
 
     assert 'Choose a corpus bundle' in seen['message']
+
+
+class FakeRoot:
+    def __init__(self):
+        self.after_calls = []
+        self.updated = 0
+
+    def after(self, delay, callback):
+        self.after_calls.append((delay, callback))
+
+    def update_idletasks(self):
+        self.updated += 1
+
+
+class FakeVar:
+    def __init__(self):
+        self.value = None
+
+    def set(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+class FakeLoadingFrame:
+    def __init__(self):
+        self.placed = False
+        self.place_calls = []
+
+    def place(self, **kwargs):
+        self.placed = True
+        self.place_calls.append(kwargs)
+
+    def place_forget(self):
+        self.placed = False
+
+    def lift(self):
+        return None
+
+
+class FakeProgress:
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+
+    def start(self, _interval):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeStateButton:
+    def __init__(self):
+        self.state = None
+
+    def configure(self, **kwargs):
+        if 'state' in kwargs:
+            self.state = kwargs['state']
+
+
+class ImmediateThread:
+    def __init__(self, target=None, daemon=None):
+        self.target = target
+
+    def start(self):
+        if self.target:
+            self.target()
+
+
+def test_initialize_shell_autoloads_remembered_bundle_via_loading_job(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._remembered_bundle_path = lambda: '/bundle'
+    gui._bundle_path_is_valid = lambda path: True
+    calls = []
+    gui._load_selected_bundle = lambda path: calls.append(path)
+    gui._show_bundle_picker = lambda message: calls.append(message)
+
+    gui._initialize_app_shell()
+
+    assert calls == ['/bundle']
+
+
+def test_load_selected_bundle_starts_background_loading_job(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    calls = {}
+    gui._start_loading_job = lambda **kwargs: calls.update(kwargs)
+
+    gui._load_selected_bundle('/bundle')
+
+    assert 'Loading corpus bundle' in calls['initial_message']
+    assert callable(calls['worker'])
+    assert callable(calls['on_success'])
+
+
+def test_start_loading_job_shows_loading_and_polls_without_touching_widgets_from_worker(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui.start_button = FakeStateButton()
+    gui.loading_var = FakeVar()
+    gui.loading_frame = FakeLoadingFrame()
+    gui.loading_progress = FakeProgress()
+    gui._loading_job_active = False
+    monkeypatch.setattr('opening_trainer.ui.gui_app.threading.Thread', ImmediateThread)
+
+    observed = {'success': None}
+    gui._start_loading_job(
+        initial_message='Initializing corpus payload…',
+        worker=lambda: 'ready',
+        on_success=lambda payload: observed.__setitem__('success', payload),
+        on_error=lambda exc: observed.__setitem__('error', str(exc)),
+    )
+    assert gui.loading_frame.placed is True
+    assert gui.loading_var.get() == 'Initializing corpus payload…'
+    assert gui.start_button.state == 'disabled'
+    assert gui.root.after_calls
+
+    _delay, callback = gui.root.after_calls.pop(0)
+    callback()
+
+    assert observed['success'] == 'ready'
+    assert gui.loading_progress.stopped is True
+    assert gui.start_button.state == 'normal'
+
+
+def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):
+    gui = _build_gui(tmp_path)
+    gui.session._max_depth = 15
+    gui.session.bundle_retained_ply_depth = lambda: 30
+
+    summary = OpeningTrainerGUI._training_depth_summary(gui)
+
+    assert 'Max supported: 15 player moves' in summary
+    assert '30 plies' in summary

@@ -14,6 +14,7 @@ from opening_trainer.evaluation.engine import EngineAuthority
 from opening_trainer.runtime import RuntimeOverrides, corpus_status_detail, load_runtime_config
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.evaluator import MoveEvaluator
+from opening_trainer.models import SessionState
 from opening_trainer.evaluation import BookAuthorityResult
 from opening_trainer.session import TrainingSession
 
@@ -930,3 +931,87 @@ def test_main_run_defaults_to_gui_without_interactive_bundle_prompt(monkeypatch)
     trainer_main.run([])
 
     assert hasattr(calls['runtime_context'], 'config')
+
+
+def test_training_depth_uses_manifest_identity_fallback_for_ply30_bundle(tmp_path):
+    bundle_dir = _write_bundle(
+        tmp_path / 'otb_ply30_bundle',
+        _sample_bundle_manifest(retained_ply_depth='not-a-number', bundle_id='trainer_ply30'),
+        [],
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    assert session.bundle_retained_ply_depth() == 30
+    assert session.max_supported_training_depth() == 15
+
+
+def test_training_depth_missing_metadata_falls_back_conservatively(tmp_path):
+    bundle_dir = _write_bundle(
+        tmp_path / 'bundle_without_depth',
+        _sample_bundle_manifest(retained_ply_depth=None, bundle_id='trainer_bundle'),
+        [],
+    )
+    manifest = json.loads((bundle_dir / 'manifest.json').read_text(encoding='utf-8'))
+    manifest.pop('retained_ply_depth', None)
+    (bundle_dir / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    assert session.bundle_retained_ply_depth() is None
+    assert session.max_supported_training_depth() == 5
+    assert 'fall back to Stockfish' in runtime.corpus.detail
+
+
+def test_terminal_player_checkmate_inside_envelope_is_success(tmp_path):
+    session = TrainingSession(review_storage=ReviewStorage(tmp_path / 'runtime' / 'profiles'))
+    session.current_routing = session.router.select(session.active_profile_id, [])
+    session.player_color = chess.WHITE
+    session.state = session.state.PLAYER_TURN
+    session.update_settings(session.settings.__class__(True, 4, True))
+    session.board.board = chess.Board('6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1')
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(True, True, ReasonCode.ENGINE_PASS, 'Accepted by engine.', best_move_uci='f7g7', best_move_san='Qg7#', played_move_uci='f7g7', played_move_san='Qg7#', cp_loss=0, metadata={'engine_available': True})
+        ),
+    )
+
+    view = session.submit_user_move_uci('f7g7')
+
+    assert view.run_passed is True
+    assert view.awaiting_user_input is False
+    assert view.state == SessionState.RESTART_PENDING
+    assert 'terminal win' in view.last_outcome.reason.lower()
+
+
+def test_terminal_opponent_mate_does_not_loop_waiting_for_more_moves(tmp_path):
+    session = TrainingSession(review_storage=ReviewStorage(tmp_path / 'runtime' / 'profiles'))
+    session.current_routing = session.router.select(session.active_profile_id, [])
+    session.player_color = chess.WHITE
+    session.state = session.state.OPPONENT_TURN
+    session.board.board = chess.Board('7k/8/8/8/8/7k/6q1/7K b - - 0 1')
+    session.opponent.choose_move_with_context = lambda board: OpponentMoveChoice(
+        chess.Move.from_uci('g2f1'),
+        board.fen(),
+        'scripted_mate',
+        'scripted_terminal_test',
+        normalize_builder_position_key(board),
+        1,
+        1,
+        1,
+        1.0,
+        1,
+        False,
+        None,
+        False,
+        ({'uci': 'g2f1', 'raw_count': 1, 'effective_weight': 1.0},),
+    )
+
+    view = session.advance_until_user_turn()
+
+    assert view.run_failed is True
+    assert view.awaiting_user_input is False
+    assert view.state == SessionState.RESTART_PENDING
+    assert 'defeated' in view.last_outcome.reason.lower()
