@@ -211,6 +211,8 @@ def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict
 
 def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
     manifest = {
+        "build_status": "aggregation_complete",
+        "aggregate_position_file": "data/aggregated_position_move_counts.jsonl",
         "position_key_format": "fen_normalized",
         "move_key_format": "uci",
         "payload_status": "ready",
@@ -278,6 +280,20 @@ def test_bundle_illegal_uci_degrades_cleanly(tmp_path, monkeypatch):
         [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e9e5", "raw_count": 3}], "total_observed_count": 3}],
     )
     provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
+
+
+def test_bundle_rejects_unsupported_move_key_format(tmp_path, monkeypatch):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(move_key_format="san"),
+        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
+    )
+
+    provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
+
+    assert provider.bundle_provider is None
+    assert "unsupported move_key_format 'san'" in provider.status_message
     monkeypatch.setattr(provider.stockfish_provider, "choose_move", lambda current_board: (_ for _ in ()).throw(FileNotFoundError("no engine")))
 
     choice = provider.choose_move_with_context(board)

@@ -7,11 +7,11 @@ from pathlib import Path
 
 import chess
 
-from .runtime import (
-    BUNDLE_AGGREGATE_RELATIVE_PATH,
+from .bundle_contract import (
     BUNDLE_MANIFEST_NAME,
     SUPPORTED_BUNDLE_MOVE_KEY_FORMAT,
     SUPPORTED_BUNDLE_POSITION_KEY_FORMAT,
+    is_supported_builder_aggregate_bundle,
 )
 
 
@@ -60,8 +60,10 @@ class BuilderAggregateCorpusProvider:
 
     def _load_bundle(self) -> tuple[BuilderAggregateBundleMetadata, dict[str, BuilderAggregatePosition]]:
         manifest_path = self.bundle_dir / BUNDLE_MANIFEST_NAME
-        aggregate_path = self.bundle_dir / BUNDLE_AGGREGATE_RELATIVE_PATH
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        supported, aggregate_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, self.bundle_dir)
+        if not supported or aggregate_path is None:
+            raise ValueError(failure_reason or f"Unsupported builder aggregate bundle at {self.bundle_dir}")
         position_key_format = manifest.get("position_key_format")
         if position_key_format != SUPPORTED_BUNDLE_POSITION_KEY_FORMAT:
             raise ValueError(f"Unsupported position_key_format: {position_key_format!r}")
@@ -69,8 +71,6 @@ class BuilderAggregateCorpusProvider:
         if move_key_format != SUPPORTED_BUNDLE_MOVE_KEY_FORMAT:
             raise ValueError(f"Unsupported move_key_format: {move_key_format!r}")
         payload_status = manifest.get("payload_status")
-        if payload_status not in {"ready", "complete", "available", "counts_available", "ok", None}:
-            raise ValueError(f"Unsupported payload_status: {payload_status!r}")
 
         index: dict[str, BuilderAggregatePosition] = {}
         with aggregate_path.open("r", encoding="utf-8") as handle:
