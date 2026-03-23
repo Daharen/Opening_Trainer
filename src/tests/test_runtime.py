@@ -15,6 +15,24 @@ from opening_trainer.session import TrainingSession
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_corpus.pgn"
 
 
+def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict[str, object]]) -> Path:
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (data_dir / "aggregated_position_move_counts.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return bundle_dir
+
+
+def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
+    manifest = {
+        "position_key_format": "fen_normalized",
+        "move_key_format": "uci",
+        "payload_status": "ready",
+    }
+    manifest.update(overrides)
+    return manifest
+
+
 def test_runtime_artifact_auto_discovery_success(tmp_path, monkeypatch):
     artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
     data_dir = tmp_path / "data"
@@ -39,7 +57,7 @@ def test_runtime_artifact_missing_is_explicit_fallback(tmp_path, monkeypatch):
 
     assert runtime.corpus.available is False
     assert "not found" in runtime.corpus.detail
-    assert "provisional fallback" in session.opponent.status_message
+    assert "Stockfish fallback before random legal fallback" in session.opponent.status_message
 
 
 def test_engine_path_configured_and_passed_through(tmp_path, monkeypatch):
@@ -500,3 +518,89 @@ def test_degraded_mode_remains_explicit_without_workspace_assets(tmp_path, monke
     assert "workspace-root default(s)" in runtime.book.detail
     assert "workspace-root defaults" in runtime.engine.detail
     assert "Degraded mode" in summary.doctrine_status
+
+
+def test_corpus_bundle_cli_override_beats_legacy_corpus(tmp_path):
+    bundle_dir = _write_bundle(
+        tmp_path / "selected_bundle",
+        _sample_bundle_manifest(),
+        [
+            {
+                "position_key": chess.STARTING_FEN,
+                "candidate_moves": [{"uci": "e2e4", "raw_count": 3}],
+                "total_observed_count": 3,
+            }
+        ],
+    )
+    legacy_artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
+    legacy_path = save_artifact(legacy_artifact, tmp_path / "opening_corpus.json")
+
+    runtime = load_runtime_config(
+        RuntimeOverrides(corpus_bundle_dir=str(bundle_dir), corpus_artifact_path=str(legacy_path))
+    )
+
+    assert runtime.config.corpus_bundle_dir == str(bundle_dir)
+    assert runtime.corpus.available is True
+    assert runtime.corpus.path == str(bundle_dir.resolve())
+    assert "position_key_format=fen_normalized" in runtime.corpus.detail
+
+
+def test_corpus_bundle_environment_override_is_resolved(tmp_path, monkeypatch):
+    bundle_dir = _write_bundle(
+        tmp_path / "env_bundle",
+        _sample_bundle_manifest(),
+        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "d2d4", "raw_count": 1}], "total_observed_count": 1}],
+    )
+    monkeypatch.setenv("OPENING_TRAINER_CORPUS_BUNDLE_DIR", str(bundle_dir))
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.corpus_bundle_dir == str(bundle_dir)
+    assert runtime.corpus.available is True
+    assert runtime.corpus.source == "environment"
+    assert "environment winner" in runtime.corpus.detail
+
+
+def test_unsupported_bundle_manifest_degrades_to_legacy_corpus(tmp_path):
+    bundle_dir = _write_bundle(
+        tmp_path / "bad_bundle",
+        _sample_bundle_manifest(position_key_format="unsupported"),
+        [],
+    )
+    artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
+    artifact_path = save_artifact(artifact, tmp_path / "opening_corpus.json")
+
+    runtime = load_runtime_config(
+        RuntimeOverrides(corpus_bundle_dir=str(bundle_dir), corpus_artifact_path=str(artifact_path))
+    )
+
+    assert runtime.corpus.available is True
+    assert runtime.corpus.path == str(artifact_path)
+    assert "position_key_format='unsupported' is unsupported" in runtime.corpus.detail
+    assert "falling back to legacy corpus artifact" in runtime.corpus.detail
+
+
+def test_runtime_config_bundle_path_from_workspace_runtime_local(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    bundle_dir = _write_bundle(
+        tmp_path / "workspace_bundle",
+        _sample_bundle_manifest(),
+        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "e2e4", "raw_count": 1}], "total_observed_count": 1}],
+    )
+    (tmp_path / "runtime.local.json").write_text(json.dumps({"corpus_bundle_dir": str(bundle_dir)}), encoding="utf-8")
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.config.corpus_bundle_dir == str(bundle_dir)
+    assert runtime.corpus.available is True
+    assert runtime.corpus.source == "workspace-runtime-config"
+
+
+def test_startup_summary_mentions_opponent_source_order(tmp_path):
+    runtime = load_runtime_config(RuntimeOverrides(engine_executable_path="/missing/stockfish"))
+    summary = runtime.startup_status(mode="CLI", user_color="WHITE")
+
+    assert any("Opponent source order:" in line for line in summary.lines)
+    assert any("Random fallback remains enabled only as the last-ditch opponent source." == line for line in summary.lines)

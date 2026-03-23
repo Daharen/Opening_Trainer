@@ -9,6 +9,7 @@ from .session import TrainingSession
 
 def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:
     return RuntimeOverrides(
+        corpus_bundle_dir=args.corpus_bundle_dir,
         corpus_artifact_path=args.corpus_artifact,
         engine_executable_path=args.engine_path,
         opening_book_path=args.book_path,
@@ -34,7 +35,8 @@ def run(argv: list[str] | None = None) -> None:
     mode.add_argument("--gui", action="store_true", help="Launch the local Tkinter board GUI.")
     mode.add_argument("--cli", action="store_true", help="Run the console trainer.")
     parser.add_argument("--runtime-config", help="Optional JSON runtime config path.")
-    parser.add_argument("--corpus-artifact", help="Override the corpus artifact path.")
+    parser.add_argument("--corpus-bundle-dir", help="Override the builder corpus bundle directory.")
+    parser.add_argument("--corpus-artifact", help="Override the legacy corpus artifact path.")
     parser.add_argument("--engine-path", help="Override the engine executable path.")
     parser.add_argument("--book-path", help="Override the Polyglot opening-book path.")
     parser.add_argument("--engine-depth", type=int, help="Override engine search depth.")

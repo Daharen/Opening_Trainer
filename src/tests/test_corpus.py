@@ -9,7 +9,7 @@ import chess
 from opening_trainer.zstd_compat import compress as zstd_compress
 
 from opening_trainer.corpus import CorpusIngestor, RatingBandPolicy, load_artifact, normalize_position_key, save_artifact
-from opening_trainer.opponent import CorpusBackedOpponentProvider
+from opening_trainer.opponent import CorpusBackedOpponentProvider, OpponentMoveChoice, OpponentProvider
 from opening_trainer.evaluation import (
     BookAuthorityResult,
     EngineAuthorityResult,
@@ -197,3 +197,102 @@ def test_missing_engine_does_not_become_ordinary_fail():
     assert view.run_failed is False
     assert session.has_failed() is False
     assert session.has_authority_unavailable() is True
+
+from opening_trainer.bundle_corpus import normalize_builder_position_key
+
+
+def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict[str, object]]) -> Path:
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (data_dir / "aggregated_position_move_counts.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return bundle_dir
+
+
+def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
+    manifest = {
+        "position_key_format": "fen_normalized",
+        "move_key_format": "uci",
+        "payload_status": "ready",
+    }
+    manifest.update(overrides)
+    return manifest
+
+
+def test_builder_bundle_move_sampling_uses_raw_counts(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "candidate_moves": [
+                    {"uci": "e2e4", "raw_count": 5},
+                    {"uci": "d2d4", "raw_count": 1},
+                ],
+                "total_observed_count": 6,
+            }
+        ],
+    )
+    provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert choice.selected_via == "corpus_aggregate_bundle"
+    assert {summary["uci"] for summary in choice.candidate_summaries} == {"e2e4", "d2d4"}
+    assert {summary["effective_weight"] for summary in choice.candidate_summaries} == {5.0, 1.0}
+    assert choice.raw_count in {5, 1}
+    assert choice.total_observed_count == 6
+    assert choice.candidate_summaries[0]["uci"] == "e2e4"
+
+
+def test_bundle_absent_position_falls_back_to_stockfish_before_random(tmp_path, monkeypatch):
+    board = chess.Board()
+    bundle_dir = _write_bundle(tmp_path / "bundle", _sample_bundle_manifest(), [])
+    provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
+    monkeypatch.setattr(provider.stockfish_provider, "choose_move", lambda current_board: OpponentMoveChoice(
+        move=chess.Move.from_uci("e2e4"),
+        position_key=normalize_builder_position_key(current_board),
+        selected_via="stockfish_fallback",
+        raw_count=0,
+        effective_weight=1.0,
+        total_observed_count=0,
+        sparse=False,
+        sparse_reason=None,
+        fallback_applied=True,
+        candidate_summaries=({"uci": "e2e4", "raw_count": 0, "effective_weight": 1.0},),
+    ))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert choice.selected_via == "stockfish_fallback"
+    assert choice.move.uci() == "e2e4"
+
+
+def test_bundle_illegal_uci_degrades_cleanly(tmp_path, monkeypatch):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(),
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e9e5", "raw_count": 3}], "total_observed_count": 3}],
+    )
+    provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
+    monkeypatch.setattr(provider.stockfish_provider, "choose_move", lambda current_board: (_ for _ in ()).throw(FileNotFoundError("no engine")))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert choice.selected_via == "random_legal_move"
+    assert choice.fallback_applied is True
+    assert "Stockfish fallback failed" in (choice.sparse_reason or "")
+
+
+def test_no_corpus_and_engine_unavailable_uses_random_fallback(monkeypatch):
+    board = chess.Board()
+    provider = OpponentProvider(bundle_dir=None, artifact_path=None, evaluator_config=TrainingSession().config, rng=random.Random(4))
+    monkeypatch.setattr(provider.stockfish_provider, "choose_move", lambda current_board: (_ for _ in ()).throw(FileNotFoundError("no engine")))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert choice.selected_via == "random_legal_move"
+    assert choice.fallback_applied is True
