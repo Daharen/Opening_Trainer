@@ -287,6 +287,25 @@ def test_bundle_illegal_uci_degrades_cleanly(tmp_path, monkeypatch):
     assert "Stockfish fallback failed" in (choice.sparse_reason or "")
 
 
+def test_directory_artifact_path_is_not_loaded_as_legacy_corpus(tmp_path, monkeypatch):
+    board = chess.Board()
+    bogus_artifact_dir = tmp_path / "selected_bundle_dir"
+    bogus_artifact_dir.mkdir()
+    provider = OpponentProvider(
+        bundle_dir=None,
+        artifact_path=str(bogus_artifact_dir),
+        evaluator_config=TrainingSession().config,
+        rng=random.Random(4),
+    )
+    monkeypatch.setattr(provider.stockfish_provider, "choose_move", lambda current_board: (_ for _ in ()).throw(FileNotFoundError("no engine")))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert provider.corpus_provider is None
+    assert choice.selected_via == "random_legal_move"
+    assert choice.fallback_applied is True
+
+
 def test_no_corpus_and_engine_unavailable_uses_random_fallback(monkeypatch):
     board = chess.Board()
     provider = OpponentProvider(bundle_dir=None, artifact_path=None, evaluator_config=TrainingSession().config, rng=random.Random(4))

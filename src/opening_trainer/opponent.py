@@ -211,7 +211,7 @@ class OpponentProvider:
                 self.last_failure_reason = str(exc)
                 self.status_message = f"{corpus_status_detail(self.bundle_dir)}; runtime will attempt legacy corpus, then Stockfish, then random legal fallback."
 
-        if self.bundle_provider is None and self.artifact_path is not None and self.artifact_path.exists():
+        if self.bundle_provider is None and self.artifact_path is not None and self.artifact_path.is_file():
             self.corpus_provider = CorpusBackedOpponentProvider(self.artifact_path, rng=self.rng)
             self.mode = "corpus"
             self.status_message = corpus_status_detail(self.artifact_path)
