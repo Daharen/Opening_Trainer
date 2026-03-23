@@ -23,6 +23,10 @@ class OpponentMoveChoice:
     move: chess.Move
     position_key: str
     selected_via: str
+    corpus_lookup_reason_code: str
+    normalized_position_key: str
+    candidate_row_count: int
+    legal_candidate_count: int
     raw_count: int
     effective_weight: float
     total_observed_count: int
@@ -50,6 +54,10 @@ class RandomOpponentProvider:
             move=move,
             position_key=normalize_position_key(board),
             selected_via="random_legal_move",
+            corpus_lookup_reason_code="random_fallback_used_after_all_failures",
+            normalized_position_key=normalize_position_key(board),
+            candidate_row_count=0,
+            legal_candidate_count=len(legal_moves),
             raw_count=0,
             effective_weight=1.0,
             total_observed_count=0,
@@ -77,6 +85,10 @@ class StockfishOpponentProvider:
             move=move,
             position_key=normalize_position_key(board),
             selected_via="stockfish_fallback",
+            corpus_lookup_reason_code="stockfish_fallback_used_after_corpus_miss",
+            normalized_position_key=normalize_position_key(board),
+            candidate_row_count=0,
+            legal_candidate_count=1,
             raw_count=0,
             effective_weight=1.0,
             total_observed_count=0,
@@ -109,6 +121,10 @@ class CorpusBackedOpponentProvider:
                 move=chess.Move.from_uci(selected.uci),
                 position_key=position.position_key,
                 selected_via=selected_via,
+                corpus_lookup_reason_code="legacy_corpus_hit",
+                normalized_position_key=normalize_position_key(board),
+                candidate_row_count=len(position.candidate_moves),
+                legal_candidate_count=len(legal_candidates),
                 raw_count=selected.raw_count,
                 effective_weight=selected.effective_weight,
                 total_observed_count=position.total_observed_count,
@@ -199,6 +215,10 @@ class BuilderAggregateOpponentProvider:
             move=selected_move,
             position_key=position_key,
             selected_via="corpus_aggregate_bundle",
+            corpus_lookup_reason_code="corpus_hit",
+            normalized_position_key=position_key,
+            candidate_row_count=position.candidate_row_count,
+            legal_candidate_count=len(legal_candidates),
             raw_count=selected.raw_count,
             effective_weight=float(selected.raw_count),
             total_observed_count=position.total_observed_count,
@@ -251,9 +271,12 @@ class OpponentProvider:
 
     def choose_move_with_context(self, board: chess.Board) -> OpponentMoveChoice:
         failures: list[str] = []
+        normalized_position_key = normalize_builder_position_key(board)
         if self.bundle_provider is not None:
             try:
-                return self.bundle_provider.choose_move(board)
+                choice = self.bundle_provider.choose_move(board)
+                self.last_choice = choice
+                return choice
             except LookupError as exc:
                 failures.append(f"bundle lookup failed: {exc}")
             except BuilderAggregateParseError as exc:
@@ -263,11 +286,31 @@ class OpponentProvider:
                 )
         if self.corpus_provider is not None:
             try:
-                return self.corpus_provider.choose_move(board)
+                choice = self.corpus_provider.choose_move(board)
+                self.last_choice = choice
+                return choice
             except LookupError as exc:
                 failures.append(f"legacy corpus lookup failed: {exc}")
         try:
-            return self.stockfish_provider.choose_move(board)
+            choice = self.stockfish_provider.choose_move(board)
+            choice = OpponentMoveChoice(
+                move=choice.move,
+                position_key=choice.position_key,
+                selected_via=choice.selected_via,
+                corpus_lookup_reason_code=choice.corpus_lookup_reason_code,
+                normalized_position_key=normalized_position_key,
+                candidate_row_count=self._extract_candidate_row_count(),
+                legal_candidate_count=self._extract_legal_candidate_count(),
+                raw_count=choice.raw_count,
+                effective_weight=choice.effective_weight,
+                total_observed_count=choice.total_observed_count,
+                sparse=choice.sparse,
+                sparse_reason="; ".join(failures) if failures else choice.sparse_reason,
+                fallback_applied=choice.fallback_applied,
+                candidate_summaries=choice.candidate_summaries,
+            )
+            self.last_choice = choice
+            return choice
         except (LookupError, FileNotFoundError, chess.engine.EngineError, OSError) as exc:
             failures.append(f"Stockfish fallback failed: {exc}")
         choice = self.random_provider.choose_move(board)
@@ -276,6 +319,10 @@ class OpponentProvider:
                 move=choice.move,
                 position_key=choice.position_key,
                 selected_via=choice.selected_via,
+                corpus_lookup_reason_code=choice.corpus_lookup_reason_code,
+                normalized_position_key=normalized_position_key,
+                candidate_row_count=self._extract_candidate_row_count(),
+                legal_candidate_count=self._extract_legal_candidate_count(default=choice.legal_candidate_count),
                 raw_count=choice.raw_count,
                 effective_weight=choice.effective_weight,
                 total_observed_count=choice.total_observed_count,
@@ -284,4 +331,29 @@ class OpponentProvider:
                 fallback_applied=True,
                 candidate_summaries=choice.candidate_summaries,
             )
+        self.last_choice = choice
         return choice
+
+    def _extract_candidate_row_count(self) -> int:
+        diagnostic = getattr(self.bundle_provider, "last_lookup_diagnostic", None)
+        return self._extract_int_from_diagnostic(diagnostic, "candidate_rows_loaded", default=0)
+
+    def _extract_legal_candidate_count(self, default: int = 0) -> int:
+        diagnostic = getattr(self.bundle_provider, "last_lookup_diagnostic", None)
+        return self._extract_int_from_diagnostic(diagnostic, "legal_candidates", default=default)
+
+    @staticmethod
+    def _extract_int_from_diagnostic(diagnostic: str | None, key: str, default: int) -> int:
+        if not diagnostic:
+            return default
+        prefix = f"{key}="
+        for part in diagnostic.split(";"):
+            token = part.strip()
+            if not token.startswith(prefix):
+                continue
+            value = token.removeprefix(prefix)
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
