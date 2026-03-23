@@ -7,6 +7,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .bundle_contract import (
+    BUNDLE_AGGREGATE_RELATIVE_PATH,
+    BUNDLE_MANIFEST_NAME,
+    SUPPORTED_BUNDLE_MOVE_KEY_FORMAT,
+    SUPPORTED_BUNDLE_POSITION_KEY_FORMAT,
+    is_supported_builder_aggregate_bundle,
+)
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact
 from .evaluation import EvaluatorConfig
 
@@ -44,10 +51,6 @@ ENV_BOOK_PATH = "OPENING_TRAINER_BOOK_PATH"
 ENV_STRICT_ASSETS = "OPENING_TRAINER_STRICT_ASSETS"
 ENV_ENGINE_DEPTH = "OPENING_TRAINER_ENGINE_DEPTH"
 ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
-SUPPORTED_BUNDLE_POSITION_KEY_FORMAT = "fen_normalized"
-SUPPORTED_BUNDLE_MOVE_KEY_FORMAT = "uci"
-BUNDLE_MANIFEST_NAME = "manifest.json"
-BUNDLE_AGGREGATE_RELATIVE_PATH = Path("data/aggregated_position_move_counts.jsonl")
 
 
 @dataclass(frozen=True)
@@ -325,46 +328,31 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle path {resolved_dir} is not a directory", "bundle path is not a directory")
     if not manifest_path.exists():
         return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle directory {resolved_dir} missing manifest.json", "manifest.json is missing")
-    if not aggregate_path.exists():
-        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle directory {resolved_dir} missing data/aggregated_position_move_counts.jsonl", "aggregate payload is missing")
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle manifest could not be parsed: {exc}", "manifest.json is not valid JSON")
 
+    supported, declared_aggregate_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
+    if not supported:
+        detail = f"bundle manifest rejected: {failure_reason}"
+        payload_status = manifest.get("payload_status")
+        if payload_status is not None:
+            detail = f"{detail} (payload_status={payload_status!r})"
+        return BundleCompatibility(
+            resolved_dir,
+            manifest_path,
+            declared_aggregate_path or aggregate_path,
+            False,
+            detail,
+            failure_reason,
+        )
+
+    aggregate_path = declared_aggregate_path or aggregate_path
     position_key_format = manifest.get("position_key_format")
-    if position_key_format != SUPPORTED_BUNDLE_POSITION_KEY_FORMAT:
-        return BundleCompatibility(
-            resolved_dir,
-            manifest_path,
-            aggregate_path,
-            False,
-            f"bundle manifest position_key_format={position_key_format!r} is unsupported",
-            f"unsupported position_key_format {position_key_format!r}",
-        )
     move_key_format = manifest.get("move_key_format")
-    if move_key_format != SUPPORTED_BUNDLE_MOVE_KEY_FORMAT:
-        return BundleCompatibility(
-            resolved_dir,
-            manifest_path,
-            aggregate_path,
-            False,
-            f"bundle manifest move_key_format={move_key_format!r} is unsupported",
-            f"unsupported move_key_format {move_key_format!r}",
-        )
-
     payload_status = manifest.get("payload_status")
-    if payload_status not in {"ready", "complete", "available", "counts_available", "ok", None}:
-        return BundleCompatibility(
-            resolved_dir,
-            manifest_path,
-            aggregate_path,
-            False,
-            f"bundle manifest payload_status={payload_status!r} does not indicate real aggregate counts",
-            f"payload_status {payload_status!r} is not supported",
-        )
-
     return BundleCompatibility(
         resolved_dir.resolve(),
         manifest_path.resolve(),
@@ -372,7 +360,8 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         True,
         (
             f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, aggregate ok, "
-            f"position_key_format={position_key_format}, move_key_format={move_key_format})"
+            f"build_status={manifest.get('build_status')}, aggregate_position_file={manifest.get('aggregate_position_file')!r}, "
+            f"position_key_format={position_key_format}, move_key_format={move_key_format}, payload_status={payload_status!r})"
         ),
     )
 

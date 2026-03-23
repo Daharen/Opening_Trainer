@@ -25,6 +25,8 @@ def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict
 
 def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
     manifest = {
+        "build_status": "aggregation_complete",
+        "aggregate_position_file": "data/aggregated_position_move_counts.jsonl",
         "position_key_format": "fen_normalized",
         "move_key_format": "uci",
         "payload_status": "ready",
@@ -590,6 +592,34 @@ def test_training_session_keeps_bundle_dir_out_of_legacy_artifact_loader(tmp_pat
     assert choice.move.uci() == "e2e4"
 
 
+def test_real_builder_bundle_payload_status_is_accepted(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "selected_bundle",
+        _sample_bundle_manifest(payload_status="raw_aggregate_counts_present_non_final_trainer_payload"),
+        [
+            {
+                "position_key": board.fen(),
+                "candidate_moves": [{"uci": "e2e4", "raw_count": 3}],
+                "total_observed_count": 3,
+            }
+        ],
+    )
+
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    assert runtime.corpus.available is True
+    assert "payload_status='raw_aggregate_counts_present_non_final_trainer_payload'" in runtime.corpus.detail
+    assert session.opponent.bundle_provider is not None
+    assert session.opponent.corpus_provider is None
+
+    choice = session.opponent.choose_move_with_context(board)
+
+    assert choice.selected_via == "corpus_aggregate_bundle"
+    assert choice.move.uci() == "e2e4"
+
+
 def test_unsupported_bundle_manifest_degrades_to_legacy_corpus(tmp_path):
     bundle_dir = _write_bundle(
         tmp_path / "bad_bundle",
@@ -605,7 +635,27 @@ def test_unsupported_bundle_manifest_degrades_to_legacy_corpus(tmp_path):
 
     assert runtime.corpus.available is True
     assert runtime.corpus.path == str(artifact_path)
-    assert "position_key_format='unsupported' is unsupported" in runtime.corpus.detail
+    assert "unsupported position_key_format 'unsupported'" in runtime.corpus.detail
+    assert "falling back to legacy corpus artifact" in runtime.corpus.detail
+
+
+def test_bundle_missing_declared_aggregate_payload_degrades_cleanly(tmp_path):
+    bundle_dir = tmp_path / "bad_bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(_sample_bundle_manifest(aggregate_position_file="data/missing_counts.jsonl")),
+        encoding="utf-8",
+    )
+    artifact = CorpusIngestor().build_artifact([str(FIXTURE_PATH)])
+    artifact_path = save_artifact(artifact, tmp_path / "opening_corpus.json")
+
+    runtime = load_runtime_config(
+        RuntimeOverrides(corpus_bundle_dir=str(bundle_dir), corpus_artifact_path=str(artifact_path))
+    )
+
+    assert runtime.corpus.available is True
+    assert runtime.corpus.path == str(artifact_path)
+    assert "aggregate payload is missing" in runtime.corpus.detail
     assert "falling back to legacy corpus artifact" in runtime.corpus.detail
 
 
