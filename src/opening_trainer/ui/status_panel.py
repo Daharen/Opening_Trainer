@@ -10,14 +10,16 @@ class StatusPanel(ttk.Frame):
         self.compact = compact
         self.profile_var = tk.StringVar()
         self.bundle_var = tk.StringVar()
+        self.corpus_var = tk.StringVar()
         self.routing_var = tk.StringVar()
         self.counts_var = tk.StringVar()
         style = ('TkDefaultFont', 10, 'bold') if compact else None
-        for var in [self.profile_var, self.bundle_var, self.routing_var, self.counts_var]:
+        for var in [self.profile_var, self.bundle_var, self.corpus_var, self.routing_var, self.counts_var]:
             ttk.Label(self, textvariable=var, anchor='w', font=style).pack(fill='x')
 
-    def update_status(self, *, profile_name: str, bundle_summary: str, routing_summary: str, counts_summary: str):
+    def update_status(self, *, profile_name: str, bundle_summary: str, corpus_summary: str, routing_summary: str, counts_summary: str):
         self.profile_var.set(f'Profile: {profile_name}')
         self.bundle_var.set(bundle_summary)
+        self.corpus_var.set(corpus_summary)
         self.routing_var.set(routing_summary)
         self.counts_var.set(counts_summary)
