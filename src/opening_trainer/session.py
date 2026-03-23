@@ -21,7 +21,7 @@ class TrainingSession:
         self.board = GameBoard()
         self.config = self.runtime_context.evaluator_config
         self.opponent = OpponentProvider(
-            artifact_path=self.runtime_context.config.corpus_artifact_path or self.runtime_context.corpus.path,
+            artifact_path=self.runtime_context.config.corpus_artifact_path,
             bundle_dir=self.runtime_context.config.corpus_bundle_dir,
             evaluator_config=self.config,
             rng=random,

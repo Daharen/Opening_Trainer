@@ -561,6 +561,35 @@ def test_corpus_bundle_environment_override_is_resolved(tmp_path, monkeypatch):
     assert "environment winner" in runtime.corpus.detail
 
 
+def test_training_session_keeps_bundle_dir_out_of_legacy_artifact_loader(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "selected_bundle",
+        _sample_bundle_manifest(),
+        [
+            {
+                "position_key": chess.STARTING_FEN,
+                "candidate_moves": [{"uci": "e2e4", "raw_count": 3}],
+                "total_observed_count": 3,
+            }
+        ],
+    )
+
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    assert session.opponent.bundle_dir == bundle_dir
+    assert session.opponent.artifact_path is None
+    assert session.opponent.bundle_provider is not None
+    assert session.opponent.corpus_provider is None
+    assert "loaded corpus bundle" in session.opponent.status_message
+
+    choice = session.opponent.choose_move_with_context(board)
+
+    assert choice.selected_via == "corpus_aggregate_bundle"
+    assert choice.move.uci() == "e2e4"
+
+
 def test_unsupported_bundle_manifest_degrades_to_legacy_corpus(tmp_path):
     bundle_dir = _write_bundle(
         tmp_path / "bad_bundle",
