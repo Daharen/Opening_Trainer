@@ -83,7 +83,7 @@ def test_submit_user_move_uci_uses_existing_evaluator_pipeline_without_gui_logic
 def test_start_new_game_advances_black_sessions_until_user_turn(monkeypatch):
     session = TrainingSession()
     monkeypatch.setattr('random.choice', lambda options: chess.BLACK)
-    monkeypatch.setattr(session.opponent, 'choose_move', lambda board: chess.Move.from_uci('e2e4'))
+    monkeypatch.setattr(session.opponent, 'choose_move_with_context', lambda board: session.opponent.random_provider.choose_move(board) if False else __import__('opening_trainer.opponent', fromlist=['OpponentMoveChoice']).OpponentMoveChoice(move=chess.Move.from_uci('e2e4'), position_key='', selected_via='test', corpus_lookup_reason_code='test', normalized_position_key='', candidate_row_count=1, legal_candidate_count=1, raw_count=1, effective_weight=1.0, total_observed_count=1, sparse=False, sparse_reason=None, fallback_applied=False, candidate_summaries=()))
 
     view = session.start_new_game()
 

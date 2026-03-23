@@ -24,6 +24,10 @@ class SessionOutcome:
     preferred_move: str | None = None
     evaluation: EvaluationResult | None = None
     terminal_kind: str = "fail"
+    routing_reason: str = "ordinary_corpus_play"
+    next_routing_reason: str = "ordinary_corpus_play"
+    profile_name: str = "Default"
+    impact_summary: str = "No review impact recorded."
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,7 @@ class SessionView:
     required_player_moves: int
     last_evaluation: EvaluationResult | None
     last_outcome: SessionOutcome | None
+    routing_state: object | None = None
 
     @property
     def awaiting_user_input(self) -> bool:
