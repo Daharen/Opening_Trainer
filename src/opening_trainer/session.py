@@ -163,6 +163,7 @@ class TrainingSession:
             print('Illegal move. Try again.', flush=True)
             return self.get_view()
         board_before_move = self.board.board.copy(stack=True)
+        pre_fail_fen = board_before_move.fen()
         move = self.board.push(move_str)
         self._record_path_move(board_before_move, move)
         self.player_move_count += 1
@@ -175,8 +176,26 @@ class TrainingSession:
             self._resolve_authority_unavailable()
             return self.get_view()
         if not evaluation.accepted:
+            post_fail_fen = self.board.board.fen()
+            punishing_reply_uci, punishing_reply_san = self._lookup_punishing_reply()
             item, impact_summary, next_reason = self._capture_failure(board_before_move, evaluation)
-            self.last_outcome = SessionOutcome(False, evaluation.reason_text, evaluation.preferred_move_san or evaluation.preferred_move_uci, evaluation, 'fail', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', next_reason, self._profile_name(), impact_summary)
+            self.last_outcome = SessionOutcome(
+                False,
+                evaluation.reason_text,
+                evaluation.preferred_move_san or evaluation.preferred_move_uci,
+                evaluation,
+                'fail',
+                self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play',
+                next_reason,
+                self._profile_name(),
+                impact_summary,
+                pre_fail_fen=pre_fail_fen,
+                post_fail_fen=post_fail_fen,
+                preferred_move_uci=evaluation.preferred_move_uci,
+                preferred_move_san=evaluation.preferred_move_san,
+                punishing_reply_uci=punishing_reply_uci,
+                punishing_reply_san=punishing_reply_san,
+            )
             self.state = SessionState.FAIL_RESOLUTION
             self._resolve_fail()
             return self.get_view()
@@ -189,6 +208,18 @@ class TrainingSession:
         self.state = SessionState.OPPONENT_TURN
         self.advance_until_user_turn()
         return self.get_view()
+
+
+    def _lookup_punishing_reply(self) -> tuple[str | None, str | None]:
+        board_after_fail = self.board.board.copy(stack=True)
+        engine_authority = getattr(self.evaluator, 'engine_authority', None)
+        best_reply = getattr(engine_authority, 'best_reply', None)
+        if best_reply is None:
+            return None, None
+        try:
+            return best_reply(board_after_fail)
+        except Exception:
+            return None, None
 
     def _capture_failure(self, board_before_move: chess.Board, evaluation: EvaluationResult):
         items = self._items()
@@ -257,6 +288,8 @@ class TrainingSession:
             print(self.last_outcome.reason, flush=True)
             if self.last_outcome.preferred_move:
                 print(f'Preferred move: {self.last_outcome.preferred_move}', flush=True)
+            if self.last_outcome.punishing_reply_san or self.last_outcome.punishing_reply_uci:
+                print(f'Punishing reply: {self.last_outcome.punishing_reply_san or self.last_outcome.punishing_reply_uci}', flush=True)
             print(f'Routing reason: {self.last_outcome.routing_reason}', flush=True)
             print(f'Next run: {self.last_outcome.next_routing_reason}', flush=True)
         print('Restarting training game after acknowledgement in GUI or caller control.', flush=True)
