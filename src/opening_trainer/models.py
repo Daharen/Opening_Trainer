@@ -18,6 +18,15 @@ class SessionState(Enum):
 
 
 @dataclass(frozen=True)
+class MoveHistoryEntry:
+    ply_index: int
+    side_to_move: str
+    move_uci: str
+    display_notation: str
+    actor: str
+
+
+@dataclass(frozen=True)
 class SessionOutcome:
     passed: bool
     reason: str
@@ -47,6 +56,8 @@ class SessionView:
     last_evaluation: EvaluationResult | None
     last_outcome: SessionOutcome | None
     routing_state: object | None = None
+    move_history: tuple[MoveHistoryEntry, ...] = ()
+    corpus_summary: str = ''
 
     @property
     def awaiting_user_input(self) -> bool:

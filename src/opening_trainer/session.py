@@ -10,7 +10,7 @@ from .bundle_corpus import normalize_builder_position_key
 from .corpus import load_artifact
 from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
 from .evaluator import MoveEvaluator
-from .models import EvaluationResult, SessionOutcome, SessionState, SessionView
+from .models import EvaluationResult, MoveHistoryEntry, SessionOutcome, SessionState, SessionView
 from .opponent import OpponentProvider
 from .review.models import ReviewItem, ReviewPathMove, RoutingDecision
 from .review.profile_service import ProfileService
@@ -151,7 +151,18 @@ class TrainingSession:
         return self.get_view()
 
     def get_view(self) -> SessionView:
-        return SessionView(self.board.board.fen(), self.player_color, self.state, self.player_move_count, self.required_player_moves, self.last_evaluation, self.last_outcome, self.current_routing)
+        return SessionView(
+            self.board.board.fen(),
+            self.player_color,
+            self.state,
+            self.player_move_count,
+            self.required_player_moves,
+            self.last_evaluation,
+            self.last_outcome,
+            self.current_routing,
+            tuple(self.move_history()),
+            self.corpus_summary_text(),
+        )
 
     def current_board(self) -> chess.Board:
         return self.board.board.copy(stack=True)
@@ -217,6 +228,53 @@ class TrainingSession:
 
     def _record_path_move(self, board_before: chess.Board, move: chess.Move) -> None:
         self.run_path.append(ReviewPathMove(len(board_before.move_stack), 'white' if board_before.turn == chess.WHITE else 'black', move.uci(), board_before.san(move), board_before.fen()))
+
+    def move_history(self) -> list[MoveHistoryEntry]:
+        history: list[MoveHistoryEntry] = []
+        for move in self.run_path:
+            actor = 'player' if ((move.side_to_move == 'white') == (self.player_color == chess.WHITE)) else 'opponent'
+            history.append(MoveHistoryEntry(move.ply_index, move.side_to_move, move.move_uci, move.san or move.move_uci, actor))
+        return history
+
+    def corpus_summary_text(self) -> str:
+        bundle_dir = self.runtime_context.config.corpus_bundle_dir
+        if bundle_dir:
+            provider = getattr(self.opponent, 'bundle_provider', None)
+            manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
+            manifest = getattr(manifest, 'manifest', None)
+            if isinstance(manifest, dict):
+                band = manifest.get('target_rating_band') or manifest.get('rating_band') or manifest.get('elo_band')
+                retained = manifest.get('retained_ply_depth')
+                band_text = self._format_rating_band(band) or self._bundle_name_fallback(bundle_dir)
+                retained_text = f' | Retained depth: {retained}' if retained is not None else ''
+                return f'Corpus: {band_text}{retained_text}'
+            return f'Corpus: {self._bundle_name_fallback(bundle_dir)}'
+        artifact_path = self.runtime_context.config.corpus_artifact_path
+        if artifact_path:
+            try:
+                artifact = load_artifact(artifact_path)
+                band_text = self._format_rating_band(getattr(artifact, 'target_rating_band', None)) or 'artifact'
+                return f'Corpus: {band_text} | Retained depth: {artifact.retained_ply_depth}'
+            except Exception:
+                return 'Corpus: legacy artifact'
+        return 'Corpus: fallback / no bundle metadata'
+
+    def _format_rating_band(self, band: object) -> str | None:
+        if isinstance(band, dict):
+            minimum = band.get('minimum')
+            maximum = band.get('maximum')
+            if minimum is not None and maximum is not None:
+                return f'{minimum}-{maximum}'
+        if isinstance(band, str) and band.strip():
+            return band.strip()
+        return None
+
+    def _bundle_name_fallback(self, bundle_dir: object) -> str:
+        try:
+            name = getattr(bundle_dir, 'name', None) or str(bundle_dir).rstrip('/').split('/')[-1]
+        except Exception:
+            name = str(bundle_dir)
+        return name.replace('_', ' ')
 
     def _submit_user_move(self, move_str: str) -> SessionView:
         if self.state != SessionState.PLAYER_TURN:

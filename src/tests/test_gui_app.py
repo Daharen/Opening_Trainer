@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import chess
 
-from opening_trainer.models import SessionOutcome, SessionState, SessionView
+from opening_trainer.models import MoveHistoryEntry, SessionOutcome, SessionState, SessionView
 from opening_trainer.settings import TrainerSettings
+from opening_trainer.session import TrainingSession
 from opening_trainer.session_contracts import OutcomeBoardContract, OutcomeModalContract
+from opening_trainer.ui.board_view import BoardView, DragState
+from opening_trainer.ui.captured_material_panel import captured_pieces_and_material
 from opening_trainer.ui.gui_app import OpeningTrainerGUI
 
 
@@ -33,12 +36,22 @@ class FakeGridWidget:
         self.width = kwargs.get('width', self.width)
 
 
-class FakeRoot:
+class FakePane:
     def __init__(self):
-        self.column_settings = []
+        self._panes = []
 
-    def grid_columnconfigure(self, column, **kwargs):
-        self.column_settings.append((column, kwargs))
+    def panes(self):
+        return list(self._panes)
+
+    def add(self, widget, **kwargs):
+        token = str(widget)
+        if token not in self._panes:
+            self._panes.append(token)
+
+    def forget(self, widget):
+        token = str(widget)
+        if token in self._panes:
+            self._panes.remove(token)
 
 
 class FakeStorage:
@@ -72,6 +85,9 @@ class FakeSession:
     def bundle_retained_ply_depth(self):
         return 10
 
+    def corpus_summary_text(self):
+        return 'Corpus: 1000-1200 | Retained depth: 10'
+
 
 class RecordingModal:
     def __init__(self, master, contract, on_continue):
@@ -102,12 +118,10 @@ class BoardViewStub:
 def _build_gui(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.panel_visible = True
-    gui.side_panel = FakeGridWidget()
+    gui.side_panel = object()
     gui.compact_status_panel = FakeGridWidget()
     gui.panel_toggle_button = FakeButton()
-    gui.root = FakeRoot()
-    gui.side_panel_padx = (0, 12)
-    gui.side_panel_pady = (6, 12)
+    gui.root_pane = FakePane()
     gui.session = FakeSession(tmp_path)
     gui._refresh_supporting_surfaces = lambda: None
     return gui
@@ -240,26 +254,23 @@ def test_side_panel_layout_keeps_board_region_dominant(tmp_path):
 
     gui._apply_side_panel_layout(initializing=True)
 
-    assert gui.side_panel.visible is True
-    assert gui.side_panel.width == 320
-    assert gui.root.column_settings[-2:] == [
-        (0, {'weight': 8, 'minsize': 420}),
-        (1, {'weight': 1, 'minsize': 240, 'pad': 0}),
-    ]
+    assert str(gui.side_panel) in gui.root_pane.panes()
+    assert gui.panel_toggle_button.text == 'Hide Panel'
 
 
 def test_toggle_side_panel_hides_and_restores_panel_state(tmp_path):
     gui = _build_gui(tmp_path)
+    gui._apply_side_panel_layout(initializing=True)
 
     gui._toggle_side_panel()
     assert gui.panel_visible is False
-    assert gui.side_panel.visible is False
+    assert str(gui.side_panel) not in gui.root_pane.panes()
     assert gui.compact_status_panel.visible is True
     assert gui.panel_toggle_button.text == 'Show Panel'
 
     gui._toggle_side_panel()
     assert gui.panel_visible is True
-    assert gui.side_panel.visible is True
+    assert str(gui.side_panel) in gui.root_pane.panes()
     assert gui.panel_toggle_button.text == 'Hide Panel'
 
     assert gui.session.saved_settings.side_panel_visible is True
@@ -303,3 +314,62 @@ def test_acknowledge_outcome_starts_next_game_only_after_modal_callback(tmp_path
     assert gui.selected_square is None
     assert gui.session.start_calls == 1
     assert refresh_calls['count'] == 1
+
+
+def test_board_coordinate_labels_invert_by_perspective():
+    board_view = BoardView.__new__(BoardView)
+
+    white_files, white_ranks = BoardView.coordinate_labels(board_view, chess.WHITE)
+    black_files, black_ranks = BoardView.coordinate_labels(board_view, chess.BLACK)
+
+    assert white_files == list('abcdefgh')
+    assert white_ranks == ['8', '7', '6', '5', '4', '3', '2', '1']
+    assert black_files == list('hgfedcba')
+    assert black_ranks == ['1', '2', '3', '4', '5', '6', '7', '8']
+
+
+def test_drag_release_reports_drop_square_and_active_state():
+    board_view = BoardView.__new__(BoardView)
+    board_view.drag_state = DragState(chess.E2, chess.E4, 'P', 120, 100, True)
+    board_view.square_at_xy = lambda x, y, player_color: chess.E4
+
+    assert BoardView.release_drag(board_view, 120, 90, chess.WHITE) == (chess.E2, chess.E4, True)
+    assert board_view.drag_state is None
+
+
+def test_captured_material_logic_tracks_delta_and_strips():
+    board = chess.Board()
+    board.remove_piece_at(chess.D8)
+    board.remove_piece_at(chess.A1)
+
+    white_captured, black_captured, delta = captured_pieces_and_material(board)
+
+    assert '♛' in white_captured
+    assert '♖' in black_captured
+    assert delta == 4
+
+
+def test_move_history_records_player_and_opponent_order():
+    session = TrainingSession()
+    session.player_color = chess.WHITE
+    session.run_path = [
+        __import__('opening_trainer.review.models', fromlist=['ReviewPathMove']).ReviewPathMove(0, 'white', 'e2e4', 'e4', chess.STARTING_FEN),
+        __import__('opening_trainer.review.models', fromlist=['ReviewPathMove']).ReviewPathMove(1, 'black', 'e7e5', 'e5', chess.STARTING_FEN),
+    ]
+
+    assert session.move_history() == [
+        MoveHistoryEntry(0, 'white', 'e2e4', 'e4', 'player'),
+        MoveHistoryEntry(1, 'black', 'e7e5', 'e5', 'opponent'),
+    ]
+
+
+def test_corpus_summary_prefers_manifest_band_and_falls_back_to_bundle_name(tmp_path):
+    session = TrainingSession()
+    session.runtime_context = type('Runtime', (), {'config': type('Config', (), {'corpus_bundle_dir': tmp_path / '1200_1400', 'corpus_artifact_path': None})()})()
+    metadata = type('Meta', (), {'manifest': {'target_rating_band': {'minimum': 1200, 'maximum': 1400}, 'retained_ply_depth': 12}})()
+    session.opponent = type('Opponent', (), {'bundle_provider': type('Provider', (), {'bundle': type('Bundle', (), {'metadata': metadata})()})()})()
+
+    assert session.corpus_summary_text() == 'Corpus: 1200-1400 | Retained depth: 12'
+
+    session.opponent = type('Opponent', (), {'bundle_provider': type('Provider', (), {'bundle': type('Bundle', (), {'metadata': type('Meta', (), {'manifest': {}})()})()})()})()
+    assert '1200 1400' in session.corpus_summary_text()

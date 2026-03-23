@@ -12,12 +12,16 @@ from ..settings import TrainerSettings
 from ..session import TrainingSession
 from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
 from .board_view import BoardView
+from .captured_material_panel import CapturedMaterialPanel
+from .move_list_panel import MoveListPanel
 from .outcome_modal import OutcomeModal
 from .profile_dialog import ProfileDialog
 from .review_inspector import ReviewInspector
 from .status_panel import StatusPanel
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
+
+
 class OpeningTrainerGUI:
     def __init__(self, session: TrainingSession | None = None, runtime_context: RuntimeContext | None = None):
         self.session = session or TrainingSession(runtime_context=runtime_context, mode='gui')
@@ -26,48 +30,49 @@ class OpeningTrainerGUI:
         self.selected_square = None
         self.pending_restart = False
         self.panel_visible = self._load_panel_visibility_preference()
-        self.side_panel_padx = (0, 12)
-        self.side_panel_pady = (6, 12)
 
-        self.root.columnconfigure(0, weight=8, minsize=420)
-        self.root.columnconfigure(1, weight=0)
+        self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
         toolbar = tk.Frame(self.root)
-        toolbar.grid(row=0, column=0, columnspan=2, sticky='ew', padx=12, pady=(12, 4))
+        toolbar.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 4))
         tk.Button(toolbar, text='Start drill', command=self._start_game).pack(side='left')
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
-        self.main_region = tk.Frame(self.root)
-        self.main_region.grid(row=1, column=0, sticky='nsew', padx=(12, 6), pady=(6, 12))
-        self.main_region.columnconfigure(0, weight=1, minsize=420)
-        self.main_region.rowconfigure(1, weight=1)
+        self.root_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bd=0)
+        self.root_pane.grid(row=1, column=0, sticky='nsew', padx=12, pady=(6, 12))
 
+        self.main_region = tk.Frame(self.root)
+        self.main_region.columnconfigure(0, weight=1, minsize=420)
+        self.main_region.rowconfigure(2, weight=1)
         self.compact_status_panel = StatusPanel(self.main_region, compact=True)
         self.compact_status_panel.grid(row=0, column=0, sticky='ew', pady=(0, 8))
-
+        self.captured_panel = CapturedMaterialPanel(self.main_region)
+        self.captured_panel.grid(row=1, column=0, sticky='ew', pady=(0, 8))
         self.board_view = BoardView(self.main_region, board_size=560, min_board_size=360)
-        self.board_view.grid(row=1, column=0, sticky='nsew')
+        self.board_view.grid(row=2, column=0, sticky='nsew')
 
         self.side_panel = tk.Frame(self.root, width=360)
-        self.side_panel.grid(row=1, column=1, sticky='nsew', padx=self.side_panel_padx, pady=self.side_panel_pady)
-        self.side_panel.rowconfigure(2, weight=1)
-        self.side_panel.columnconfigure(0, weight=1)
-        self.side_panel.grid_propagate(False)
-
         self.status_panel = StatusPanel(self.side_panel)
-        self.status_panel.grid(row=0, column=0, sticky='ew')
-
+        self.status_panel.pack(fill='x')
         self.recent_var = tk.StringVar()
-        tk.Label(self.side_panel, textvariable=self.recent_var, justify='left', anchor='w').grid(row=1, column=0, sticky='ew', pady=4)
+        tk.Label(self.side_panel, textvariable=self.recent_var, justify='left', anchor='w').pack(fill='x', pady=4)
+        self.side_pane = tk.PanedWindow(self.side_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED, bd=0)
+        self.side_pane.pack(fill='both', expand=True)
+        self.inspector = ReviewInspector(self.side_pane, self.session, self._refresh_supporting_surfaces)
+        self.move_list_panel = MoveListPanel(self.side_pane)
+        self.side_pane.add(self.inspector, minsize=220, stretch='always')
+        self.side_pane.add(self.move_list_panel, minsize=120)
 
-        self.inspector = ReviewInspector(self.side_panel, self.session, self._refresh_supporting_surfaces)
-        self.inspector.grid(row=2, column=0, sticky='nsew')
+        self.root_pane.add(self.main_region, minsize=500, stretch='always')
+        self.root_pane.add(self.side_panel, minsize=260)
 
-        self.board_view.bind('<Button-1>', self._on_board_click)
+        self.board_view.bind('<ButtonPress-1>', self._on_board_press)
+        self.board_view.bind('<B1-Motion>', self._on_board_drag)
+        self.board_view.bind('<ButtonRelease-1>', self._on_board_release)
         self._apply_side_panel_layout(initializing=True)
 
     def run(self) -> None:
@@ -87,25 +92,19 @@ class OpeningTrainerGUI:
         self._save_panel_visibility_preference()
 
     def _apply_side_panel_layout(self, initializing: bool = False) -> None:
+        panes = list(self.root_pane.panes()) if hasattr(self.root_pane, 'panes') else []
         if self.panel_visible:
-            if hasattr(self, 'side_panel'):
-                self.side_panel.grid(row=1, column=1, sticky='nsew', padx=self.side_panel_padx, pady=self.side_panel_pady)
-            if hasattr(self.root, 'grid_columnconfigure'):
-                self.root.grid_columnconfigure(0, weight=8, minsize=420)
-                self.root.grid_columnconfigure(1, weight=1, minsize=240, pad=0)
-            if hasattr(self.side_panel, 'configure'):
-                self.side_panel.configure(width=320)
-            if hasattr(self, 'compact_status_panel'):
-                self.compact_status_panel.grid_remove()
+            if str(self.side_panel) not in panes:
+                self.root_pane.add(self.side_panel, minsize=260)
+            self.compact_status_panel.grid_remove()
             self._set_panel_toggle_label('Hide Panel')
         else:
-            if hasattr(self, 'side_panel'):
-                self.side_panel.grid_remove()
-            if hasattr(self.root, 'grid_columnconfigure'):
-                self.root.grid_columnconfigure(0, weight=8, minsize=420)
-                self.root.grid_columnconfigure(1, weight=0, minsize=0, pad=0)
-            if hasattr(self, 'compact_status_panel'):
-                self.compact_status_panel.grid()
+            try:
+                self.root_pane.forget(self.side_panel)
+            except Exception:
+                if hasattr(self.side_panel, 'grid_remove'):
+                    self.side_panel.grid_remove()
+            self.compact_status_panel.grid()
             self._set_panel_toggle_label('Show Panel')
         if not initializing:
             self._refresh_supporting_surfaces()
@@ -121,6 +120,7 @@ class OpeningTrainerGUI:
         self.session.start_new_game()
         self.selected_square = None
         self.pending_restart = False
+        self.board_view.cancel_drag()
         self._refresh_view()
 
     def _build_counts_summary(self, due: int, boosted: int, extreme: int) -> str:
@@ -149,12 +149,16 @@ class OpeningTrainerGUI:
         counts_summary = self._build_counts_summary(due, boosted, extreme)
         routing_summary = self._build_routing_summary(routing, explain)
         bundle_summary = f'Opponent source: {self.session.opponent.status_message}'
-        self.status_panel.update_status(profile_name=profile_name, bundle_summary=bundle_summary, routing_summary=routing_summary, counts_summary=counts_summary)
-        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), routing_summary=f'Route: {routing}', counts_summary=self._training_depth_summary())
+        corpus_summary = self.session.corpus_summary_text()
+        self.status_panel.update_status(profile_name=profile_name, bundle_summary=bundle_summary, corpus_summary=corpus_summary, routing_summary=routing_summary, counts_summary=counts_summary)
+        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), corpus_summary=corpus_summary, routing_summary=f'Route: {routing}', counts_summary=self._training_depth_summary())
         history_path = self.session.review_storage.root / self.session.active_profile_id / 'session_history.jsonl'
         recent = history_path.read_text(encoding='utf-8').strip().splitlines()[-4:] if history_path.exists() else []
-        self.recent_var.set(self._training_depth_summary() + '\n\nRecent events:\n' + ('\n'.join(recent) if recent else 'No recent events.'))
+        self.recent_var.set(self._training_depth_summary() + '\n' + corpus_summary + '\n\nRecent events:\n' + ('\n'.join(recent) if recent else 'No recent events.'))
         self.inspector.refresh()
+        view = self.session.get_view()
+        self.move_list_panel.update_moves(view.move_history)
+        self.captured_panel.update_board(chess.Board(view.board_fen))
 
     def _open_options(self):
         window = tk.Toplevel(self.root)
@@ -242,7 +246,7 @@ class OpeningTrainerGUI:
         self.session.start_new_game()
         self._refresh_view()
 
-    def _on_board_click(self, event: tk.Event) -> None:
+    def _on_board_press(self, event: tk.Event) -> None:
         view = self.session.get_view()
         if not view.awaiting_user_input:
             self._refresh_view('Wait for your turn.')
@@ -252,22 +256,52 @@ class OpeningTrainerGUI:
             return
         board = self.session.current_board()
         piece = board.piece_at(square)
-        if self.selected_square is None:
-            if piece is None or piece.color != view.player_color:
+        if piece is None or piece.color != view.player_color:
+            if self.selected_square is None:
                 self._refresh_view('Select one of your own pieces.')
-                return
-            legal_moves = self.session.legal_moves_from(square)
-            if not legal_moves:
-                self._refresh_view('That piece has no legal moves.')
-                return
-            self.selected_square = square
-            self._refresh_view()
             return
-        if square == self.selected_square:
+        legal_moves = self.session.legal_moves_from(square)
+        if not legal_moves:
+            self._refresh_view('That piece has no legal moves.')
+            return
+        self.selected_square = square
+        self.board_view.start_drag(square, piece.symbol(), event.x, event.y)
+        self._refresh_view()
+
+    def _on_board_drag(self, event: tk.Event) -> None:
+        view = self.session.get_view()
+        if self.selected_square is None or not view.awaiting_user_input:
+            return
+        self.board_view.update_drag(event.x, event.y, view.player_color)
+        self.board_view.render(chess.Board(view.board_fen), view.player_color)
+
+    def _on_board_release(self, event: tk.Event) -> None:
+        view = self.session.get_view()
+        if self.selected_square is None or not view.awaiting_user_input:
+            return
+        released = self.board_view.release_drag(event.x, event.y, view.player_color)
+        if released is None:
+            return
+        from_square, to_square, was_drag = released
+        board = self.session.current_board()
+        if not was_drag:
+            if to_square == self.selected_square:
+                self._refresh_view()
+                return
+            if to_square is None:
+                self.selected_square = None
+                self._refresh_view('Selection cleared.')
+                return
+            destination_piece = board.piece_at(to_square)
+            if destination_piece is not None and destination_piece.color == view.player_color:
+                self.selected_square = to_square
+                self._refresh_view()
+                return
+        if to_square is None:
             self.selected_square = None
-            self._refresh_view('Selection cleared.')
+            self._refresh_view('Move cancelled.')
             return
-        move = self._build_move(self.selected_square, square, board)
+        move = self._build_move(from_square, to_square, board)
         self.selected_square = None
         if move is None:
             self._refresh_view('Illegal move selection.')

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
+from dataclasses import dataclass
 
 import chess
 
@@ -21,6 +22,18 @@ PIECE_GLYPHS = {
     "q": "♛",
     "k": "♚",
 }
+BOARD_PADDING = 28
+DRAG_THRESHOLD = 10
+
+
+@dataclass(frozen=True)
+class DragState:
+    source_square: chess.Square
+    current_square: chess.Square | None
+    piece_symbol: str
+    cursor_x: int
+    cursor_y: int
+    active: bool = False
 
 
 class BoardView(tk.Canvas):
@@ -28,13 +41,24 @@ class BoardView(tk.Canvas):
         super().__init__(master, width=board_size, height=board_size, highlightthickness=0)
         self.board_size = board_size
         self.min_board_size = min_board_size
-        self.square_size = board_size // 8
+        self.square_size = max(1, (board_size - BOARD_PADDING * 2) // 8)
         self.selected_square: chess.Square | None = None
         self.highlight_squares: set[chess.Square] = set()
         self.arrow_move_uci: str | None = None
         self.arrow_color: str = '#2e7d32'
+        self.drag_state: DragState | None = None
         self.bind('<Configure>', self._on_resize)
         self.configure(width=board_size, height=board_size)
+
+    @property
+    def board_pixels(self) -> int:
+        return self.square_size * 8
+
+    @property
+    def board_origin(self) -> tuple[int, int]:
+        offset_x = max(BOARD_PADDING, (self.board_size - self.board_pixels) // 2)
+        offset_y = max(BOARD_PADDING, (self.board_size - self.board_pixels) // 2)
+        return offset_x, offset_y
 
     def set_selection(self, selected_square: chess.Square | None, legal_targets: list[chess.Square]) -> None:
         self.selected_square = selected_square
@@ -44,19 +68,55 @@ class BoardView(tk.Canvas):
         self.arrow_move_uci = move_uci
         self.arrow_color = color
 
-    def square_at_xy(self, x: int, y: int, player_color: chess.Color) -> chess.Square | None:
-        if x < 0 or y < 0 or x >= self.board_size or y >= self.board_size:
+    def start_drag(self, source_square: chess.Square, piece_symbol: str, cursor_x: int, cursor_y: int) -> None:
+        self.drag_state = DragState(source_square, source_square, piece_symbol, cursor_x, cursor_y, active=False)
+
+    def update_drag(self, x: int, y: int, player_color: chess.Color) -> None:
+        if self.drag_state is None:
+            return
+        origin_x, origin_y = self._square_center(self.drag_state.source_square, player_color)
+        active = self.drag_state.active or math.hypot(x - origin_x, y - origin_y) >= DRAG_THRESHOLD
+        self.drag_state = DragState(
+            source_square=self.drag_state.source_square,
+            current_square=self.square_at_xy(x, y, player_color),
+            piece_symbol=self.drag_state.piece_symbol,
+            cursor_x=x,
+            cursor_y=y,
+            active=active,
+        )
+
+    def cancel_drag(self) -> None:
+        self.drag_state = None
+
+    def release_drag(self, x: int, y: int, player_color: chess.Color) -> tuple[chess.Square, chess.Square | None, bool] | None:
+        if self.drag_state is None:
             return None
-        row = y // self.square_size
-        col = x // self.square_size
+        source_square = self.drag_state.source_square
+        was_active = self.drag_state.active
+        destination = self.square_at_xy(x, y, player_color)
+        self.drag_state = None
+        return source_square, destination, was_active
+
+    def square_at_xy(self, x: int, y: int, player_color: chess.Color) -> chess.Square | None:
+        origin_x, origin_y = self.board_origin
+        if x < origin_x or y < origin_y or x >= origin_x + self.board_pixels or y >= origin_y + self.board_pixels:
+            return None
+        row = (y - origin_y) // self.square_size
+        col = (x - origin_x) // self.square_size
         return display_to_square(row, col, player_color)
+
+    def coordinate_labels(self, player_color: chess.Color) -> tuple[list[str], list[str]]:
+        if player_color == chess.WHITE:
+            return list('abcdefgh'), [str(rank) for rank in range(8, 0, -1)]
+        return list('hgfedcba'), [str(rank) for rank in range(1, 9)]
 
     def render(self, board: chess.Board, player_color: chess.Color) -> None:
         self.delete('all')
+        origin_x, origin_y = self.board_origin
         for square in chess.SQUARES:
             row, col = square_to_display(square, player_color)
-            x0 = col * self.square_size
-            y0 = row * self.square_size
+            x0 = origin_x + col * self.square_size
+            y0 = origin_y + row * self.square_size
             x1 = x0 + self.square_size
             y1 = y0 + self.square_size
             is_light = (chess.square_file(square) + chess.square_rank(square)) % 2 == 0
@@ -66,23 +126,49 @@ class BoardView(tk.Canvas):
             elif square in self.highlight_squares:
                 fill = '#8fce72'
             self.create_rectangle(x0, y0, x1, y1, fill=fill, outline='#333333')
-
             piece = board.piece_at(square)
-            if piece is not None:
-                self.create_text(
-                    x0 + self.square_size / 2,
-                    y0 + self.square_size / 2,
-                    text=PIECE_GLYPHS[piece.symbol()],
-                    font=('Arial Unicode MS', int(self.square_size * 0.58)),
-                )
+            if piece is None:
+                continue
+            text_fill = '#666666' if self.drag_state and self.drag_state.active and square == self.drag_state.source_square else '#111111'
+            self.create_text(
+                x0 + self.square_size / 2,
+                y0 + self.square_size / 2,
+                text=PIECE_GLYPHS[piece.symbol()],
+                font=('Arial Unicode MS', int(self.square_size * 0.58)),
+                fill=text_fill,
+            )
+        self._draw_coordinates(player_color)
         self._draw_arrow(player_color)
+        self._draw_drag_piece()
+
+    def _draw_coordinates(self, player_color: chess.Color) -> None:
+        origin_x, origin_y = self.board_origin
+        files, ranks = self.coordinate_labels(player_color)
+        font = ('TkDefaultFont', max(8, int(self.square_size * 0.16)), 'bold')
+        for idx, label in enumerate(files):
+            x = origin_x + idx * self.square_size + self.square_size / 2
+            self.create_text(x, origin_y + self.board_pixels + BOARD_PADDING / 2, text=label, font=font, fill='#333333')
+        for idx, label in enumerate(ranks):
+            y = origin_y + idx * self.square_size + self.square_size / 2
+            self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill='#333333')
+
+    def _draw_drag_piece(self) -> None:
+        if not self.drag_state or not self.drag_state.active:
+            return
+        self.create_text(
+            self.drag_state.cursor_x,
+            self.drag_state.cursor_y,
+            text=PIECE_GLYPHS[self.drag_state.piece_symbol],
+            font=('Arial Unicode MS', int(self.square_size * 0.62)),
+            fill='#111111',
+        )
 
     def _on_resize(self, event: tk.Event) -> None:
         new_size = max(self.min_board_size, min(event.width, event.height))
         if new_size == self.board_size:
             return
         self.board_size = new_size
-        self.square_size = max(1, new_size // 8)
+        self.square_size = max(1, (new_size - BOARD_PADDING * 2) // 8)
         self.configure(width=new_size, height=new_size)
 
     def _draw_arrow(self, player_color: chess.Color) -> None:
@@ -99,15 +185,11 @@ class BoardView(tk.Canvas):
         inset = self.square_size * 0.18
         ux = dx / distance
         uy = dy / distance
-        line_start_x = start_x + ux * inset
-        line_start_y = start_y + uy * inset
-        line_end_x = end_x - ux * inset
-        line_end_y = end_y - uy * inset
         self.create_line(
-            line_start_x,
-            line_start_y,
-            line_end_x,
-            line_end_y,
+            start_x + ux * inset,
+            start_y + uy * inset,
+            end_x - ux * inset,
+            end_y - uy * inset,
             fill=self.arrow_color,
             width=max(4, self.square_size * 0.12),
             arrow=tk.LAST,
@@ -117,6 +199,8 @@ class BoardView(tk.Canvas):
 
     def _square_center(self, square: chess.Square, player_color: chess.Color) -> tuple[float, float]:
         row, col = square_to_display(square, player_color)
-        x = col * self.square_size + self.square_size / 2
-        y = row * self.square_size + self.square_size / 2
-        return x, y
+        origin_x, origin_y = self.board_origin
+        return (
+            origin_x + col * self.square_size + self.square_size / 2,
+            origin_y + row * self.square_size + self.square_size / 2,
+        )
