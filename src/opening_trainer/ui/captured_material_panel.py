@@ -43,20 +43,28 @@ def captured_pieces_and_material(board: chess.Board) -> tuple[list[str], list[st
     return white_captured, black_captured, white_material - black_material
 
 
-class CapturedMaterialPanel(ttk.Frame):
-    def __init__(self, master):
-        super().__init__(master)
-        self.white_var = tk.StringVar(value='White captured: —')
-        self.black_var = tk.StringVar(value='Black captured: —')
+class CapturedMaterialPanel(ttk.LabelFrame):
+    def __init__(self, master, title: str = 'Captured material'):
+        super().__init__(master, text=title)
+        self.primary_var = tk.StringVar(value='Near side captured: —')
+        self.secondary_var = tk.StringVar(value='Far side captured: —')
         self.delta_var = tk.StringVar(value='Material: Even')
-        ttk.Label(self, textvariable=self.white_var, anchor='w').pack(fill='x')
-        ttk.Label(self, textvariable=self.black_var, anchor='w').pack(fill='x')
+        ttk.Label(self, textvariable=self.primary_var, anchor='w').pack(fill='x')
+        ttk.Label(self, textvariable=self.secondary_var, anchor='w').pack(fill='x')
         ttk.Label(self, textvariable=self.delta_var, anchor='w').pack(fill='x')
 
-    def update_board(self, board: chess.Board) -> None:
+    def update_board(self, board: chess.Board, *, player_color: chess.Color, near_side: bool) -> None:
         white_captured, black_captured, delta = captured_pieces_and_material(board)
-        self.white_var.set(f"White captured: {' '.join(white_captured) if white_captured else '—'}")
-        self.black_var.set(f"Black captured: {' '.join(black_captured) if black_captured else '—'}")
+        if near_side:
+            owner_is_white = player_color == chess.WHITE
+        else:
+            owner_is_white = player_color == chess.BLACK
+        owner_label = 'White' if owner_is_white else 'Black'
+        owner_captured = white_captured if owner_is_white else black_captured
+        other_label = 'Black' if owner_is_white else 'White'
+        other_captured = black_captured if owner_is_white else white_captured
+        self.primary_var.set(f"{owner_label} captured: {' '.join(owner_captured) if owner_captured else '—'}")
+        self.secondary_var.set(f"{other_label} captured: {' '.join(other_captured) if other_captured else '—'}")
         if delta > 0:
             self.delta_var.set(f'Material: White +{delta}')
         elif delta < 0:
