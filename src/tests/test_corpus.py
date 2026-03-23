@@ -198,7 +198,7 @@ def test_missing_engine_does_not_become_ordinary_fail():
     assert session.has_failed() is False
     assert session.has_authority_unavailable() is True
 
-from opening_trainer.bundle_corpus import normalize_builder_position_key
+from opening_trainer.bundle_corpus import BuilderAggregateCorpusProvider, normalize_builder_position_key
 
 
 def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict[str, object]]) -> Path:
@@ -221,7 +221,34 @@ def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
     return manifest
 
 
-def test_builder_bundle_move_sampling_uses_raw_counts(tmp_path):
+def test_builder_bundle_provider_parses_real_builder_candidate_fields(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(payload_status="raw_aggregate_counts_present_non_final_trainer_payload"),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "candidate_moves": [
+                    {"move_key": "e2e4", "move_key_format": "uci", "raw_count": 5},
+                    {"move_key": "d2d4", "move_key_format": "uci", "raw_count": 1},
+                ],
+                "total_observations": 6,
+            }
+        ],
+    )
+
+    provider = BuilderAggregateCorpusProvider(bundle_dir)
+    position = provider.position_index[normalize_builder_position_key(board)]
+
+    assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
+    assert [candidate.raw_count for candidate in position.candidates] == [5, 1]
+    assert position.total_observed_count == 6
+    assert position.candidate_row_count == 2
+    assert position.unsupported_candidate_row_count == 0
+
+
+def test_builder_bundle_move_sampling_uses_real_builder_rows_from_initial_position(tmp_path):
     board = chess.Board()
     bundle_dir = _write_bundle(
         tmp_path / "bundle",
@@ -230,10 +257,10 @@ def test_builder_bundle_move_sampling_uses_raw_counts(tmp_path):
             {
                 "position_key": normalize_builder_position_key(board),
                 "candidate_moves": [
-                    {"uci": "e2e4", "raw_count": 5},
-                    {"uci": "d2d4", "raw_count": 1},
+                    {"move_key": "e2e4", "move_key_format": "uci", "raw_count": 5},
+                    {"move_key": "d2d4", "move_key_format": "uci", "raw_count": 1},
                 ],
-                "total_observed_count": 6,
+                "total_observations": 6,
             }
         ],
     )
@@ -272,14 +299,97 @@ def test_bundle_absent_position_falls_back_to_stockfish_before_random(tmp_path, 
     assert choice.move.uci() == "e2e4"
 
 
+def test_builder_bundle_move_sampling_uses_real_builder_rows_after_player_move(tmp_path):
+    board = chess.Board()
+    board.push(chess.Move.from_uci("e2e4"))
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "candidate_moves": [
+                    {"move_key": "e7e5", "move_key_format": "uci", "raw_count": 4},
+                    {"move_key": "c7c5", "move_key_format": "uci", "raw_count": 2},
+                ],
+                "total_observations": 6,
+            }
+        ],
+    )
+    provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(1))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert choice.selected_via == "corpus_aggregate_bundle"
+    assert choice.move.uci() in {"e7e5", "c7c5"}
+    assert {summary["uci"] for summary in choice.candidate_summaries} == {"e7e5", "c7c5"}
+
+
+def test_bundle_malformed_candidate_rows_report_supported_move_diagnostic(tmp_path, monkeypatch):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "candidate_moves": [{"move_key": "e2e4", "move_key_format": "san", "raw_count": 3}],
+                "total_observations": 3,
+            }
+        ],
+    )
+    provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
+    monkeypatch.setattr(provider.stockfish_provider, "choose_move", lambda current_board: OpponentMoveChoice(
+        move=chess.Move.from_uci("d2d4"),
+        position_key=normalize_builder_position_key(current_board),
+        selected_via="stockfish_fallback",
+        raw_count=0,
+        effective_weight=1.0,
+        total_observed_count=0,
+        sparse=False,
+        sparse_reason=None,
+        fallback_applied=True,
+        candidate_summaries=({"uci": "d2d4", "raw_count": 0, "effective_weight": 1.0},),
+    ))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert choice.selected_via == "stockfish_fallback"
+    assert provider.bundle_provider is not None
+    assert provider.bundle_provider.last_lookup_diagnostic is not None
+    assert "reason_code=position_row_found_but_no_supported_candidate_moves" in provider.bundle_provider.last_lookup_diagnostic
+    assert "candidate_rows_loaded=1" in provider.bundle_provider.last_lookup_diagnostic
+
+
 def test_bundle_illegal_uci_degrades_cleanly(tmp_path, monkeypatch):
     board = chess.Board()
     bundle_dir = _write_bundle(
         tmp_path / "bundle",
         _sample_bundle_manifest(),
-        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e9e5", "raw_count": 3}], "total_observed_count": 3}],
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"move_key": "e7e5", "move_key_format": "uci", "raw_count": 3}], "total_observations": 3}],
     )
     provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
+    monkeypatch.setattr(provider.stockfish_provider, "choose_move", lambda current_board: OpponentMoveChoice(
+        move=chess.Move.from_uci("d2d4"),
+        position_key=normalize_builder_position_key(current_board),
+        selected_via="stockfish_fallback",
+        raw_count=0,
+        effective_weight=1.0,
+        total_observed_count=0,
+        sparse=False,
+        sparse_reason=None,
+        fallback_applied=True,
+        candidate_summaries=({"uci": "d2d4", "raw_count": 0, "effective_weight": 1.0},),
+    ))
+
+    choice = provider.choose_move_with_context(board)
+
+    assert choice.selected_via == "stockfish_fallback"
+    assert provider.bundle_provider is not None
+    assert provider.bundle_provider.last_lookup_diagnostic is not None
+    assert "reason_code=position_row_found_but_all_candidate_moves_illegal" in provider.bundle_provider.last_lookup_diagnostic
+    assert "candidate_rows_loaded=1" in provider.bundle_provider.last_lookup_diagnostic
+    assert "legal_candidates=0" in provider.bundle_provider.last_lookup_diagnostic
 
 
 def test_bundle_rejects_unsupported_move_key_format(tmp_path, monkeypatch):
