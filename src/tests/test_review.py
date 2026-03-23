@@ -105,6 +105,7 @@ def test_routing_cap_prevents_one_item_from_dominating():
 def test_outcome_modal_contract_requires_acknowledgement():
     contract = OutcomeModalContract('FAIL', 'summary', 'reason', 'e4', 'route', 'next', 'impact')
     assert contract.requires_acknowledgement is True
+    assert contract.reason == 'reason'
 
 
 def test_profile_reset_clears_review_state_without_touching_runtime_config(tmp_path):
