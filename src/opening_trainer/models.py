@@ -34,6 +34,7 @@ class SessionOutcome:
     preferred_move_san: str | None = None
     punishing_reply_uci: str | None = None
     punishing_reply_san: str | None = None
+    player_color: chess.Color = chess.WHITE
 
 
 @dataclass(frozen=True)

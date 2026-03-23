@@ -68,7 +68,7 @@ class OutcomeModal:
             board = BoardView(card, board_size=220, min_board_size=180)
             board.pack()
             board.set_arrow(board_contract.arrow_move_uci, board_contract.arrow_color)
-            board.render(chess.Board(board_contract.board_fen), chess.Board(board_contract.board_fen).turn)
+            board.render(chess.Board(board_contract.board_fen), board_contract.player_color)
 
     def _center_over(self, master: tk.Misc) -> None:
         self.window.update_idletasks()

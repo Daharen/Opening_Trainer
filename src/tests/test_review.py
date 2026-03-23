@@ -11,6 +11,7 @@ from opening_trainer.review.profile_service import ProfileService
 from opening_trainer.review.router import ReviewRouter
 from opening_trainer.review.scheduler import apply_failure, apply_success
 from opening_trainer.review.storage import ReviewStorage
+from opening_trainer.settings import TrainerSettingsStore
 from opening_trainer.session import TrainingSession
 from opening_trainer.session_contracts import OutcomeModalContract
 
@@ -169,3 +170,16 @@ def test_success_outcome_remains_unaffected_by_fail_review_fields(tmp_path):
     assert session.last_outcome.terminal_kind == 'pass'
     assert session.last_outcome.pre_fail_fen is None
     assert session.last_outcome.punishing_reply_uci is None
+
+
+def test_settings_persist_good_toggle_and_training_depth(tmp_path):
+    storage = ReviewStorage(tmp_path / 'runtime' / 'profiles')
+    session = TrainingSession(review_storage=storage)
+
+    saved = session.update_settings(session.settings.__class__(good_moves_acceptable=False, active_training_ply_depth=3, side_panel_visible=False))
+
+    reloaded = TrainerSettingsStore(storage.root).load(maximum_depth=session.max_supported_training_depth())
+    assert saved.good_moves_acceptable is False
+    assert saved.active_training_ply_depth == 3
+    assert reloaded.good_moves_acceptable is False
+    assert reloaded.active_training_ply_depth == 3

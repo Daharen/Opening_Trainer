@@ -221,6 +221,7 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         engine_time_limit_seconds=config.engine_time_limit_seconds or evaluator_base.engine_time_limit_seconds,
         engine_path=config.engine_executable_path or evaluator_base.engine_path,
         active_envelope_player_moves=evaluator_base.active_envelope_player_moves,
+        good_moves_acceptable=evaluator_base.good_moves_acceptable,
     )
 
     corpus = _resolve_corpus_asset(

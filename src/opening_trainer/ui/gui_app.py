@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 import tkinter as tk
-from pathlib import Path
 from tkinter import simpledialog
+from tkinter import ttk
 
 import chess
 
 from ..models import SessionState
 from ..runtime import RuntimeContext
+from ..settings import TrainerSettings
 from ..session import TrainingSession
 from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
 from .board_view import BoardView
@@ -18,9 +18,6 @@ from .review_inspector import ReviewInspector
 from .status_panel import StatusPanel
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
-GUI_STATE_FILENAME = 'gui_state.json'
-
-
 class OpeningTrainerGUI:
     def __init__(self, session: TrainingSession | None = None, runtime_context: RuntimeContext | None = None):
         self.session = session or TrainingSession(runtime_context=runtime_context, mode='gui')
@@ -40,6 +37,7 @@ class OpeningTrainerGUI:
         toolbar.grid(row=0, column=0, columnspan=2, sticky='ew', padx=12, pady=(12, 4))
         tk.Button(toolbar, text='Start drill', command=self._start_game).pack(side='left')
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
+        tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
@@ -76,22 +74,12 @@ class OpeningTrainerGUI:
         self._start_game()
         self.root.mainloop()
 
-    def _gui_state_path(self) -> Path:
-        return self.session.review_storage.root / GUI_STATE_FILENAME
-
     def _load_panel_visibility_preference(self) -> bool:
-        path = self._gui_state_path()
-        if not path.exists():
-            return True
-        try:
-            payload = json.loads(path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError):
-            return True
-        return bool(payload.get('side_panel_visible', True))
+        return self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth()).side_panel_visible
 
     def _save_panel_visibility_preference(self) -> None:
-        path = self._gui_state_path()
-        path.write_text(json.dumps({'side_panel_visible': self.panel_visible}, indent=2), encoding='utf-8')
+        settings = self.session.settings
+        self.session.update_settings(TrainerSettings(settings.good_moves_acceptable, settings.active_training_ply_depth, self.panel_visible))
 
     def _toggle_side_panel(self) -> None:
         self.panel_visible = not self.panel_visible
@@ -144,6 +132,12 @@ class OpeningTrainerGUI:
     def _build_compact_bundle_summary(self) -> str:
         return f'Opponent: {self.session.opponent.status_message}'
 
+    def _training_depth_summary(self) -> str:
+        retained_ply_depth = self.session.bundle_retained_ply_depth()
+        cap = self.session.max_supported_training_depth()
+        retained_text = f' | Bundle retained depth: {retained_ply_depth} plies' if retained_ply_depth is not None else ''
+        return f'Training depth: {self.session.required_player_moves} player moves | Good accepted: {"yes" if self.session.settings.good_moves_acceptable else "no"} | Max supported: {cap} player moves{retained_text}'
+
     def _refresh_supporting_surfaces(self):
         items = self.session.review_storage.load_items(self.session.active_profile_id)
         profile_name = self.session.review_storage.load_profile_meta(self.session.active_profile_id).display_name
@@ -156,11 +150,39 @@ class OpeningTrainerGUI:
         routing_summary = self._build_routing_summary(routing, explain)
         bundle_summary = f'Opponent source: {self.session.opponent.status_message}'
         self.status_panel.update_status(profile_name=profile_name, bundle_summary=bundle_summary, routing_summary=routing_summary, counts_summary=counts_summary)
-        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), routing_summary=f'Route: {routing}', counts_summary=f'{due}/{boosted}/{extreme} due/boosted/extreme')
+        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), routing_summary=f'Route: {routing}', counts_summary=self._training_depth_summary())
         history_path = self.session.review_storage.root / self.session.active_profile_id / 'session_history.jsonl'
         recent = history_path.read_text(encoding='utf-8').strip().splitlines()[-4:] if history_path.exists() else []
-        self.recent_var.set('Recent events:\n' + ('\n'.join(recent) if recent else 'No recent events.'))
+        self.recent_var.set(self._training_depth_summary() + '\n\nRecent events:\n' + ('\n'.join(recent) if recent else 'No recent events.'))
         self.inspector.refresh()
+
+    def _open_options(self):
+        window = tk.Toplevel(self.root)
+        window.title('Trainer Options')
+        window.transient(self.root)
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill='both', expand=True)
+        cap = self.session.max_supported_training_depth()
+        depth_var = tk.IntVar(value=self.session.settings.active_training_ply_depth)
+        good_var = tk.BooleanVar(value=self.session.settings.good_moves_acceptable)
+        ttk.Checkbutton(frame, text='Accept Good moves (permissive mode)', variable=good_var).pack(anchor='w', pady=(0, 8))
+        ttk.Label(frame, text='Training depth (player moves)').pack(anchor='w')
+        ttk.Combobox(frame, state='readonly', textvariable=depth_var, values=list(range(2, cap + 1)), width=8).pack(anchor='w', pady=(0, 8))
+        retained_ply_depth = self.session.bundle_retained_ply_depth()
+        detail = f'Current bundle supports up to {cap} player moves'
+        if retained_ply_depth is not None:
+            detail += f' ({retained_ply_depth} retained plies reported by the manifest).'
+        else:
+            detail += '. Conservative fallback cap applied.'
+        ttk.Label(frame, text=detail, wraplength=320, justify='left').pack(anchor='w', pady=(0, 8))
+
+        def save():
+            self.session.update_settings(TrainerSettings(good_var.get(), depth_var.get(), self.panel_visible))
+            window.destroy()
+            self._refresh_supporting_surfaces()
+
+        ttk.Button(frame, text='Save', command=save).pack(side='left')
+        ttk.Button(frame, text='Cancel', command=window.destroy).pack(side='left', padx=(8, 0))
 
     def _refresh_view(self, transient_status: str | None = None) -> None:
         view = self.session.get_view()
@@ -186,6 +208,7 @@ class OpeningTrainerGUI:
             review_boards.append(OutcomeBoardContract(
                 title='What you should have played',
                 board_fen=outcome.pre_fail_fen,
+                player_color=outcome.player_color,
                 arrow_move_uci=outcome.preferred_move_uci,
                 arrow_color='#2e7d32',
                 arrow_label='Correct move',
@@ -195,6 +218,7 @@ class OpeningTrainerGUI:
             review_boards.append(OutcomeBoardContract(
                 title='What punishes this',
                 board_fen=outcome.post_fail_fen,
+                player_color=outcome.player_color,
                 arrow_move_uci=outcome.punishing_reply_uci,
                 arrow_color='#c62828',
                 arrow_label='Likely punishment',
