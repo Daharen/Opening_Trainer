@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 class OutcomeBoardContract:
     title: str
     board_fen: str
+    player_color: bool
     arrow_move_uci: str | None
     arrow_color: str
     arrow_label: str

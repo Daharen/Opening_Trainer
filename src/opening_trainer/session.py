@@ -7,6 +7,7 @@ import chess
 
 from .board import GameBoard
 from .bundle_corpus import normalize_builder_position_key
+from .corpus import load_artifact
 from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, SessionOutcome, SessionState, SessionView
@@ -17,6 +18,7 @@ from .review.router import ReviewRouter
 from .review.scheduler import apply_failure, apply_success
 from .review.storage import ReviewStorage
 from .runtime import RuntimeContext, RuntimeOverrides, load_runtime_config
+from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
 
 
@@ -44,6 +46,7 @@ class TrainingSession:
         self.profile_service = ProfileService(self.review_storage)
         self.router = ReviewRouter()
         self.active_profile_id = self.profile_service.get_active_profile_id()
+        self.settings_store = TrainerSettingsStore(self.review_storage.root)
         self.player_color = chess.WHITE
         self.player_move_count = 0
         self.state = SessionState.IDLE
@@ -54,6 +57,65 @@ class TrainingSession:
         self.current_review_item_id: str | None = None
         self.active_review_plan = None
         self.run_path: list[ReviewPathMove] = []
+        self.settings = self.settings_store.load(maximum_depth=self.max_supported_training_depth())
+        self._apply_settings(self.settings)
+
+    def max_supported_training_depth(self) -> int:
+        bundle_dir = self.runtime_context.config.corpus_bundle_dir
+        if bundle_dir:
+            try:
+                provider = self.opponent.bundle_provider
+            except AttributeError:
+                provider = None
+            manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
+            manifest = getattr(manifest, 'manifest', None)
+            if isinstance(manifest, dict):
+                retained_ply_depth = manifest.get('retained_ply_depth')
+                try:
+                    return max(2, int(retained_ply_depth) // 2)
+                except (TypeError, ValueError):
+                    return CONSERVATIVE_FALLBACK_MAX_DEPTH
+            return CONSERVATIVE_FALLBACK_MAX_DEPTH
+        artifact_path = self.runtime_context.config.corpus_artifact_path
+        if artifact_path:
+            try:
+                return max(2, int(load_artifact(artifact_path).retained_ply_depth) // 2)
+            except Exception:
+                return CONSERVATIVE_FALLBACK_MAX_DEPTH
+        return CONSERVATIVE_FALLBACK_MAX_DEPTH
+
+    def bundle_retained_ply_depth(self) -> int | None:
+        try:
+            provider = self.opponent.bundle_provider
+        except AttributeError:
+            provider = None
+        manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
+        manifest = getattr(manifest, 'manifest', None)
+        if isinstance(manifest, dict):
+            try:
+                return int(manifest.get('retained_ply_depth'))
+            except (TypeError, ValueError):
+                return None
+        artifact_path = self.runtime_context.config.corpus_artifact_path
+        if artifact_path:
+            try:
+                return int(load_artifact(artifact_path).retained_ply_depth)
+            except Exception:
+                return None
+        return None
+
+    def update_settings(self, settings: TrainerSettings) -> TrainerSettings:
+        saved = self.settings_store.save(settings, maximum_depth=self.max_supported_training_depth())
+        self._apply_settings(saved)
+        return saved
+
+    def _apply_settings(self, settings: TrainerSettings) -> None:
+        self.settings = settings.normalized(maximum_depth=self.max_supported_training_depth())
+        self.required_player_moves = self.settings.active_training_ply_depth
+        self.config = type(self.config)(**{**self.config.snapshot(), 'active_envelope_player_moves': self.required_player_moves, 'good_moves_acceptable': self.settings.good_moves_acceptable})
+        self.evaluator.config = self.config
+        self.evaluator.overlay_classifier.config = self.config
+        self.evaluator.engine_authority.config = self.config
 
     def _profile_name(self) -> str:
         return self.review_storage.load_profile_meta(self.active_profile_id).display_name
@@ -195,6 +257,7 @@ class TrainingSession:
                 preferred_move_san=evaluation.preferred_move_san,
                 punishing_reply_uci=punishing_reply_uci,
                 punishing_reply_san=punishing_reply_san,
+                player_color=self.player_color,
             )
             self.state = SessionState.FAIL_RESOLUTION
             self._resolve_fail()

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
-
 import chess
 
 from opening_trainer.models import SessionOutcome, SessionState, SessionView
+from opening_trainer.settings import TrainerSettings
 from opening_trainer.session_contracts import OutcomeBoardContract, OutcomeModalContract
 from opening_trainer.ui.gui_app import OpeningTrainerGUI
 
@@ -51,9 +50,27 @@ class FakeSession:
     def __init__(self, root):
         self.review_storage = FakeStorage(root)
         self.start_calls = 0
+        self.settings = TrainerSettings()
+        self._max_depth = 5
+        self.saved_settings = None
+        self.settings_store = self
 
     def start_new_game(self):
         self.start_calls += 1
+
+    def load(self, maximum_depth=None):
+        return self.settings
+
+    def update_settings(self, settings):
+        self.saved_settings = settings
+        self.settings = settings
+        return settings
+
+    def max_supported_training_depth(self):
+        return self._max_depth
+
+    def bundle_retained_ply_depth(self):
+        return 10
 
 
 class RecordingModal:
@@ -165,9 +182,27 @@ def test_show_outcome_modal_fail_path_builds_dual_board_contract(monkeypatch):
     assert modal.contract.preferred_move == 'd4'
     assert modal.contract.next_routing_reason == 'immediate_retry'
     assert len(modal.contract.review_boards) == 2
-    assert modal.contract.review_boards[0] == OutcomeBoardContract('What you should have played', chess.STARTING_FEN, 'd2d4', '#2e7d32', 'Correct move', 'd4')
+    assert modal.contract.review_boards[0] == OutcomeBoardContract('What you should have played', chess.STARTING_FEN, chess.WHITE, 'd2d4', '#2e7d32', 'Correct move', 'd4')
     assert modal.contract.review_boards[1].board_fen != modal.contract.review_boards[0].board_fen
+    assert modal.contract.review_boards[1].player_color is chess.WHITE
     assert modal.contract.review_boards[1].arrow_move_uci == 'g8f6'
+
+
+def test_show_outcome_modal_fail_path_keeps_black_orientation(monkeypatch):
+    outcome = SessionOutcome(
+        False, 'Rejected by engine.', 'd4', None, 'fail', 'ordinary_corpus_play', 'immediate_retry', 'Default', 'Created new review item.',
+        pre_fail_fen=chess.STARTING_FEN, post_fail_fen='rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1',
+        preferred_move_uci='d2d4', punishing_reply_uci='g8f6', player_color=chess.BLACK,
+    )
+    view = SessionView(chess.STARTING_FEN, chess.BLACK, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = object()
+    gui._acknowledge_outcome = lambda: None
+    monkeypatch.setattr('opening_trainer.ui.gui_app.OutcomeModal', RecordingModal)
+
+    modal = gui._show_outcome_modal(view)
+
+    assert all(board.player_color is chess.BLACK for board in modal.contract.review_boards)
 
 
 def test_show_outcome_modal_fail_path_survives_missing_punishing_reply(monkeypatch):
@@ -227,15 +262,12 @@ def test_toggle_side_panel_hides_and_restores_panel_state(tmp_path):
     assert gui.side_panel.visible is True
     assert gui.panel_toggle_button.text == 'Hide Panel'
 
-    payload = json.loads((tmp_path / 'gui_state.json').read_text(encoding='utf-8'))
-    assert payload == {'side_panel_visible': True}
+    assert gui.session.saved_settings.side_panel_visible is True
 
 
 def test_load_panel_visibility_preference_defaults_true_on_invalid_json(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.session = FakeSession(tmp_path)
-    (tmp_path / 'gui_state.json').write_text('{broken', encoding='utf-8')
-
     assert gui._load_panel_visibility_preference() is True
 
 

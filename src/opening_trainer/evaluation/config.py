@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
+from .types import OverlayLabel
+
 
 @dataclass(frozen=True)
 class EvaluatorConfig:
@@ -26,6 +28,13 @@ class EvaluatorConfig:
     engine_time_limit_seconds: float = 0.2
     engine_path: str = "stockfish"
     active_envelope_player_moves: int = 5
+    good_moves_acceptable: bool = True
+
+    def accepted_overlay_labels(self) -> tuple[OverlayLabel, ...]:
+        labels = [OverlayLabel.BOOK, OverlayLabel.BEST, OverlayLabel.EXCELLENT]
+        if self.good_moves_acceptable:
+            labels.append(OverlayLabel.GOOD)
+        return tuple(labels)
 
     def snapshot(self) -> dict[str, object]:
         return asdict(self)

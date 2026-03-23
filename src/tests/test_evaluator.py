@@ -229,6 +229,35 @@ def test_structured_result_contains_required_fields():
     assert result.reason_text
 
 
+def test_good_overlay_can_be_rejected_by_acceptance_policy():
+    board, move = make_move("e2e4")
+    evaluator = MoveEvaluator(
+        config=EvaluatorConfig(good_moves_acceptable=False),
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(
+                accepted=True,
+                available=True,
+                reason_code=ReasonCode.ENGINE_PASS,
+                reason_text="Accepted by engine.",
+                best_move_uci="d2d4",
+                best_move_san="d4",
+                played_move_uci="e2e4",
+                played_move_san="e4",
+                cp_loss=70,
+                metadata={"engine_available": True},
+            )
+        ),
+    )
+
+    result = evaluator.evaluate(board, move, 1)
+
+    assert result.accepted is False
+    assert result.overlay_label == OverlayLabel.GOOD
+    assert result.canonical_judgment == CanonicalJudgment.FAIL
+    assert "Good moves are configured to count as fails" in result.reason_text
+
+
 def test_session_consumes_structured_result_without_duplicate_acceptance_logic(monkeypatch):
     session = TrainingSession()
     session.required_player_moves = 5

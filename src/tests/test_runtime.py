@@ -7,14 +7,36 @@ import chess
 
 from opening_trainer.bundle_corpus import normalize_builder_position_key
 from opening_trainer.corpus import CorpusIngestor, save_artifact
-from opening_trainer.evaluation import AuthoritySource, CanonicalJudgment, EvaluationResult, OverlayLabel, ReasonCode
+from opening_trainer.evaluation import AuthoritySource, CanonicalJudgment, EvaluationResult, OverlayLabel, ReasonCode, EngineAuthorityResult
 from opening_trainer.opponent import OpponentMoveChoice
 from opening_trainer.evaluation.book import OpeningBookAuthority
 from opening_trainer.evaluation.engine import EngineAuthority
 from opening_trainer.runtime import RuntimeOverrides, corpus_status_detail, load_runtime_config
+from opening_trainer.review.storage import ReviewStorage
+from opening_trainer.evaluator import MoveEvaluator
+from opening_trainer.evaluation import BookAuthorityResult
 from opening_trainer.session import TrainingSession
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_corpus.pgn"
+
+
+class StubBookAuthority:
+    def __init__(self, result):
+        self.result = result
+
+    def evaluate(self, board_before_move, played_move):
+        return self.result
+
+
+class StubEngineAuthority:
+    def __init__(self, result):
+        self.result = result
+
+    def evaluate(self, board_before_move, played_move):
+        return self.result
+
+
+BOOK_MISS = BookAuthorityResult(False, False, ReasonCode.BOOK_UNAVAILABLE, 'Book authority unavailable for this position.', metadata={'book_available': False})
 
 
 def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict[str, object]]) -> Path:
@@ -32,6 +54,7 @@ def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
         "position_key_format": "fen_normalized",
         "move_key_format": "uci",
         "payload_status": "ready",
+        "retained_ply_depth": 10,
     }
     manifest.update(overrides)
     return manifest
@@ -258,6 +281,39 @@ def test_workspace_runtime_local_config_auto_discovery(tmp_path, monkeypatch):
     assert runtime.config.engine_executable_path == "/tmp/workspace-stockfish"
     assert runtime.config_source == f"workspace-root default runtime config: {workspace_root / 'runtime.local.json'}"
     assert runtime.evaluator_config.engine_depth == 18
+
+
+def test_training_depth_clamps_to_bundle_cap_and_minimum(tmp_path):
+    bundle_dir = _write_bundle(tmp_path / "bundle", _sample_bundle_manifest(retained_ply_depth=14, payload_status="raw_aggregate_counts_present_non_final_trainer_payload"), [])
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    assert session.max_supported_training_depth() == 7
+    assert session.update_settings(session.settings.__class__(True, 1, True)).active_training_ply_depth == 2
+    assert session.update_settings(session.settings.__class__(True, 9, True)).active_training_ply_depth == 7
+    assert session.update_settings(session.settings.__class__(True, 4, True)).active_training_ply_depth == 4
+
+
+def test_training_depth_controls_run_completion(tmp_path):
+    session = TrainingSession(review_storage=ReviewStorage(tmp_path / 'runtime' / 'profiles'))
+    session.current_routing = session.router.select(session.active_profile_id, [])
+    session.player_color = chess.WHITE
+    session.state = session.state.PLAYER_TURN
+    session.update_settings(session.settings.__class__(True, 2, True))
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(True, True, ReasonCode.ENGINE_PASS, 'Accepted by engine.', best_move_uci='e2e4', best_move_san='e4', played_move_uci='e2e4', played_move_san='e4', cp_loss=0, metadata={'engine_available': True})
+        ),
+    )
+
+    first = session.submit_user_move_uci('e2e4')
+    session.board.reset()
+    session.state = session.state.PLAYER_TURN
+    second = session.submit_user_move_uci('e2e4')
+
+    assert first.run_passed is False
+    assert second.run_passed is True
 
 
 def test_explicit_runtime_config_overrides_workspace_runtime_local(tmp_path, monkeypatch):

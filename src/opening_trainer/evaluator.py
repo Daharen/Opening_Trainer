@@ -77,6 +77,11 @@ class MoveEvaluator:
             reason_code = engine_result.reason_code
             reason_text = engine_result.reason_text
 
+        if accepted and overlay_label not in self.config.accepted_overlay_labels():
+            accepted = False
+            canonical_judgment = CanonicalJudgment.FAIL
+            reason_text = 'Rejected under current acceptance policy: Good moves are configured to count as fails.'
+
         preferred_move_uci = None
         preferred_move_san = None
         if canonical_judgment == CanonicalJudgment.FAIL:
