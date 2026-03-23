@@ -20,7 +20,12 @@ class TrainingSession:
         self.mode = mode
         self.board = GameBoard()
         self.config = self.runtime_context.evaluator_config
-        self.opponent = OpponentProvider(artifact_path=self.runtime_context.corpus.path or "data/opening_corpus.json", rng=random)
+        self.opponent = OpponentProvider(
+            artifact_path=self.runtime_context.config.corpus_artifact_path or self.runtime_context.corpus.path,
+            bundle_dir=self.runtime_context.config.corpus_bundle_dir,
+            evaluator_config=self.config,
+            rng=random,
+        )
         self.evaluator = MoveEvaluator(
             config=self.config,
             book_authority=OpeningBookAuthority(self.runtime_context.book.path if self.runtime_context.book.available else None),

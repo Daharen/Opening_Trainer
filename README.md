@@ -192,9 +192,10 @@ Manual CLI flags still override discovered workspace defaults.
 
 ## Runtime Opponent Sourcing
 
-At startup, the session first checks workspace-root corpus artifact conventions, then repo-local defaults such as `data/opening_corpus.json`.
+At startup, the session now prefers an explicitly selected builder corpus bundle directory before any legacy `opening_corpus.json` path. The supported builder bundle contract for this runtime lane is `manifest.json` plus `data/aggregated_position_move_counts.jsonl`, with `position_key_format=fen_normalized` and `move_key_format=uci`.
 
-- If an artifact exists at one of those conventional paths, the trainer uses the corpus-backed opponent provider.
+- Preferred corpus discovery order: CLI `--corpus-bundle-dir`, runtime config `corpus_bundle_dir`, environment `OPENING_TRAINER_CORPUS_BUNDLE_DIR`, workspace-root `runtime.local.json`, then legacy corpus artifact conventions such as `data/opening_corpus.json`.
+- Opponent fallback order is explicit: selected corpus bundle (or legacy corpus artifact if bundle resolution fails), then Stockfish-generated fallback, then random legal move only as the last resort.
 - If no artifact exists, the trainer prints a clear message and uses the explicit provisional random fallback provider.
 
 When the corpus-backed provider is active, it:
@@ -290,7 +291,7 @@ Winning paths are surfaced in startup diagnostics so local runs never silently s
 ### CLI flags
 
 ```bash
-python main.py --cli   --corpus-artifact data/opening_corpus.json   --engine-path /path/to/stockfish   --book-path data/opening_book.bin
+python main.py --cli   --corpus-bundle-dir /path/to/artifacts/my_bundle   --corpus-artifact data/opening_corpus.json   --engine-path /path/to/stockfish   --book-path data/opening_book.bin
 ```
 
 Optional diagnostics/build helpers:
@@ -307,6 +308,7 @@ Example:
 
 ```json
 {
+  "corpus_bundle_dir": "../artifacts/my_bundle",
   "corpus_artifact_path": "data/opening_corpus.json",
   "engine_executable_path": "/path/to/stockfish",
   "opening_book_path": "data/opening_book.bin",
@@ -319,6 +321,7 @@ Example:
 ### Environment variables
 
 - `OPENING_TRAINER_RUNTIME_CONFIG`
+- `OPENING_TRAINER_CORPUS_BUNDLE_DIR`
 - `OPENING_TRAINER_CORPUS_PATH`
 - `OPENING_TRAINER_ENGINE_PATH`
 - `OPENING_TRAINER_BOOK_PATH`
@@ -345,8 +348,9 @@ Every new run now prints a compact runtime startup summary that reports:
 
 ### Reading the startup messages
 
-- **Corpus loaded**: corpus-backed opponent sourcing is active.
-- **Corpus not found / provisional fallback**: opponent moves come from the explicit temporary random fallback.
+- **Corpus bundle loaded**: aggregate-bundle opponent sourcing is active.
+- **Legacy corpus loaded**: legacy `opening_corpus.json` opponent sourcing is active for backward compatibility.
+- **Corpus unavailable or incompatible**: the trainer reports the exact bundle/corpus failure and falls back to Stockfish before using random legal moves.
 - **Book loaded**: moves can pass via actual opening-book membership.
 - **Book missing**: no book authority is available, so only engine-backed Better evaluation can approve non-book moves.
 - **Engine resolved**: engine tolerance is available for Better evaluation.

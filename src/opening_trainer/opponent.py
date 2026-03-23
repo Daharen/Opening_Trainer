@@ -6,8 +6,11 @@ from pathlib import Path
 from typing import Protocol
 
 import chess
+import chess.engine
 
-from .corpus import DEFAULT_ARTIFACT_PATH, PositionRecord, load_artifact, normalize_position_key
+from .bundle_corpus import BuilderAggregateCorpusProvider, normalize_builder_position_key
+from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact, normalize_position_key
+from .evaluation import EvaluatorConfig
 from .runtime import corpus_status_detail
 
 
@@ -50,6 +53,33 @@ class RandomOpponentProvider:
             sparse_reason=None,
             fallback_applied=False,
             candidate_summaries=tuple({"uci": legal.uci(), "raw_count": 0, "effective_weight": 1.0} for legal in legal_moves),
+        )
+
+
+class StockfishOpponentProvider:
+    def __init__(self, config: EvaluatorConfig):
+        self.config = config
+
+    def choose_move(self, board: chess.Board) -> OpponentMoveChoice:
+        with chess.engine.SimpleEngine.popen_uci(self.config.engine_path) as engine:
+            info = engine.play(
+                board,
+                chess.engine.Limit(depth=self.config.engine_depth, time=self.config.engine_time_limit_seconds),
+            )
+        move = info.move
+        if move is None or move not in board.legal_moves:
+            raise LookupError("Stockfish fallback returned no legal move.")
+        return OpponentMoveChoice(
+            move=move,
+            position_key=normalize_position_key(board),
+            selected_via="stockfish_fallback",
+            raw_count=0,
+            effective_weight=1.0,
+            total_observed_count=0,
+            sparse=False,
+            sparse_reason=None,
+            fallback_applied=True,
+            candidate_summaries=({"uci": move.uci(), "raw_count": 0, "effective_weight": 1.0},),
         )
 
 
@@ -105,27 +135,119 @@ class CorpusBackedOpponentProvider:
         return positions
 
 
-class OpponentProvider:
-    def __init__(self, artifact_path: str | Path = DEFAULT_ARTIFACT_PATH, rng=None):
+class BuilderAggregateOpponentProvider:
+    def __init__(self, bundle_dir: str | Path, rng=None):
+        self.bundle_dir = Path(bundle_dir)
         self.rng = rng or random
-        self.artifact_path = Path(artifact_path)
+        self.bundle = BuilderAggregateCorpusProvider(self.bundle_dir, rng=self.rng)
+
+    def choose_move(self, board: chess.Board) -> OpponentMoveChoice:
+        position_key = normalize_builder_position_key(board)
+        position = self.bundle.position_index.get(position_key)
+        if position is None:
+            raise LookupError(f"No aggregate bundle row for position {position_key}.")
+
+        legal_candidates: list[tuple[chess.Move, object]] = []
+        rejected_uci: list[str] = []
+        for candidate in position.candidates:
+            try:
+                move = chess.Move.from_uci(candidate.uci)
+            except ValueError:
+                rejected_uci.append(candidate.uci)
+                continue
+            if move not in board.legal_moves:
+                rejected_uci.append(candidate.uci)
+                continue
+            legal_candidates.append((move, candidate))
+        if not legal_candidates:
+            rejected_text = f" rejected candidates={rejected_uci}" if rejected_uci else ""
+            raise LookupError(f"Aggregate bundle candidates were not legal for position {position_key}.{rejected_text}")
+
+        weighted_candidates = [candidate for _, candidate in legal_candidates]
+        selected = self.rng.choices(weighted_candidates, weights=[max(0, candidate.raw_count) for candidate in weighted_candidates], k=1)[0]
+        selected_move = next(move for move, candidate in legal_candidates if candidate == selected)
+        return OpponentMoveChoice(
+            move=selected_move,
+            position_key=position_key,
+            selected_via="corpus_aggregate_bundle",
+            raw_count=selected.raw_count,
+            effective_weight=float(selected.raw_count),
+            total_observed_count=position.total_observed_count,
+            sparse=False,
+            sparse_reason=None,
+            fallback_applied=False,
+            candidate_summaries=tuple(
+                {
+                    "uci": candidate.uci,
+                    "raw_count": candidate.raw_count,
+                    "effective_weight": float(candidate.raw_count),
+                }
+                for _, candidate in legal_candidates
+            ),
+        )
+
+
+class OpponentProvider:
+    def __init__(self, artifact_path: str | Path | None = DEFAULT_ARTIFACT_PATH, bundle_dir: str | Path | None = None, evaluator_config: EvaluatorConfig | None = None, rng=None):
+        self.rng = rng or random
+        self.artifact_path = Path(artifact_path) if artifact_path is not None else None
+        self.bundle_dir = Path(bundle_dir) if bundle_dir is not None else None
+        self.evaluator_config = evaluator_config or EvaluatorConfig()
         self.random_provider = RandomOpponentProvider(rng=self.rng)
+        self.stockfish_provider = StockfishOpponentProvider(self.evaluator_config)
+        self.bundle_provider: BuilderAggregateOpponentProvider | None = None
         self.corpus_provider: CorpusBackedOpponentProvider | None = None
         self.mode = "random_fallback"
-        self.status_message = "Corpus artifact not loaded; opponent provider is using explicit provisional random fallback."
+        self.status_message = "No compatible corpus source loaded; opponent provider will use Stockfish fallback before random legal fallback."
         self.last_choice: OpponentMoveChoice | None = None
-        if self.artifact_path.exists():
+        self.last_failure_reason: str | None = None
+
+        if self.bundle_dir is not None:
+            try:
+                self.bundle_provider = BuilderAggregateOpponentProvider(self.bundle_dir, rng=self.rng)
+                self.mode = "bundle"
+                self.status_message = corpus_status_detail(self.bundle_dir)
+            except Exception as exc:
+                self.last_failure_reason = str(exc)
+                self.status_message = f"{corpus_status_detail(self.bundle_dir)}; runtime will attempt legacy corpus, then Stockfish, then random legal fallback."
+
+        if self.bundle_provider is None and self.artifact_path is not None and self.artifact_path.exists():
             self.corpus_provider = CorpusBackedOpponentProvider(self.artifact_path, rng=self.rng)
             self.mode = "corpus"
             self.status_message = corpus_status_detail(self.artifact_path)
-        else:
-            self.status_message = corpus_status_detail(None)
 
     def choose_move(self, board: chess.Board) -> chess.Move:
         self.last_choice = self.choose_move_with_context(board)
         return self.last_choice.move
 
     def choose_move_with_context(self, board: chess.Board) -> OpponentMoveChoice:
+        failures: list[str] = []
+        if self.bundle_provider is not None:
+            try:
+                return self.bundle_provider.choose_move(board)
+            except LookupError as exc:
+                failures.append(f"bundle lookup failed: {exc}")
         if self.corpus_provider is not None:
-            return self.corpus_provider.choose_move(board)
-        return self.random_provider.choose_move(board)
+            try:
+                return self.corpus_provider.choose_move(board)
+            except LookupError as exc:
+                failures.append(f"legacy corpus lookup failed: {exc}")
+        try:
+            return self.stockfish_provider.choose_move(board)
+        except (LookupError, FileNotFoundError, chess.engine.EngineError, OSError) as exc:
+            failures.append(f"Stockfish fallback failed: {exc}")
+        choice = self.random_provider.choose_move(board)
+        if failures:
+            choice = OpponentMoveChoice(
+                move=choice.move,
+                position_key=choice.position_key,
+                selected_via=choice.selected_via,
+                raw_count=choice.raw_count,
+                effective_weight=choice.effective_weight,
+                total_observed_count=choice.total_observed_count,
+                sparse=choice.sparse,
+                sparse_reason="; ".join(failures),
+                fallback_applied=True,
+                candidate_summaries=choice.candidate_summaries,
+            )
+        return choice

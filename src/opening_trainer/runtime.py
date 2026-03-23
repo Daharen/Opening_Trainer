@@ -38,11 +38,16 @@ WORKSPACE_CORPUS_PATHS = (
 )
 ENV_RUNTIME_CONFIG = "OPENING_TRAINER_RUNTIME_CONFIG"
 ENV_CORPUS_PATH = "OPENING_TRAINER_CORPUS_PATH"
+ENV_CORPUS_BUNDLE_DIR = "OPENING_TRAINER_CORPUS_BUNDLE_DIR"
 ENV_ENGINE_PATH = "OPENING_TRAINER_ENGINE_PATH"
 ENV_BOOK_PATH = "OPENING_TRAINER_BOOK_PATH"
 ENV_STRICT_ASSETS = "OPENING_TRAINER_STRICT_ASSETS"
 ENV_ENGINE_DEPTH = "OPENING_TRAINER_ENGINE_DEPTH"
 ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
+SUPPORTED_BUNDLE_POSITION_KEY_FORMAT = "fen_normalized"
+SUPPORTED_BUNDLE_MOVE_KEY_FORMAT = "uci"
+BUNDLE_MANIFEST_NAME = "manifest.json"
+BUNDLE_AGGREGATE_RELATIVE_PATH = Path("data/aggregated_position_move_counts.jsonl")
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,7 @@ class ResolvedAssetPath:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    corpus_bundle_dir: str | None = None
     corpus_artifact_path: str | None = None
     engine_executable_path: str | None = None
     opening_book_path: str | None = None
@@ -66,6 +72,7 @@ class RuntimeConfig:
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "RuntimeConfig":
         return cls(
+            corpus_bundle_dir=payload.get("corpus_bundle_dir"),
             corpus_artifact_path=payload.get("corpus_artifact_path"),
             engine_executable_path=payload.get("engine_executable_path"),
             opening_book_path=payload.get("opening_book_path"),
@@ -77,6 +84,7 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class RuntimeOverrides:
+    corpus_bundle_dir: str | None = None
     corpus_artifact_path: str | None = None
     engine_executable_path: str | None = None
     opening_book_path: str | None = None
@@ -113,12 +121,18 @@ class RuntimeContext:
             if fully_capable
             else "Degraded mode: one or more runtime authorities are unavailable; status lines below explain why."
         )
+        opponent_order = (
+            "corpus aggregate bundle or legacy corpus artifact -> Stockfish fallback -> random legal last-ditch fallback"
+        )
         lines = (
             f"Mode: {mode}",
             f"User color: {user_color}",
             f"Corpus: {self.corpus.detail}",
             f"Book: {self.book.detail}",
             f"Engine: {self.engine.detail}",
+            f"Opponent source order: {opponent_order}",
+            f"Stockfish fallback available: {'yes' if self.engine.available else 'no'}",
+            "Random fallback remains enabled only as the last-ditch opponent source.",
             doctrine_status,
         )
         return RuntimeStartupStatus(
@@ -147,6 +161,12 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         prefer_file_value=config_prefers_file_assets,
     )
     config = RuntimeConfig(
+        corpus_bundle_dir=_pick_asset_value(
+            override_value=overrides.corpus_bundle_dir,
+            file_value=file_config.corpus_bundle_dir,
+            env_value=os.getenv(ENV_CORPUS_BUNDLE_DIR),
+            prefer_file_value=config_prefers_file_assets,
+        ),
         corpus_artifact_path=_pick_asset_value(
             override_value=overrides.corpus_artifact_path,
             file_value=file_config.corpus_artifact_path,
@@ -200,19 +220,23 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         active_envelope_player_moves=evaluator_base.active_envelope_player_moves,
     )
 
-    corpus = _resolve_file_asset(
-        selected_path=config.corpus_artifact_path,
-        selected_source=_configured_asset_source(
+    corpus = _resolve_corpus_asset(
+        bundle_dir=config.corpus_bundle_dir,
+        bundle_source=_configured_asset_source(
+            override_value=overrides.corpus_bundle_dir,
+            file_value=file_config.corpus_bundle_dir,
+            env_name=ENV_CORPUS_BUNDLE_DIR,
+            prefer_file_value=config_prefers_file_assets,
+            file_source=config_resolution.asset_source,
+        ),
+        legacy_artifact_path=config.corpus_artifact_path,
+        legacy_source=_configured_asset_source(
             override_value=overrides.corpus_artifact_path,
             file_value=file_config.corpus_artifact_path,
             env_name=ENV_CORPUS_PATH,
             prefer_file_value=config_prefers_file_assets,
             file_source=config_resolution.asset_source,
         ),
-        env_name=ENV_CORPUS_PATH,
-        workspace_candidates=WORKSPACE_CORPUS_PATHS,
-        repo_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
-        label="corpus artifact",
     )
     engine = _resolve_engine_asset(
         selected_path=config.engine_executable_path,
@@ -253,13 +277,21 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
 
 def corpus_status_detail(path: str | Path | None) -> str:
     if path is None:
-        return "no artifact found; using explicit provisional fallback"
+        return "no compatible corpus source loaded; opponent provider will use Stockfish fallback before random legal fallback"
     local_path = Path(path)
+    if local_path.is_dir():
+        compatibility = inspect_corpus_bundle(local_path)
+        if compatibility.available:
+            return compatibility.detail
+        return (
+            f"selected corpus bundle directory {local_path} rejected: {compatibility.failure_reason}; "
+            "continuing with degraded fallback order"
+        )
     if not local_path.exists():
-        return "no artifact found; using explicit provisional fallback"
+        return "no compatible corpus source loaded; opponent provider will use Stockfish fallback before random legal fallback"
     artifact = load_artifact(local_path)
     return (
-        f"loaded {path} via artifact (source={path}, schema={artifact.schema_version}, "
+        f"loaded legacy corpus artifact {path} (source={path}, schema={artifact.schema_version}, "
         f"rating_policy={artifact.rating_policy}, retained_ply_depth={artifact.retained_ply_depth}, "
         f"positions={len(artifact.positions)})"
     )
@@ -271,6 +303,78 @@ class ResolvedConfigFile:
     description: str
     kind: str
     asset_source: str | None
+
+
+@dataclass(frozen=True)
+class BundleCompatibility:
+    bundle_dir: Path
+    manifest_path: Path
+    aggregate_path: Path
+    available: bool
+    detail: str
+    failure_reason: str | None = None
+
+
+def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
+    resolved_dir = bundle_dir.expanduser()
+    manifest_path = resolved_dir / BUNDLE_MANIFEST_NAME
+    aggregate_path = resolved_dir / BUNDLE_AGGREGATE_RELATIVE_PATH
+    if not resolved_dir.exists():
+        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle directory missing at {resolved_dir}", "bundle directory does not exist")
+    if not resolved_dir.is_dir():
+        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle path {resolved_dir} is not a directory", "bundle path is not a directory")
+    if not manifest_path.exists():
+        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle directory {resolved_dir} missing manifest.json", "manifest.json is missing")
+    if not aggregate_path.exists():
+        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle directory {resolved_dir} missing data/aggregated_position_move_counts.jsonl", "aggregate payload is missing")
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle manifest could not be parsed: {exc}", "manifest.json is not valid JSON")
+
+    position_key_format = manifest.get("position_key_format")
+    if position_key_format != SUPPORTED_BUNDLE_POSITION_KEY_FORMAT:
+        return BundleCompatibility(
+            resolved_dir,
+            manifest_path,
+            aggregate_path,
+            False,
+            f"bundle manifest position_key_format={position_key_format!r} is unsupported",
+            f"unsupported position_key_format {position_key_format!r}",
+        )
+    move_key_format = manifest.get("move_key_format")
+    if move_key_format != SUPPORTED_BUNDLE_MOVE_KEY_FORMAT:
+        return BundleCompatibility(
+            resolved_dir,
+            manifest_path,
+            aggregate_path,
+            False,
+            f"bundle manifest move_key_format={move_key_format!r} is unsupported",
+            f"unsupported move_key_format {move_key_format!r}",
+        )
+
+    payload_status = manifest.get("payload_status")
+    if payload_status not in {"ready", "complete", "available", "counts_available", "ok", None}:
+        return BundleCompatibility(
+            resolved_dir,
+            manifest_path,
+            aggregate_path,
+            False,
+            f"bundle manifest payload_status={payload_status!r} does not indicate real aggregate counts",
+            f"payload_status {payload_status!r} is not supported",
+        )
+
+    return BundleCompatibility(
+        resolved_dir.resolve(),
+        manifest_path.resolve(),
+        aggregate_path.resolve(),
+        True,
+        (
+            f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, aggregate ok, "
+            f"position_key_format={position_key_format}, move_key_format={move_key_format})"
+        ),
+    )
 
 
 def _resolve_config_file_path(override_path: str | None) -> ResolvedConfigFile:
@@ -299,6 +403,79 @@ def _resolve_config_file_path(override_path: str | None) -> ResolvedConfigFile:
             "repo-runtime-config",
         )
     return ResolvedConfigFile(None, "built-in defaults", "defaults", None)
+
+
+def _resolve_corpus_asset(
+    bundle_dir: str | None,
+    bundle_source: str | None,
+    legacy_artifact_path: str | None,
+    legacy_source: str | None,
+) -> ResolvedAssetPath:
+    bundle_resolution = _resolve_explicit_bundle_dir(bundle_dir, bundle_source)
+    if bundle_resolution is not None:
+        if bundle_resolution.available:
+            return bundle_resolution
+        legacy_resolution = _resolve_file_asset(
+            selected_path=legacy_artifact_path,
+            selected_source=legacy_source,
+            env_name=ENV_CORPUS_PATH,
+            workspace_candidates=WORKSPACE_CORPUS_PATHS,
+            repo_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
+            label="legacy corpus artifact",
+        )
+        if legacy_resolution.available:
+            return ResolvedAssetPath(
+                label="corpus",
+                path=legacy_resolution.path,
+                source=legacy_resolution.source,
+                available=True,
+                detail=f"{bundle_resolution.detail}; falling back to {legacy_resolution.detail}",
+            )
+        return ResolvedAssetPath(
+            label="corpus",
+            path=bundle_resolution.path,
+            source=bundle_resolution.source,
+            available=False,
+            detail=f"{bundle_resolution.detail}; no legacy corpus artifact available, so runtime will fall back to Stockfish then random legal moves",
+        )
+
+    legacy_resolution = _resolve_file_asset(
+        selected_path=legacy_artifact_path,
+        selected_source=legacy_source,
+        env_name=ENV_CORPUS_PATH,
+        workspace_candidates=WORKSPACE_CORPUS_PATHS,
+        repo_candidates=(Path(DEFAULT_ARTIFACT_PATH),),
+        label="legacy corpus artifact",
+    )
+    if legacy_resolution.available:
+        return ResolvedAssetPath(
+            label="corpus",
+            path=legacy_resolution.path,
+            source=legacy_resolution.source,
+            available=True,
+            detail=legacy_resolution.detail,
+        )
+    return ResolvedAssetPath(
+        label="corpus",
+        path=legacy_resolution.path,
+        source=legacy_resolution.source,
+        available=False,
+        detail=f"{legacy_resolution.detail}; no compatible corpus source loaded, so runtime will fall back to Stockfish then random legal moves",
+    )
+
+
+def _resolve_explicit_bundle_dir(selected_path: str | None, selected_source: str | None) -> ResolvedAssetPath | None:
+    if selected_path is None or selected_source is None:
+        return None
+    compatibility = inspect_corpus_bundle(Path(selected_path))
+    detail = f"selected corpus bundle directory via {_winner_label(selected_source)}: {compatibility.detail}"
+    return ResolvedAssetPath(
+        label="corpus bundle directory",
+        path=str(compatibility.bundle_dir),
+        source=selected_source,
+        available=compatibility.available,
+        detail=detail,
+    )
 
 
 def _resolve_file_asset(
