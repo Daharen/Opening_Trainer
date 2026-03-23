@@ -8,7 +8,11 @@ from typing import Protocol
 import chess
 import chess.engine
 
-from .bundle_corpus import BuilderAggregateCorpusProvider, normalize_builder_position_key
+from .bundle_corpus import (
+    BuilderAggregateCorpusProvider,
+    BuilderAggregateParseError,
+    normalize_builder_position_key,
+)
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact, normalize_position_key
 from .evaluation import EvaluatorConfig
 from .runtime import corpus_status_detail
@@ -139,13 +143,20 @@ class BuilderAggregateOpponentProvider:
     def __init__(self, bundle_dir: str | Path, rng=None):
         self.bundle_dir = Path(bundle_dir)
         self.rng = rng or random
-        self.bundle = BuilderAggregateCorpusProvider(self.bundle_dir, rng=self.rng)
+        self.last_lookup_diagnostic: str | None = None
+        try:
+            self.bundle = BuilderAggregateCorpusProvider(self.bundle_dir, rng=self.rng)
+        except BuilderAggregateParseError as exc:
+            self.last_lookup_diagnostic = f"reason_code={exc.reason_code}; detail={exc.detail}"
+            raise
 
     def choose_move(self, board: chess.Board) -> OpponentMoveChoice:
         position_key = normalize_builder_position_key(board)
         position = self.bundle.position_index.get(position_key)
         if position is None:
-            raise LookupError(f"No aggregate bundle row for position {position_key}.")
+            diagnostic = f"reason_code=position_key_not_found; position_key={position_key}"
+            self.last_lookup_diagnostic = diagnostic
+            raise LookupError(diagnostic)
 
         legal_candidates: list[tuple[chess.Move, object]] = []
         rejected_uci: list[str] = []
@@ -159,13 +170,31 @@ class BuilderAggregateOpponentProvider:
                 rejected_uci.append(candidate.uci)
                 continue
             legal_candidates.append((move, candidate))
+
+        if position.candidate_row_count > 0 and not position.candidates:
+            diagnostic = (
+                "reason_code=position_row_found_but_no_supported_candidate_moves; "
+                f"position_key={position_key}; candidate_rows_loaded={position.candidate_row_count}; legal_candidates=0"
+            )
+            self.last_lookup_diagnostic = diagnostic
+            raise LookupError(diagnostic)
+
         if not legal_candidates:
-            rejected_text = f" rejected candidates={rejected_uci}" if rejected_uci else ""
-            raise LookupError(f"Aggregate bundle candidates were not legal for position {position_key}.{rejected_text}")
+            diagnostic = (
+                "reason_code=position_row_found_but_all_candidate_moves_illegal; "
+                f"position_key={position_key}; candidate_rows_loaded={position.candidate_row_count}; legal_candidates=0; "
+                f"rejected_candidates={rejected_uci}"
+            )
+            self.last_lookup_diagnostic = diagnostic
+            raise LookupError(diagnostic)
 
         weighted_candidates = [candidate for _, candidate in legal_candidates]
         selected = self.rng.choices(weighted_candidates, weights=[max(0, candidate.raw_count) for candidate in weighted_candidates], k=1)[0]
         selected_move = next(move for move, candidate in legal_candidates if candidate == selected)
+        self.last_lookup_diagnostic = (
+            "reason_code=corpus_hit; "
+            f"position_key={position_key}; candidate_rows_loaded={position.candidate_row_count}; legal_candidates={len(legal_candidates)}"
+        )
         return OpponentMoveChoice(
             move=selected_move,
             position_key=position_key,
@@ -227,6 +256,11 @@ class OpponentProvider:
                 return self.bundle_provider.choose_move(board)
             except LookupError as exc:
                 failures.append(f"bundle lookup failed: {exc}")
+            except BuilderAggregateParseError as exc:
+                failures.append(
+                    "bundle lookup failed: "
+                    f"reason_code={exc.reason_code}; detail={exc.detail}; position_key={normalize_builder_position_key(board)}"
+                )
         if self.corpus_provider is not None:
             try:
                 return self.corpus_provider.choose_move(board)
