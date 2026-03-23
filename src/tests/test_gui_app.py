@@ -117,13 +117,16 @@ class BoardViewStub:
 
 def _build_gui(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
-    gui.panel_visible = True
-    gui.side_panel = object()
+    gui.panel_visible = False
+    gui.move_list_visible = True
     gui.compact_status_panel = FakeGridWidget()
     gui.panel_toggle_button = FakeButton()
     gui.root_pane = FakePane()
+    gui.move_list_panel = FakeGridWidget()
+    gui.inspector = FakeGridWidget()
     gui.session = FakeSession(tmp_path)
     gui._refresh_supporting_surfaces = lambda: None
+    gui._set_panel_toggle_label = OpeningTrainerGUI._set_panel_toggle_label.__get__(gui, OpeningTrainerGUI)
     return gui
 
 
@@ -249,37 +252,34 @@ def test_show_outcome_modal_fail_path_survives_missing_punishing_reply(monkeypat
     assert modal.contract.review_boards[0].arrow_move_uci == 'd2d4'
 
 
-def test_side_panel_layout_keeps_board_region_dominant(tmp_path):
+def test_default_shell_layout_keeps_move_list_visible_and_training_panel_hidden(tmp_path):
     gui = _build_gui(tmp_path)
 
-    gui._apply_side_panel_layout(initializing=True)
+    gui._apply_shell_layout(initializing=True)
 
-    assert str(gui.side_panel) in gui.root_pane.panes()
-    assert gui.panel_toggle_button.text == 'Hide Panel'
+    assert gui.move_list_panel.visible is True
+    assert gui.inspector.visible is False
+    assert gui.panel_toggle_button.text == 'Show Training Panel'
 
 
-def test_toggle_side_panel_hides_and_restores_panel_state(tmp_path):
+def test_toggle_side_panel_reveals_training_panel_without_hiding_move_list(tmp_path):
     gui = _build_gui(tmp_path)
-    gui._apply_side_panel_layout(initializing=True)
-
-    gui._toggle_side_panel()
-    assert gui.panel_visible is False
-    assert str(gui.side_panel) not in gui.root_pane.panes()
-    assert gui.compact_status_panel.visible is True
-    assert gui.panel_toggle_button.text == 'Show Panel'
+    gui._apply_shell_layout(initializing=True)
 
     gui._toggle_side_panel()
     assert gui.panel_visible is True
-    assert str(gui.side_panel) in gui.root_pane.panes()
-    assert gui.panel_toggle_button.text == 'Hide Panel'
-
+    assert gui.move_list_panel.visible is True
+    assert gui.inspector.visible is True
+    assert gui.panel_toggle_button.text == 'Hide Training Panel'
     assert gui.session.saved_settings.side_panel_visible is True
+    assert gui.session.saved_settings.move_list_visible is True
 
 
-def test_load_panel_visibility_preference_defaults_true_on_invalid_json(tmp_path):
+def test_load_panel_visibility_preference_defaults_false_for_new_settings(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.session = FakeSession(tmp_path)
-    assert gui._load_panel_visibility_preference() is True
+    assert gui._load_panel_visibility_preference() is False
+    assert gui._load_move_list_visibility_preference() is True
 
 
 def test_refresh_view_does_not_advance_until_modal_acknowledged(monkeypatch):
@@ -373,3 +373,77 @@ def test_corpus_summary_prefers_manifest_band_and_falls_back_to_bundle_name(tmp_
 
     session.opponent = type('Opponent', (), {'bundle_provider': type('Provider', (), {'bundle': type('Bundle', (), {'metadata': type('Meta', (), {'manifest': {}})()})()})()})()
     assert '1200 1400' in session.corpus_summary_text()
+
+
+
+def test_captured_strip_panel_follows_player_perspective():
+    from opening_trainer.ui.captured_material_panel import CapturedMaterialPanel
+
+    panel = CapturedMaterialPanel.__new__(CapturedMaterialPanel)
+    panel.primary_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    panel.secondary_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    panel.delta_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    board = chess.Board()
+    board.remove_piece_at(chess.D8)
+    board.remove_piece_at(chess.A1)
+
+    CapturedMaterialPanel.update_board(panel, board, player_color=chess.BLACK, near_side=True)
+    assert panel.primary_var.value.startswith('Black captured:')
+    assert '♖' in panel.primary_var.value
+    assert panel.secondary_var.value.startswith('White captured:')
+    assert '♛' in panel.secondary_var.value
+
+
+def test_remembered_bundle_path_defaults_to_none(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeSession(tmp_path)
+    assert gui._remembered_bundle_path() is None
+
+
+
+def test_load_selected_bundle_invokes_loading_state(monkeypatch, tmp_path):
+    gui = _build_gui(tmp_path)
+    gui.session.runtime_context = type('RuntimeContext', (), {'config': type('Config', (), {
+        'corpus_artifact_path': None,
+        'engine_executable_path': None,
+        'opening_book_path': None,
+        'engine_depth': None,
+        'engine_time_limit_seconds': None,
+        'strict_assets': False,
+    })()})()
+    gui._load_move_list_visibility_preference = lambda: True
+    gui._load_panel_visibility_preference = lambda: False
+    gui._update_bundle_summary = lambda: None
+    gui._apply_shell_layout = lambda initializing=False: None
+    gui._hide_bundle_picker = lambda: None
+    gui._start_game = lambda loading_message=None: None
+    gui.inspector = type('Inspector', (), {'session': None})()
+    seen = {}
+
+    monkeypatch.setattr('opening_trainer.ui.gui_app.inspect_corpus_bundle', lambda path: type('Compat', (), {'available': True, 'bundle_dir': path, 'detail': 'ok'})())
+    monkeypatch.setattr('opening_trainer.ui.gui_app.TrainingSession', lambda runtime_context, mode, review_storage: type('Session', (), {
+        'runtime_context': runtime_context,
+        'review_storage': review_storage,
+        'settings': gui.session.settings,
+        'settings_store': gui.session.settings_store,
+        'max_supported_training_depth': lambda self=None: 5,
+        'update_settings': lambda self, settings: settings,
+    })())
+    gui._build_runtime_for_bundle = lambda bundle_path: {'bundle': bundle_path}
+    gui._show_loading = lambda message: seen.setdefault('message', message)
+
+    gui._load_selected_bundle(str(tmp_path / 'bundle'))
+
+    assert 'Loading corpus bundle' in seen['message']
+
+
+
+def test_initialize_app_shell_recovers_when_remembered_bundle_missing(tmp_path):
+    gui = _build_gui(tmp_path)
+    gui.session.settings = TrainerSettings(last_bundle_path=str(tmp_path / 'missing_bundle'))
+    seen = {}
+    gui._show_bundle_picker = lambda message=None: seen.setdefault('message', message)
+
+    gui._initialize_app_shell()
+
+    assert 'Choose a corpus bundle' in seen['message']

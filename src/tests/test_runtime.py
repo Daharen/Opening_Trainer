@@ -888,3 +888,45 @@ def test_session_opponent_turn_uses_random_after_bundle_miss_and_stockfish_failu
     assert session.last_opponent_choice.selected_via == "random_legal_move"
     assert session.last_opponent_choice.corpus_lookup_reason_code == "random_fallback_used_after_all_failures"
     assert "Stockfish fallback failed" in (session.last_opponent_choice.sparse_reason or "")
+
+
+
+def test_settings_store_persists_shell_defaults_and_last_bundle(tmp_path):
+    from opening_trainer.settings import TrainerSettings, TrainerSettingsStore
+
+    store = TrainerSettingsStore(tmp_path)
+    saved = store.save(
+        TrainerSettings(
+            good_moves_acceptable=False,
+            active_training_ply_depth=3,
+            side_panel_visible=False,
+            move_list_visible=True,
+            last_bundle_path='  /tmp/example_bundle  ',
+        )
+    )
+
+    assert saved.side_panel_visible is False
+    assert saved.move_list_visible is True
+    assert saved.last_bundle_path == '/tmp/example_bundle'
+
+    loaded = store.load(maximum_depth=5)
+    assert loaded == saved
+
+
+
+def test_main_run_defaults_to_gui_without_interactive_bundle_prompt(monkeypatch):
+    from opening_trainer import main as trainer_main
+
+    calls = {}
+
+    monkeypatch.setattr(trainer_main, 'load_runtime_config', lambda overrides: type('Runtime', (), {'config': type('Config', (), {'strict_assets': False})()})())
+
+    def fake_launch_gui(runtime_context=None):
+        calls['runtime_context'] = runtime_context
+
+    import opening_trainer.ui.gui_app as gui_app
+    monkeypatch.setattr(gui_app, 'launch_gui', fake_launch_gui)
+
+    trainer_main.run([])
+
+    assert hasattr(calls['runtime_context'], 'config')

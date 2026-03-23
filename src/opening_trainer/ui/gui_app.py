@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import simpledialog
+from pathlib import Path
+from tkinter import filedialog, messagebox, simpledialog
 from tkinter import ttk
 
 import chess
 
 from ..models import SessionState
-from ..runtime import RuntimeContext
+from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
 from ..settings import TrainerSettings
 from ..session import TrainingSession
 from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
@@ -20,6 +21,7 @@ from .review_inspector import ReviewInspector
 from .status_panel import StatusPanel
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
+DEFAULT_BUNDLE_SEARCH_ROOTS = (Path('artifacts'),)
 
 
 class OpeningTrainerGUI:
@@ -30,15 +32,26 @@ class OpeningTrainerGUI:
         self.selected_square = None
         self.pending_restart = False
         self.panel_visible = self._load_panel_visibility_preference()
+        self.move_list_visible = self._load_move_list_visibility_preference()
+        self.loading_var = tk.StringVar(value='')
+        self.bundle_status_var = tk.StringVar(value='No active corpus bundle selected.')
+        self.bundle_detail_var = tk.StringVar(value='Select a corpus bundle to enable corpus-backed opponent play.')
+        self.start_button = None
+        self.browse_bundle_button = None
+        self.bundle_combobox = None
+        self.bundle_path_var = tk.StringVar()
+        self.available_bundles: list[tuple[str, Path]] = []
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
         toolbar = tk.Frame(self.root)
         toolbar.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 4))
-        tk.Button(toolbar, text='Start drill', command=self._start_game).pack(side='left')
+        self.start_button = tk.Button(toolbar, text='Start drill', command=self._start_game)
+        self.start_button.pack(side='left')
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
+        tk.Button(toolbar, text='Corpus bundle', command=self._open_bundle_picker).pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
@@ -50,62 +63,128 @@ class OpeningTrainerGUI:
         self.main_region.rowconfigure(2, weight=1)
         self.compact_status_panel = StatusPanel(self.main_region, compact=True)
         self.compact_status_panel.grid(row=0, column=0, sticky='ew', pady=(0, 8))
-        self.captured_panel = CapturedMaterialPanel(self.main_region)
-        self.captured_panel.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+        self.top_captured_panel = CapturedMaterialPanel(self.main_region, title='Far side')
+        self.top_captured_panel.grid(row=1, column=0, sticky='ew', pady=(0, 8))
         self.board_view = BoardView(self.main_region, board_size=560, min_board_size=360)
         self.board_view.grid(row=2, column=0, sticky='nsew')
+        self.bottom_captured_panel = CapturedMaterialPanel(self.main_region, title='Near side')
+        self.bottom_captured_panel.grid(row=3, column=0, sticky='ew', pady=(8, 0))
 
         self.side_panel = tk.Frame(self.root, width=360)
+        self.side_panel.columnconfigure(0, weight=1)
+        self.side_panel.rowconfigure(3, weight=1)
         self.status_panel = StatusPanel(self.side_panel)
-        self.status_panel.pack(fill='x')
+        self.status_panel.grid(row=0, column=0, sticky='ew')
+        bundle_frame = ttk.LabelFrame(self.side_panel, text='Corpus bundle')
+        bundle_frame.grid(row=1, column=0, sticky='ew', pady=(8, 4))
+        ttk.Label(bundle_frame, textvariable=self.bundle_status_var, anchor='w', justify='left').pack(fill='x', padx=8, pady=(8, 2))
+        ttk.Label(bundle_frame, textvariable=self.bundle_detail_var, anchor='w', justify='left', wraplength=320).pack(fill='x', padx=8, pady=(0, 8))
         self.recent_var = tk.StringVar()
-        tk.Label(self.side_panel, textvariable=self.recent_var, justify='left', anchor='w').pack(fill='x', pady=4)
-        self.side_pane = tk.PanedWindow(self.side_panel, orient=tk.VERTICAL, sashrelief=tk.RAISED, bd=0)
-        self.side_pane.pack(fill='both', expand=True)
-        self.inspector = ReviewInspector(self.side_pane, self.session, self._refresh_supporting_surfaces)
-        self.move_list_panel = MoveListPanel(self.side_pane)
-        self.side_pane.add(self.inspector, minsize=220, stretch='always')
-        self.side_pane.add(self.move_list_panel, minsize=120)
+        tk.Label(self.side_panel, textvariable=self.recent_var, justify='left', anchor='w').grid(row=2, column=0, sticky='ew', pady=4)
+        self.side_content = ttk.Frame(self.side_panel)
+        self.side_content.grid(row=3, column=0, sticky='nsew')
+        self.side_content.columnconfigure(0, weight=1)
+        self.side_content.rowconfigure(0, weight=1)
+        self.side_content.rowconfigure(1, weight=1)
+        self.move_list_panel = MoveListPanel(self.side_content)
+        self.move_list_panel.grid(row=0, column=0, sticky='nsew', pady=(0, 8))
+        self.inspector = ReviewInspector(self.side_content, self.session, self._refresh_supporting_surfaces)
+        self.inspector.grid(row=1, column=0, sticky='nsew')
+
+        self.loading_frame = ttk.Frame(self.main_region, padding=18)
+        self.loading_frame.place(relx=0.5, rely=0.5, anchor='center')
+        ttk.Label(self.loading_frame, text='Opening Trainer', font=('TkDefaultFont', 13, 'bold')).pack(pady=(0, 8))
+        ttk.Label(self.loading_frame, textvariable=self.loading_var, justify='center', wraplength=320).pack(pady=(0, 8))
+        self.loading_progress = ttk.Progressbar(self.loading_frame, mode='indeterminate', length=260)
+        self.loading_progress.pack(fill='x')
+
+        self.bundle_picker = ttk.LabelFrame(self.main_region, text='Select corpus bundle', padding=12)
+        self.bundle_picker.columnconfigure(0, weight=1)
+        ttk.Label(self.bundle_picker, text='Choose a discovered bundle or browse to a custom bundle path.', wraplength=360, justify='left').grid(row=0, column=0, columnspan=3, sticky='w')
+        self.bundle_combobox = ttk.Combobox(self.bundle_picker, state='readonly')
+        self.bundle_combobox.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(10, 8))
+        ttk.Button(self.bundle_picker, text='Refresh', command=self._populate_bundle_options).grid(row=1, column=2, sticky='e', padx=(8, 0), pady=(10, 8))
+        ttk.Label(self.bundle_picker, text='Custom path').grid(row=2, column=0, sticky='w')
+        ttk.Entry(self.bundle_picker, textvariable=self.bundle_path_var).grid(row=3, column=0, columnspan=2, sticky='ew', pady=(4, 0))
+        self.browse_bundle_button = ttk.Button(self.bundle_picker, text='Browse…', command=self._browse_bundle_path)
+        self.browse_bundle_button.grid(row=3, column=2, sticky='e', padx=(8, 0))
+        actions = ttk.Frame(self.bundle_picker)
+        actions.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(12, 0))
+        ttk.Button(actions, text='Use selection', command=self._apply_bundle_selection).pack(side='left')
+        ttk.Button(actions, text='Skip bundle', command=self._skip_bundle_selection).pack(side='left', padx=(8, 0))
 
         self.root_pane.add(self.main_region, minsize=500, stretch='always')
-        self.root_pane.add(self.side_panel, minsize=260)
+        self.root_pane.add(self.side_panel, minsize=280)
 
         self.board_view.bind('<ButtonPress-1>', self._on_board_press)
         self.board_view.bind('<B1-Motion>', self._on_board_drag)
         self.board_view.bind('<ButtonRelease-1>', self._on_board_release)
-        self._apply_side_panel_layout(initializing=True)
+        self._apply_shell_layout(initializing=True)
+        self._populate_bundle_options()
+        self._update_bundle_summary()
 
     def run(self) -> None:
-        self._start_game()
+        self.root.after(0, self._initialize_app_shell)
         self.root.mainloop()
+
+    def _initialize_app_shell(self) -> None:
+        remembered = self._remembered_bundle_path()
+        if remembered and self._bundle_path_is_valid(remembered):
+            self._load_selected_bundle(remembered)
+            return
+        self._show_bundle_picker('Choose a corpus bundle to start training. You can also skip and use fallback mode.')
 
     def _load_panel_visibility_preference(self) -> bool:
         return self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth()).side_panel_visible
 
-    def _save_panel_visibility_preference(self) -> None:
+    def _load_move_list_visibility_preference(self) -> bool:
+        return self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth()).move_list_visible
+
+    def _remembered_bundle_path(self) -> str | None:
+        settings = self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth())
+        value = settings.last_bundle_path
+        return value if value else None
+
+    def _save_shell_preferences(self) -> None:
         settings = self.session.settings
-        self.session.update_settings(TrainerSettings(settings.good_moves_acceptable, settings.active_training_ply_depth, self.panel_visible))
+        self.session.update_settings(
+            TrainerSettings(
+                good_moves_acceptable=settings.good_moves_acceptable,
+                active_training_ply_depth=settings.active_training_ply_depth,
+                side_panel_visible=self.panel_visible,
+                move_list_visible=self.move_list_visible,
+                last_bundle_path=self._remembered_bundle_path(),
+            )
+        )
+
+    def _set_last_bundle_path(self, bundle_path: str | None) -> None:
+        settings = self.session.settings
+        self.session.update_settings(
+            TrainerSettings(
+                good_moves_acceptable=settings.good_moves_acceptable,
+                active_training_ply_depth=settings.active_training_ply_depth,
+                side_panel_visible=self.panel_visible,
+                move_list_visible=self.move_list_visible,
+                last_bundle_path=bundle_path,
+            )
+        )
 
     def _toggle_side_panel(self) -> None:
         self.panel_visible = not self.panel_visible
-        self._apply_side_panel_layout()
-        self._save_panel_visibility_preference()
+        self._apply_shell_layout()
+        self._save_shell_preferences()
 
-    def _apply_side_panel_layout(self, initializing: bool = False) -> None:
-        panes = list(self.root_pane.panes()) if hasattr(self.root_pane, 'panes') else []
-        if self.panel_visible:
-            if str(self.side_panel) not in panes:
-                self.root_pane.add(self.side_panel, minsize=260)
-            self.compact_status_panel.grid_remove()
-            self._set_panel_toggle_label('Hide Panel')
+    def _apply_shell_layout(self, initializing: bool = False) -> None:
+        if self.move_list_visible:
+            self.move_list_panel.grid()
         else:
-            try:
-                self.root_pane.forget(self.side_panel)
-            except Exception:
-                if hasattr(self.side_panel, 'grid_remove'):
-                    self.side_panel.grid_remove()
-            self.compact_status_panel.grid()
-            self._set_panel_toggle_label('Show Panel')
+            self.move_list_panel.grid_remove()
+        if self.panel_visible:
+            self.inspector.grid()
+            self._set_panel_toggle_label('Hide Training Panel')
+        else:
+            self.inspector.grid_remove()
+            self._set_panel_toggle_label('Show Training Panel')
         if not initializing:
             self._refresh_supporting_surfaces()
 
@@ -113,14 +192,137 @@ class OpeningTrainerGUI:
         if hasattr(self.panel_toggle_button, 'configure'):
             self.panel_toggle_button.configure(text=label)
 
+    def _show_loading(self, message: str) -> None:
+        self.loading_var.set(message)
+        self.loading_frame.lift()
+        self.loading_progress.start(10)
+        self.root.update_idletasks()
+
+    def _hide_loading(self) -> None:
+        self.loading_progress.stop()
+        self.loading_frame.place_forget()
+
+    def _show_bundle_picker(self, message: str | None = None) -> None:
+        self._hide_loading()
+        self._populate_bundle_options()
+        if message:
+            self.bundle_detail_var.set(message)
+        self.bundle_picker.place(relx=0.5, rely=0.5, anchor='center')
+        self.start_button.configure(state='disabled')
+
+    def _hide_bundle_picker(self) -> None:
+        self.bundle_picker.place_forget()
+        self.start_button.configure(state='normal')
+
+    def _bundle_search_roots(self) -> tuple[Path, ...]:
+        return tuple(Path.cwd() / root for root in DEFAULT_BUNDLE_SEARCH_ROOTS)
+
+    def _populate_bundle_options(self) -> None:
+        discovered: list[tuple[str, Path]] = []
+        for root in self._bundle_search_roots():
+            if not root.exists():
+                continue
+            for candidate in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda item: item.name.lower()):
+                compatibility = inspect_corpus_bundle(candidate)
+                if compatibility.available:
+                    discovered.append((candidate.name.replace('_', ' '), compatibility.bundle_dir))
+        self.available_bundles = discovered
+        values = [f'{label} — {path}' for label, path in discovered]
+        self.bundle_combobox.configure(values=values)
+        if values:
+            self.bundle_combobox.set(values[0])
+            self.bundle_path_var.set(str(discovered[0][1]))
+        else:
+            self.bundle_combobox.set('')
+        self.bundle_combobox.bind('<<ComboboxSelected>>', self._on_bundle_combo_selected)
+
+    def _on_bundle_combo_selected(self, _event=None) -> None:
+        index = self.bundle_combobox.current()
+        if 0 <= index < len(self.available_bundles):
+            self.bundle_path_var.set(str(self.available_bundles[index][1]))
+
+    def _browse_bundle_path(self) -> None:
+        selected = filedialog.askdirectory(parent=self.root, title='Select corpus bundle directory')
+        if selected:
+            self.bundle_path_var.set(selected)
+
+    def _bundle_path_is_valid(self, bundle_path: str | Path | None) -> bool:
+        if not bundle_path:
+            return False
+        return inspect_corpus_bundle(Path(bundle_path)).available
+
+    def _apply_bundle_selection(self) -> None:
+        bundle_path = self.bundle_path_var.get().strip()
+        if not bundle_path:
+            messagebox.showerror('Corpus bundle', 'Choose a discovered bundle or browse to a valid bundle directory.', parent=self.root)
+            return
+        self._load_selected_bundle(bundle_path)
+
+    def _skip_bundle_selection(self) -> None:
+        self._set_last_bundle_path(None)
+        self._update_bundle_summary()
+        self._hide_bundle_picker()
+        self._start_game()
+
+    def _build_runtime_for_bundle(self, bundle_path: str | None) -> RuntimeContext:
+        current = self.session.runtime_context.config
+        return load_runtime_config(
+            RuntimeOverrides(
+                corpus_bundle_dir=bundle_path,
+                corpus_artifact_path=current.corpus_artifact_path,
+                engine_executable_path=current.engine_executable_path,
+                opening_book_path=current.opening_book_path,
+                engine_depth=current.engine_depth,
+                engine_time_limit_seconds=current.engine_time_limit_seconds,
+                strict_assets=current.strict_assets,
+            )
+        )
+
+    def _load_selected_bundle(self, bundle_path: str) -> None:
+        self._show_loading('Loading corpus bundle…\nDiscovering bundle metadata, initializing the trainer, and preparing a session.')
+        compatibility = inspect_corpus_bundle(Path(bundle_path))
+        if not compatibility.available:
+            self._show_bundle_picker(f'Could not load remembered bundle: {compatibility.detail}')
+            return
+        runtime_context = self._build_runtime_for_bundle(str(compatibility.bundle_dir))
+        self.session = TrainingSession(runtime_context=runtime_context, mode='gui', review_storage=self.session.review_storage)
+        self.panel_visible = self._load_panel_visibility_preference()
+        self.move_list_visible = self._load_move_list_visibility_preference()
+        self.inspector.session = self.session
+        self._set_last_bundle_path(str(compatibility.bundle_dir))
+        self._update_bundle_summary()
+        self._apply_shell_layout(initializing=True)
+        self._hide_bundle_picker()
+        self._start_game(loading_message='Preparing trainer session…\nInitializing engine, routing review state, and starting play.')
+
+    def _update_bundle_summary(self) -> None:
+        bundle_path = self._remembered_bundle_path()
+        if bundle_path and self._bundle_path_is_valid(bundle_path):
+            compatibility = inspect_corpus_bundle(Path(bundle_path))
+            self.bundle_status_var.set(f'Active bundle: {Path(bundle_path).name}')
+            self.bundle_detail_var.set(compatibility.detail)
+            return
+        if bundle_path:
+            self.bundle_status_var.set('Remembered bundle unavailable')
+            self.bundle_detail_var.set(f'{bundle_path} is missing or no longer valid. Choose another bundle or continue in fallback mode.')
+            return
+        self.bundle_status_var.set('Active bundle: fallback / none')
+        self.bundle_detail_var.set('No bundle selected. The trainer will fall back to Stockfish and then random legal moves when needed.')
+
+    def _open_bundle_picker(self):
+        self._show_bundle_picker('Choose a corpus bundle for this session. The last valid bundle will be reused on future launches.')
+
     def _open_profiles(self):
         ProfileDialog(self.root, self.session, self._refresh_supporting_surfaces).open()
 
-    def _start_game(self):
+    def _start_game(self, loading_message: str | None = None):
+        if loading_message is not None:
+            self._show_loading(loading_message)
         self.session.start_new_game()
         self.selected_square = None
         self.pending_restart = False
         self.board_view.cancel_drag()
+        self._hide_loading()
         self._refresh_view()
 
     def _build_counts_summary(self, due: int, boosted: int, extreme: int) -> str:
@@ -158,7 +360,10 @@ class OpeningTrainerGUI:
         self.inspector.refresh()
         view = self.session.get_view()
         self.move_list_panel.update_moves(view.move_history)
-        self.captured_panel.update_board(chess.Board(view.board_fen))
+        board = chess.Board(view.board_fen)
+        self.top_captured_panel.update_board(board, player_color=view.player_color, near_side=False)
+        self.bottom_captured_panel.update_board(board, player_color=view.player_color, near_side=True)
+        self._update_bundle_summary()
 
     def _open_options(self):
         window = tk.Toplevel(self.root)
@@ -169,7 +374,11 @@ class OpeningTrainerGUI:
         cap = self.session.max_supported_training_depth()
         depth_var = tk.IntVar(value=self.session.settings.active_training_ply_depth)
         good_var = tk.BooleanVar(value=self.session.settings.good_moves_acceptable)
+        panel_var = tk.BooleanVar(value=self.panel_visible)
+        move_list_var = tk.BooleanVar(value=self.move_list_visible)
         ttk.Checkbutton(frame, text='Accept Good moves (permissive mode)', variable=good_var).pack(anchor='w', pady=(0, 8))
+        ttk.Checkbutton(frame, text='Show training/review panel by default', variable=panel_var).pack(anchor='w')
+        ttk.Checkbutton(frame, text='Show move list by default', variable=move_list_var).pack(anchor='w', pady=(0, 8))
         ttk.Label(frame, text='Training depth (player moves)').pack(anchor='w')
         ttk.Combobox(frame, state='readonly', textvariable=depth_var, values=list(range(2, cap + 1)), width=8).pack(anchor='w', pady=(0, 8))
         retained_ply_depth = self.session.bundle_retained_ply_depth()
@@ -181,8 +390,11 @@ class OpeningTrainerGUI:
         ttk.Label(frame, text=detail, wraplength=320, justify='left').pack(anchor='w', pady=(0, 8))
 
         def save():
-            self.session.update_settings(TrainerSettings(good_var.get(), depth_var.get(), self.panel_visible))
+            self.panel_visible = panel_var.get()
+            self.move_list_visible = move_list_var.get()
+            self.session.update_settings(TrainerSettings(good_var.get(), depth_var.get(), self.panel_visible, self.move_list_visible, self._remembered_bundle_path()))
             window.destroy()
+            self._apply_shell_layout(initializing=True)
             self._refresh_supporting_surfaces()
 
         ttk.Button(frame, text='Save', command=save).pack(side='left')
