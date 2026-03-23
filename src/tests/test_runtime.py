@@ -5,6 +5,7 @@ from pathlib import Path
 
 import chess
 
+from opening_trainer.bundle_corpus import normalize_builder_position_key
 from opening_trainer.corpus import CorpusIngestor, save_artifact
 from opening_trainer.evaluation import AuthoritySource, CanonicalJudgment, EvaluationResult, OverlayLabel, ReasonCode
 from opening_trainer.opponent import OpponentMoveChoice
@@ -524,12 +525,13 @@ def test_degraded_mode_remains_explicit_without_workspace_assets(tmp_path, monke
 
 
 def test_corpus_bundle_cli_override_beats_legacy_corpus(tmp_path):
+    board = chess.Board()
     bundle_dir = _write_bundle(
         tmp_path / "selected_bundle",
         _sample_bundle_manifest(),
         [
             {
-                "position_key": chess.STARTING_FEN,
+                "position_key": normalize_builder_position_key(board),
                 "candidate_moves": [{"uci": "e2e4", "raw_count": 3}],
                 "total_observed_count": 3,
             }
@@ -549,10 +551,11 @@ def test_corpus_bundle_cli_override_beats_legacy_corpus(tmp_path):
 
 
 def test_corpus_bundle_environment_override_is_resolved(tmp_path, monkeypatch):
+    board = chess.Board()
     bundle_dir = _write_bundle(
         tmp_path / "env_bundle",
         _sample_bundle_manifest(),
-        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "d2d4", "raw_count": 1}], "total_observed_count": 1}],
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "d2d4", "raw_count": 1}], "total_observed_count": 1}],
     )
     monkeypatch.setenv("OPENING_TRAINER_CORPUS_BUNDLE_DIR", str(bundle_dir))
 
@@ -571,7 +574,7 @@ def test_training_session_keeps_bundle_dir_out_of_legacy_artifact_loader(tmp_pat
         _sample_bundle_manifest(),
         [
             {
-                "position_key": chess.STARTING_FEN,
+                "position_key": normalize_builder_position_key(board),
                 "candidate_moves": [{"uci": "e2e4", "raw_count": 3}],
                 "total_observed_count": 3,
             }
@@ -600,7 +603,7 @@ def test_real_builder_bundle_payload_status_is_accepted(tmp_path):
         _sample_bundle_manifest(payload_status="raw_aggregate_counts_present_non_final_trainer_payload"),
         [
             {
-                "position_key": board.fen(),
+                "position_key": normalize_builder_position_key(board),
                 "candidate_moves": [{"uci": "e2e4", "raw_count": 3}],
                 "total_observed_count": 3,
             }
@@ -661,12 +664,13 @@ def test_bundle_missing_declared_aggregate_payload_degrades_cleanly(tmp_path):
 
 
 def test_runtime_config_bundle_path_from_workspace_runtime_local(tmp_path, monkeypatch):
+    board = chess.Board()
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     bundle_dir = _write_bundle(
         tmp_path / "workspace_bundle",
         _sample_bundle_manifest(),
-        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "e2e4", "raw_count": 1}], "total_observed_count": 1}],
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e2e4", "raw_count": 1}], "total_observed_count": 1}],
     )
     (tmp_path / "runtime.local.json").write_text(json.dumps({"corpus_bundle_dir": str(bundle_dir)}), encoding="utf-8")
     monkeypatch.chdir(repo_root)
@@ -700,10 +704,11 @@ def _accepted_evaluation(move_uci: str) -> EvaluationResult:
 
 
 def test_session_opponent_turn_uses_bundle_move_for_black_start_position(tmp_path, monkeypatch, capsys):
+    board = chess.Board()
     bundle_dir = _write_bundle(
         tmp_path / "bundle",
         _sample_bundle_manifest(),
-        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
     )
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime)
@@ -725,10 +730,11 @@ def test_session_opponent_turn_uses_bundle_move_for_black_start_position(tmp_pat
 
 
 def test_session_player_move_reply_uses_bundle_move_for_white(tmp_path, monkeypatch):
+    reply_board = chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")
     bundle_dir = _write_bundle(
         tmp_path / "bundle",
         _sample_bundle_manifest(),
-        [{"position_key": chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").fen(), "candidate_moves": [{"uci": "e7e5", "raw_count": 4}], "total_observed_count": 4}],
+        [{"position_key": normalize_builder_position_key(reply_board), "candidate_moves": [{"uci": "e7e5", "raw_count": 4}], "total_observed_count": 4}],
     )
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime)
@@ -746,6 +752,28 @@ def test_session_player_move_reply_uses_bundle_move_for_white(tmp_path, monkeypa
     assert session.last_opponent_choice.selected_via == "corpus_aggregate_bundle"
     assert session.last_opponent_choice.corpus_lookup_reason_code == "corpus_hit"
 
+
+
+
+def test_session_bundle_diagnostic_reports_actual_normalized_lookup_key(tmp_path, monkeypatch, capsys):
+    board = chess.Board()
+    bundle_dir = _write_bundle(
+        tmp_path / "bundle",
+        _sample_bundle_manifest(),
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+    session.board.reset()
+    session.player_color = chess.BLACK
+    session.state = session.state.OPPONENT_TURN
+    monkeypatch.setattr(session.opponent.stockfish_provider, "choose_move", lambda board: (_ for _ in ()).throw(AssertionError("stockfish should not be used on corpus hit")))
+
+    session.advance_until_user_turn()
+    output = capsys.readouterr().out
+
+    assert f"position={normalize_builder_position_key(board)}" in output
+    assert " 0 1" not in output
 
 def test_session_opponent_turn_falls_back_to_stockfish_after_bundle_miss(tmp_path, monkeypatch):
     bundle_dir = _write_bundle(tmp_path / "bundle", _sample_bundle_manifest(), [])

@@ -68,7 +68,7 @@ def normalize_builder_position_key(board: chess.Board) -> str:
             en_passant = "-"
         elif board.ep_square != maybe_ep:
             en_passant = chess.square_name(board.ep_square) if board.ep_square is not None else "-"
-    return " ".join([fen_parts[0], fen_parts[1], fen_parts[2], en_passant, "0", "1"])
+    return " ".join([fen_parts[0], fen_parts[1], fen_parts[2], en_passant])
 
 
 class BuilderAggregateCorpusProvider:
