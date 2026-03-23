@@ -28,6 +28,12 @@ class SessionOutcome:
     next_routing_reason: str = "ordinary_corpus_play"
     profile_name: str = "Default"
     impact_summary: str = "No review impact recorded."
+    pre_fail_fen: str | None = None
+    post_fail_fen: str | None = None
+    preferred_move_uci: str | None = None
+    preferred_move_san: str | None = None
+    punishing_reply_uci: str | None = None
+    punishing_reply_san: str | None = None
 
 
 @dataclass(frozen=True)

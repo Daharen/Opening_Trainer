@@ -10,7 +10,7 @@ import chess
 from ..models import SessionState
 from ..runtime import RuntimeContext
 from ..session import TrainingSession
-from ..session_contracts import OutcomeModalContract
+from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
 from .board_view import BoardView
 from .outcome_modal import OutcomeModal
 from .profile_dialog import ProfileDialog
@@ -32,7 +32,7 @@ class OpeningTrainerGUI:
         self.side_panel_padx = (0, 12)
         self.side_panel_pady = (6, 12)
 
-        self.root.columnconfigure(0, weight=3)
+        self.root.columnconfigure(0, weight=8, minsize=420)
         self.root.columnconfigure(1, weight=0)
         self.root.rowconfigure(1, weight=1)
 
@@ -45,19 +45,20 @@ class OpeningTrainerGUI:
 
         self.main_region = tk.Frame(self.root)
         self.main_region.grid(row=1, column=0, sticky='nsew', padx=(12, 6), pady=(6, 12))
-        self.main_region.columnconfigure(0, weight=1)
+        self.main_region.columnconfigure(0, weight=1, minsize=420)
         self.main_region.rowconfigure(1, weight=1)
 
         self.compact_status_panel = StatusPanel(self.main_region, compact=True)
         self.compact_status_panel.grid(row=0, column=0, sticky='ew', pady=(0, 8))
 
-        self.board_view = BoardView(self.main_region)
+        self.board_view = BoardView(self.main_region, board_size=560, min_board_size=360)
         self.board_view.grid(row=1, column=0, sticky='nsew')
 
-        self.side_panel = tk.Frame(self.root)
+        self.side_panel = tk.Frame(self.root, width=360)
         self.side_panel.grid(row=1, column=1, sticky='nsew', padx=self.side_panel_padx, pady=self.side_panel_pady)
         self.side_panel.rowconfigure(2, weight=1)
         self.side_panel.columnconfigure(0, weight=1)
+        self.side_panel.grid_propagate(False)
 
         self.status_panel = StatusPanel(self.side_panel)
         self.status_panel.grid(row=0, column=0, sticky='ew')
@@ -102,7 +103,10 @@ class OpeningTrainerGUI:
             if hasattr(self, 'side_panel'):
                 self.side_panel.grid(row=1, column=1, sticky='nsew', padx=self.side_panel_padx, pady=self.side_panel_pady)
             if hasattr(self.root, 'grid_columnconfigure'):
-                self.root.grid_columnconfigure(1, weight=2, minsize=360)
+                self.root.grid_columnconfigure(0, weight=8, minsize=420)
+                self.root.grid_columnconfigure(1, weight=1, minsize=240, pad=0)
+            if hasattr(self.side_panel, 'configure'):
+                self.side_panel.configure(width=320)
             if hasattr(self, 'compact_status_panel'):
                 self.compact_status_panel.grid_remove()
             self._set_panel_toggle_label('Hide Panel')
@@ -110,7 +114,8 @@ class OpeningTrainerGUI:
             if hasattr(self, 'side_panel'):
                 self.side_panel.grid_remove()
             if hasattr(self.root, 'grid_columnconfigure'):
-                self.root.grid_columnconfigure(1, weight=0, minsize=0)
+                self.root.grid_columnconfigure(0, weight=8, minsize=420)
+                self.root.grid_columnconfigure(1, weight=0, minsize=0, pad=0)
             if hasattr(self, 'compact_status_panel'):
                 self.compact_status_panel.grid()
             self._set_panel_toggle_label('Show Panel')
@@ -176,6 +181,25 @@ class OpeningTrainerGUI:
         outcome = view.last_outcome
         if outcome is None:
             return None
+        review_boards: list[OutcomeBoardContract] = []
+        if outcome.terminal_kind == 'fail' and outcome.pre_fail_fen and outcome.preferred_move_uci:
+            review_boards.append(OutcomeBoardContract(
+                title='What you should have played',
+                board_fen=outcome.pre_fail_fen,
+                arrow_move_uci=outcome.preferred_move_uci,
+                arrow_color='#2e7d32',
+                arrow_label='Correct move',
+                move_label=outcome.preferred_move_san or outcome.preferred_move_uci,
+            ))
+        if outcome.terminal_kind == 'fail' and outcome.post_fail_fen and outcome.punishing_reply_uci:
+            review_boards.append(OutcomeBoardContract(
+                title='What punishes this',
+                board_fen=outcome.post_fail_fen,
+                arrow_move_uci=outcome.punishing_reply_uci,
+                arrow_color='#c62828',
+                arrow_label='Likely punishment',
+                move_label=outcome.punishing_reply_san or outcome.punishing_reply_uci,
+            ))
         contract = OutcomeModalContract(
             headline='SUCCESS' if outcome.passed else 'FAIL',
             summary=outcome.reason,
@@ -184,6 +208,7 @@ class OpeningTrainerGUI:
             routing_reason=outcome.routing_reason,
             next_routing_reason=outcome.next_routing_reason,
             impact_summary=f'Profile: {outcome.profile_name} | {outcome.impact_summary}',
+            review_boards=tuple(review_boards),
         )
         return OutcomeModal(self.root, contract, self._acknowledge_outcome)
 

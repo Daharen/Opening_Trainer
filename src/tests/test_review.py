@@ -24,11 +24,15 @@ class StubBookAuthority:
 
 
 class StubEngineAuthority:
-    def __init__(self, result):
+    def __init__(self, result, best_reply=(None, None)):
         self.result = result
+        self.best_reply_result = best_reply
 
     def evaluate(self, board_before_move, played_move):
         return self.result
+
+    def best_reply(self, board):
+        return self.best_reply_result
 
 
 BOOK_MISS = BookAuthorityResult(False, False, ReasonCode.BOOK_UNAVAILABLE, 'Book authority unavailable for this position.', metadata={'book_available': False})
@@ -44,12 +48,16 @@ def _session(tmp_path: Path) -> TrainingSession:
 
 def test_review_item_creation_on_failure(tmp_path):
     session = _session(tmp_path)
-    session.evaluator = MoveEvaluator(book_authority=StubBookAuthority(BOOK_MISS), engine_authority=StubEngineAuthority(EngineAuthorityResult(False, True, ReasonCode.ENGINE_FAIL, 'Rejected by engine.', best_move_uci='d2d4', best_move_san='d4', played_move_uci='e2e4', played_move_san='e4', cp_loss=170, metadata={'engine_available': True})))
+    session.evaluator = MoveEvaluator(book_authority=StubBookAuthority(BOOK_MISS), engine_authority=StubEngineAuthority(EngineAuthorityResult(False, True, ReasonCode.ENGINE_FAIL, 'Rejected by engine.', best_move_uci='d2d4', best_move_san='d4', played_move_uci='e2e4', played_move_san='e4', cp_loss=170, metadata={'engine_available': True}), best_reply=('g8f6', 'Nf6')))
     session.submit_user_move_uci('e2e4')
     items = session.review_storage.load_items(session.active_profile_id)
     assert len(items) == 1
     assert 'Rejected' in items[0].failure_reason
     assert items[0].preferred_move_uci == 'd2d4'
+    assert session.last_outcome.pre_fail_fen == chess.STARTING_FEN
+    assert session.last_outcome.post_fail_fen == 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1'
+    assert session.last_outcome.preferred_move_uci == 'd2d4'
+    assert session.last_outcome.punishing_reply_uci == 'g8f6'
 
 
 def test_profile_creation_and_deletion(tmp_path):
@@ -136,3 +144,28 @@ def test_integration_fail_then_retry_then_success_updates_mastery(tmp_path):
     updated = session.review_storage.load_items(session.active_profile_id)[0]
     assert updated.times_passed == 1
     assert updated.mastery_score > 0.0
+
+
+def test_failure_outcome_leaves_punishing_reply_null_when_engine_reply_unavailable(tmp_path):
+    session = _session(tmp_path)
+    session.evaluator = MoveEvaluator(book_authority=StubBookAuthority(BOOK_MISS), engine_authority=StubEngineAuthority(EngineAuthorityResult(False, True, ReasonCode.ENGINE_FAIL, 'Rejected by engine.', best_move_uci='d2d4', best_move_san='d4', played_move_uci='e2e4', played_move_san='e4', cp_loss=170, metadata={'engine_available': True}), best_reply=(None, None)))
+
+    session.submit_user_move_uci('e2e4')
+
+    assert session.last_outcome.pre_fail_fen == chess.STARTING_FEN
+    assert session.last_outcome.post_fail_fen is not None
+    assert session.last_outcome.preferred_move_uci == 'd2d4'
+    assert session.last_outcome.punishing_reply_uci is None
+
+
+def test_success_outcome_remains_unaffected_by_fail_review_fields(tmp_path):
+    session = _session(tmp_path)
+    session.current_routing = session.router.select(session.active_profile_id, [])
+    session.required_player_moves = 1
+    session.evaluator = MoveEvaluator(book_authority=StubBookAuthority(BOOK_MISS), engine_authority=StubEngineAuthority(EngineAuthorityResult(True, True, ReasonCode.ENGINE_PASS, 'Accepted by engine.', best_move_uci='e2e4', best_move_san='e4', played_move_uci='e2e4', played_move_san='e4', cp_loss=0, metadata={'engine_available': True})))
+
+    session.submit_user_move_uci('e2e4')
+
+    assert session.last_outcome.terminal_kind == 'pass'
+    assert session.last_outcome.pre_fail_fen is None
+    assert session.last_outcome.punishing_reply_uci is None

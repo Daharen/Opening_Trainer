@@ -11,6 +11,21 @@ class EngineAuthority:
     def __init__(self, config: EvaluatorConfig):
         self.config = config
 
+    def best_reply(self, board: chess.Board) -> tuple[str | None, str | None]:
+        try:
+            with chess.engine.SimpleEngine.popen_uci(self.config.engine_path) as engine:
+                limit = chess.engine.Limit(
+                    depth=self.config.engine_depth,
+                    time=self.config.engine_time_limit_seconds,
+                )
+                info = engine.analyse(board, limit)
+                best_move = info.get("pv", [None])[0]
+                if best_move is None:
+                    return None, None
+                return best_move.uci(), board.san(best_move)
+        except (FileNotFoundError, chess.engine.EngineError, OSError):
+            return None, None
+
     def evaluate(self, board_before_move: chess.Board, played_move: chess.Move) -> EngineAuthorityResult:
         played_move_uci = played_move.uci()
         played_move_san = board_before_move.san(played_move)
