@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Menu", "Run", "Test", "Compile", "Validate", "All")]
+    [ValidateSet("Menu", "Run", "DevRun", "Test", "Compile", "Validate", "All")]
     [string]$Action = "Menu"
 )
 
@@ -386,11 +386,12 @@ function Resolve-Action {
 
     Write-Host ""
     Write-Host "Opening Trainer repo runner"
-    Write-Host "1) Run trainer"
-    Write-Host "2) Run tests"
-    Write-Host "3) Compile validation"
-    Write-Host "4) Validate (tests + compile)"
-    Write-Host "5) All (validate + run trainer)"
+    Write-Host "1) Run trainer (desktop-first)"
+    Write-Host "2) Developer run trainer (with optional console corpus selection)"
+    Write-Host "3) Run tests"
+    Write-Host "4) Compile validation"
+    Write-Host "5) Validate (tests + compile)"
+    Write-Host "6) All (validate + developer run trainer)"
     Write-Host "Q) Quit"
     Write-Host ""
 
@@ -398,10 +399,11 @@ function Resolve-Action {
 
     switch ($choice) {
         "1" { return "Run" }
-        "2" { return "Test" }
-        "3" { return "Compile" }
-        "4" { return "Validate" }
-        "5" { return "All" }
+        "2" { return "DevRun" }
+        "3" { return "Test" }
+        "4" { return "Compile" }
+        "5" { return "Validate" }
+        "6" { return "All" }
         "Q" { return "Quit" }
         default { throw "Unknown selection: $choice" }
     }
@@ -428,6 +430,11 @@ Log "Action: $ResolvedAction"
 
 switch ($ResolvedAction) {
     "Run" {
+        Log "Launching desktop-first trainer without pre-GUI console corpus selection."
+        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython
+    }
+
+    "DevRun" {
         $selectedBundle = Select-CorpusBundleDirectory
         Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle
     }

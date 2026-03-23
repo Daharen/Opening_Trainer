@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 from dataclasses import dataclass, field
+import re
 from pathlib import Path
 from typing import Any
 
@@ -317,6 +318,56 @@ class BundleCompatibility:
     available: bool
     detail: str
     failure_reason: str | None = None
+    retained_ply_depth: int | None = None
+    retained_ply_source: str | None = None
+
+
+def bundle_retained_ply_depth_from_metadata(bundle_dir: Path, manifest: dict[str, object] | None = None) -> tuple[int | None, str | None]:
+    metadata = manifest if isinstance(manifest, dict) else None
+    candidate_keys = (
+        "retained_ply_depth",
+        "retained_opening_ply_depth",
+        "opening_retained_ply_depth",
+        "max_retained_ply_depth",
+        "supported_ply_depth",
+    )
+    if metadata is not None:
+        for key in candidate_keys:
+            value = metadata.get(key)
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed >= 2:
+                return parsed, f"manifest:{key}"
+        identity_fields = (metadata.get("artifact_id"), metadata.get("bundle_id"), metadata.get("bundle_name"), metadata.get("name"))
+        for field in identity_fields:
+            parsed = _extract_ply_depth_from_text(field)
+            if parsed is not None:
+                return parsed, "manifest_identity"
+    parsed_from_name = _extract_ply_depth_from_text(bundle_dir.name)
+    if parsed_from_name is not None:
+        return parsed_from_name, "bundle_directory_name"
+    return None, None
+
+
+def max_supported_player_moves_from_retained_plies(retained_ply_depth: int | None) -> int | None:
+    if retained_ply_depth is None:
+        return None
+    return max(2, int(retained_ply_depth) // 2)
+
+
+def _extract_ply_depth_from_text(value: object) -> int | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    match = re.search(r"(?:^|[^a-z0-9])ply[_-]?(\d+)(?:[^a-z0-9]|$)", value.lower())
+    if match is None:
+        return None
+    try:
+        parsed = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 2 else None
 
 
 def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
@@ -335,6 +386,7 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
     except json.JSONDecodeError as exc:
         return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle manifest could not be parsed: {exc}", "manifest.json is not valid JSON")
 
+    retained_ply_depth, retained_source = bundle_retained_ply_depth_from_metadata(resolved_dir, manifest)
     supported, declared_aggregate_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
     if not supported:
         detail = f"bundle manifest rejected: {failure_reason}"
@@ -348,6 +400,8 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
             False,
             detail,
             failure_reason,
+            retained_ply_depth=retained_ply_depth,
+            retained_ply_source=retained_source,
         )
 
     aggregate_path = declared_aggregate_path or aggregate_path
@@ -362,8 +416,11 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         (
             f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, aggregate ok, "
             f"build_status={manifest.get('build_status')}, aggregate_position_file={manifest.get('aggregate_position_file')!r}, "
-            f"position_key_format={position_key_format}, move_key_format={move_key_format}, payload_status={payload_status!r})"
+            f"position_key_format={position_key_format}, move_key_format={move_key_format}, payload_status={payload_status!r}, "
+            f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r})"
         ),
+        retained_ply_depth=retained_ply_depth,
+        retained_ply_source=retained_source,
     )
 
 

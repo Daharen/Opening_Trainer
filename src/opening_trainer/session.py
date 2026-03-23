@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import asdict
+from pathlib import Path
 
 import chess
 
@@ -17,7 +18,14 @@ from .review.profile_service import ProfileService
 from .review.router import ReviewRouter
 from .review.scheduler import apply_failure, apply_success
 from .review.storage import ReviewStorage
-from .runtime import RuntimeContext, RuntimeOverrides, load_runtime_config
+from .runtime import (
+    RuntimeContext,
+    RuntimeOverrides,
+    bundle_retained_ply_depth_from_metadata,
+    inspect_corpus_bundle,
+    load_runtime_config,
+    max_supported_player_moves_from_retained_plies,
+)
 from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
 
@@ -61,21 +69,10 @@ class TrainingSession:
         self._apply_settings(self.settings)
 
     def max_supported_training_depth(self) -> int:
-        bundle_dir = self.runtime_context.config.corpus_bundle_dir
-        if bundle_dir:
-            try:
-                provider = self.opponent.bundle_provider
-            except AttributeError:
-                provider = None
-            manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
-            manifest = getattr(manifest, 'manifest', None)
-            if isinstance(manifest, dict):
-                retained_ply_depth = manifest.get('retained_ply_depth')
-                try:
-                    return max(2, int(retained_ply_depth) // 2)
-                except (TypeError, ValueError):
-                    return CONSERVATIVE_FALLBACK_MAX_DEPTH
-            return CONSERVATIVE_FALLBACK_MAX_DEPTH
+        retained_ply_depth = self.bundle_retained_ply_depth()
+        supported_depth = max_supported_player_moves_from_retained_plies(retained_ply_depth)
+        if supported_depth is not None:
+            return supported_depth
         artifact_path = self.runtime_context.config.corpus_artifact_path
         if artifact_path:
             try:
@@ -85,17 +82,23 @@ class TrainingSession:
         return CONSERVATIVE_FALLBACK_MAX_DEPTH
 
     def bundle_retained_ply_depth(self) -> int | None:
-        try:
-            provider = self.opponent.bundle_provider
-        except AttributeError:
-            provider = None
-        manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
-        manifest = getattr(manifest, 'manifest', None)
-        if isinstance(manifest, dict):
+        bundle_dir = self.runtime_context.config.corpus_bundle_dir
+        if bundle_dir:
             try:
-                return int(manifest.get('retained_ply_depth'))
-            except (TypeError, ValueError):
-                return None
+                compatibility = inspect_corpus_bundle(Path(bundle_dir))
+            except Exception:
+                compatibility = None
+            if compatibility is not None and compatibility.retained_ply_depth is not None:
+                return compatibility.retained_ply_depth
+            try:
+                provider = self.opponent.bundle_provider
+            except AttributeError:
+                provider = None
+            manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
+            manifest = getattr(manifest, 'manifest', None)
+            retained_ply_depth, _source = bundle_retained_ply_depth_from_metadata(Path(bundle_dir), manifest)
+            if retained_ply_depth is not None:
+                return retained_ply_depth
         artifact_path = self.runtime_context.config.corpus_artifact_path
         if artifact_path:
             try:
@@ -320,6 +323,8 @@ class TrainingSession:
             self.state = SessionState.FAIL_RESOLUTION
             self._resolve_fail()
             return self.get_view()
+        if self._resolve_terminal_board_state():
+            return self.get_view()
         if self.player_move_count >= self.required_player_moves:
             impact_summary, next_reason = self._capture_success_if_needed()
             self.last_outcome = SessionOutcome(True, f'Completed {self.required_player_moves} accepted player moves inside the opening window.', None, evaluation, 'pass', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', next_reason, self._profile_name(), impact_summary)
@@ -330,6 +335,32 @@ class TrainingSession:
         self.advance_until_user_turn()
         return self.get_view()
 
+
+    def _terminal_outcome_message(self, outcome: chess.Outcome) -> str:
+        termination_name = outcome.termination.name.replace('_', ' ').title()
+        if outcome.winner == self.player_color:
+            return f'Run ended with {termination_name.lower()}; the player reached a genuine terminal win inside the active envelope.'
+        if outcome.winner is None:
+            return f'Run ended with {termination_name.lower()} inside the active envelope.'
+        return f'Run ended with {termination_name.lower()}; the player was defeated inside the active envelope.'
+
+    def _resolve_terminal_board_state(self) -> bool:
+        outcome = self.board.board.outcome(claim_draw=True)
+        if outcome is None:
+            return False
+        reason = self._terminal_outcome_message(outcome)
+        if outcome.winner == self.player_color:
+            impact_summary, next_reason = self._capture_success_if_needed()
+            self.last_outcome = SessionOutcome(True, reason, None, self.last_evaluation, 'pass', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', next_reason, self._profile_name(), impact_summary)
+            self.state = SessionState.SUCCESS_RESOLUTION
+            self._resolve_success()
+            return True
+        impact_summary = 'Terminal game state reached; no additional review item recorded.'
+        next_reason = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
+        self.last_outcome = SessionOutcome(False, reason, None, self.last_evaluation, 'fail', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', next_reason, self._profile_name(), impact_summary, player_color=self.player_color)
+        self.state = SessionState.FAIL_RESOLUTION
+        self._resolve_fail()
+        return True
 
     def _lookup_punishing_reply(self) -> tuple[str | None, str | None]:
         board_after_fail = self.board.board.copy(stack=True)
@@ -384,6 +415,8 @@ class TrainingSession:
         self.board.board.push(move)
         self._record_path_move(board_before, move)
         print(f'Opponent plays: {san}{self._format_opponent_choice_detail(choice)}', flush=True)
+        if self._resolve_terminal_board_state():
+            return
         self.state = SessionState.PLAYER_TURN if self.board.turn() == self.player_color else SessionState.OPPONENT_TURN
 
     def _planned_opponent_move(self, board: chess.Board):

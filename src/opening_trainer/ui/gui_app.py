@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import queue
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog
@@ -41,6 +43,9 @@ class OpeningTrainerGUI:
         self.bundle_combobox = None
         self.bundle_path_var = tk.StringVar()
         self.available_bundles: list[tuple[str, Path]] = []
+        self._loading_queue: queue.Queue | None = None
+        self._loading_thread = None
+        self._loading_job_active = False
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
@@ -194,6 +199,7 @@ class OpeningTrainerGUI:
 
     def _show_loading(self, message: str) -> None:
         self.loading_var.set(message)
+        self.loading_frame.place(relx=0.5, rely=0.5, anchor='center')
         self.loading_frame.lift()
         self.loading_progress.start(10)
         self.root.update_idletasks()
@@ -279,21 +285,35 @@ class OpeningTrainerGUI:
         )
 
     def _load_selected_bundle(self, bundle_path: str) -> None:
-        self._show_loading('Loading corpus bundle…\nDiscovering bundle metadata, initializing the trainer, and preparing a session.')
+        self._start_loading_job(
+            initial_message='Loading corpus bundle…\nDiscovering bundle metadata, initializing corpus payload, and preparing the trainer session.',
+            worker=lambda: self._load_bundle_worker(bundle_path),
+            on_success=self._apply_loaded_bundle,
+            on_error=lambda exc: self._show_bundle_picker(f'Could not load bundle: {exc}'),
+        )
+
+    def _load_bundle_worker(self, bundle_path: str) -> dict[str, object]:
         compatibility = inspect_corpus_bundle(Path(bundle_path))
         if not compatibility.available:
-            self._show_bundle_picker(f'Could not load remembered bundle: {compatibility.detail}')
-            return
+            raise ValueError(compatibility.detail)
         runtime_context = self._build_runtime_for_bundle(str(compatibility.bundle_dir))
-        self.session = TrainingSession(runtime_context=runtime_context, mode='gui', review_storage=self.session.review_storage)
+        session = TrainingSession(runtime_context=runtime_context, mode='gui', review_storage=self.session.review_storage)
+        session.start_new_game()
+        return {'session': session, 'bundle_path': str(compatibility.bundle_dir)}
+
+    def _apply_loaded_bundle(self, payload: dict[str, object]) -> None:
+        self.session = payload['session']
         self.panel_visible = self._load_panel_visibility_preference()
         self.move_list_visible = self._load_move_list_visibility_preference()
         self.inspector.session = self.session
-        self._set_last_bundle_path(str(compatibility.bundle_dir))
+        self._set_last_bundle_path(payload['bundle_path'])
         self._update_bundle_summary()
         self._apply_shell_layout(initializing=True)
         self._hide_bundle_picker()
-        self._start_game(loading_message='Preparing trainer session…\nInitializing engine, routing review state, and starting play.')
+        self.selected_square = None
+        self.pending_restart = False
+        self.board_view.cancel_drag()
+        self._refresh_view()
 
     def _update_bundle_summary(self) -> None:
         bundle_path = self._remembered_bundle_path()
@@ -316,14 +336,71 @@ class OpeningTrainerGUI:
         ProfileDialog(self.root, self.session, self._refresh_supporting_surfaces).open()
 
     def _start_game(self, loading_message: str | None = None):
-        if loading_message is not None:
-            self._show_loading(loading_message)
+        if loading_message is None:
+            self.session.start_new_game()
+            self.selected_square = None
+            self.pending_restart = False
+            self.board_view.cancel_drag()
+            self._refresh_view()
+            return
+        self._start_loading_job(
+            initial_message=loading_message,
+            worker=self._start_game_worker,
+            on_success=lambda _payload: self._apply_started_game(),
+            on_error=lambda exc: messagebox.showerror('Trainer startup', str(exc), parent=self.root),
+        )
+
+    def _start_game_worker(self):
         self.session.start_new_game()
+        return None
+
+    def _apply_started_game(self) -> None:
         self.selected_square = None
         self.pending_restart = False
         self.board_view.cancel_drag()
-        self._hide_loading()
         self._refresh_view()
+
+    def _set_loading_message(self, message: str) -> None:
+        self.loading_var.set(message)
+        if hasattr(self.root, 'update_idletasks'):
+            self.root.update_idletasks()
+
+    def _start_loading_job(self, *, initial_message: str, worker, on_success, on_error) -> None:
+        if self._loading_job_active:
+            return
+        self._loading_job_active = True
+        self._show_loading(initial_message)
+        self.start_button.configure(state='disabled')
+        self._loading_queue = queue.Queue()
+
+        def wrapped_worker():
+            try:
+                payload = worker()
+                self._loading_queue.put(('success', payload))
+            except Exception as exc:  # noqa: BLE001
+                self._loading_queue.put(('error', exc))
+
+        self._loading_thread = threading.Thread(target=wrapped_worker, daemon=True)
+        self._loading_thread.start()
+        self.root.after(25, lambda: self._poll_loading_job(on_success=on_success, on_error=on_error))
+
+    def _poll_loading_job(self, *, on_success, on_error) -> None:
+        if self._loading_queue is None:
+            return
+        try:
+            status, payload = self._loading_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(25, lambda: self._poll_loading_job(on_success=on_success, on_error=on_error))
+            return
+        self._loading_job_active = False
+        self._hide_loading()
+        self.start_button.configure(state='normal')
+        self._loading_thread = None
+        self._loading_queue = None
+        if status == 'success':
+            on_success(payload)
+            return
+        on_error(payload)
 
     def _build_counts_summary(self, due: int, boosted: int, extreme: int) -> str:
         return f'Due: {due} | Boosted: {boosted} | Extreme: {extreme}'
