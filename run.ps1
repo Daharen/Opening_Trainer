@@ -10,8 +10,15 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Get-Location).Path
 }
 
+$WorkspaceRoot = Split-Path -Parent $RepoRoot
+if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+    $WorkspaceRoot = $RepoRoot
+}
+
 $LogsDir = Join-Path $RepoRoot "logs"
 $LogFile = Join-Path $LogsDir "repo_run_log.txt"
+$WorkspaceLogsDir = Join-Path $WorkspaceRoot "logs"
+$BundleStateFile = Join-Path $WorkspaceLogsDir "repo_last_corpus_bundle.txt"
 
 function Ensure-Logs {
     if (-not (Test-Path $LogsDir)) {
@@ -127,10 +134,182 @@ function Ensure-Pytest {
     }
 }
 
+function Ensure-WorkspaceLogs {
+    if (-not (Test-Path $WorkspaceLogsDir)) {
+        New-Item -ItemType Directory -Force -Path $WorkspaceLogsDir | Out-Null
+    }
+}
+
+function Test-CorpusBundleDirectory {
+    param([string]$BundlePath)
+
+    if ([string]::IsNullOrWhiteSpace($BundlePath)) {
+        return @{ IsValid = $false; Reason = "path not found"; ResolvedPath = $null }
+    }
+
+    $candidate = [System.IO.Path]::GetFullPath($BundlePath)
+
+    if (-not (Test-Path $candidate)) {
+        return @{ IsValid = $false; Reason = "path not found"; ResolvedPath = $candidate }
+    }
+
+    $item = Get-Item -LiteralPath $candidate
+    if (-not $item.PSIsContainer) {
+        return @{ IsValid = $false; Reason = "path is not a directory"; ResolvedPath = $candidate }
+    }
+
+    $manifestPath = Join-Path $candidate "manifest.json"
+    if (-not (Test-Path $manifestPath -PathType Leaf)) {
+        return @{ IsValid = $false; Reason = "missing manifest"; ResolvedPath = $candidate }
+    }
+
+    $aggregatePath = Join-Path $candidate "data\aggregated_position_move_counts.jsonl"
+    if (-not (Test-Path $aggregatePath -PathType Leaf)) {
+        return @{ IsValid = $false; Reason = "missing aggregated payload"; ResolvedPath = $candidate }
+    }
+
+    return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
+}
+
+function Get-DiscoveredCorpusBundles {
+    $artifactsDir = Join-Path $WorkspaceRoot "artifacts"
+    $results = @()
+
+    if (-not (Test-Path $artifactsDir -PathType Container)) {
+        return $results
+    }
+
+    foreach ($directory in Get-ChildItem -LiteralPath $artifactsDir -Directory | Sort-Object Name) {
+        $validation = Test-CorpusBundleDirectory -BundlePath $directory.FullName
+        if ($validation.IsValid) {
+            $results += [PSCustomObject]@{
+                Name = $directory.Name
+                Path = $validation.ResolvedPath
+            }
+        }
+    }
+
+    return $results
+}
+
+function Get-LastCorpusBundleSelection {
+    Ensure-WorkspaceLogs
+
+    if (-not (Test-Path $BundleStateFile -PathType Leaf)) {
+        return $null
+    }
+
+    $storedPath = (Get-Content -LiteralPath $BundleStateFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+    if ([string]::IsNullOrWhiteSpace($storedPath)) {
+        return $null
+    }
+
+    $validation = Test-CorpusBundleDirectory -BundlePath $storedPath
+    if ($validation.IsValid) {
+        return $validation.ResolvedPath
+    }
+
+    return $null
+}
+
+function Save-LastCorpusBundleSelection {
+    param([string]$BundlePath)
+
+    Ensure-WorkspaceLogs
+    Set-Content -LiteralPath $BundleStateFile -Value $BundlePath
+}
+
+function Select-CorpusBundleDirectory {
+    $artifactsDir = Join-Path $WorkspaceRoot "artifacts"
+    $discoveredBundles = @(Get-DiscoveredCorpusBundles)
+    $lastSelection = Get-LastCorpusBundleSelection
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "Optional corpus bundle selection before trainer launch"
+        Write-Host "Choose a numbered bundle from workspace-root artifacts, enter L to reuse the last bundle, enter C to paste a custom path, or press Enter/S to skip."
+        Write-Host "A valid bundle directory must contain manifest.json and data\aggregated_position_move_counts.jsonl."
+
+        if ($lastSelection) {
+            Write-Host "L) Reuse last selected bundle [$lastSelection]"
+        }
+
+        if ($discoveredBundles.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Discovered bundle directories under $($WorkspaceRoot):"
+            for ($i = 0; $i -lt $discoveredBundles.Count; $i++) {
+                Write-Host ("{0}) {1}" -f ($i + 1), $discoveredBundles[$i].Path)
+            }
+        }
+        else {
+            Write-Host ""
+            Write-Host "No valid bundle directories were discovered under $artifactsDir."
+        }
+
+        Write-Host "C) Paste custom bundle path"
+        Write-Host "S) Skip bundle selection for this run"
+        Write-Host ""
+
+        $selection = (Read-Host "Bundle selection").Trim()
+        if ([string]::IsNullOrWhiteSpace($selection) -or $selection.ToUpperInvariant() -eq "S") {
+            return $null
+        }
+
+        if ($selection.ToUpperInvariant() -eq "L") {
+            if (-not $lastSelection) {
+                Write-Host "Last used bundle is not available. Please choose another option." -ForegroundColor Yellow
+                continue
+            }
+
+            return $lastSelection
+        }
+
+        if ($selection.ToUpperInvariant() -eq "C") {
+            $customPath = (Read-Host "Enter custom bundle path (absolute or relative to $RepoRoot)").Trim()
+            if ([string]::IsNullOrWhiteSpace($customPath)) {
+                return $null
+            }
+
+            $validation = Test-CorpusBundleDirectory -BundlePath $customPath
+            if ($validation.IsValid) {
+                return $validation.ResolvedPath
+            }
+
+            Write-Host "Bundle validation failed: $($validation.Reason)." -ForegroundColor Yellow
+            $retry = (Read-Host "Press Enter to retry bundle selection or type S to skip").Trim()
+            if ($retry.ToUpperInvariant() -eq "S") {
+                return $null
+            }
+            continue
+        }
+
+        $selectedIndex = 0
+        if ([int]::TryParse($selection, [ref]$selectedIndex)) {
+            if ($selectedIndex -ge 1 -and $selectedIndex -le $discoveredBundles.Count) {
+                $candidatePath = $discoveredBundles[$selectedIndex - 1].Path
+                $validation = Test-CorpusBundleDirectory -BundlePath $candidatePath
+                if ($validation.IsValid) {
+                    return $validation.ResolvedPath
+                }
+
+                Write-Host "Bundle validation failed: $($validation.Reason)." -ForegroundColor Yellow
+                $retry = (Read-Host "Press Enter to retry bundle selection or type S to skip").Trim()
+                if ($retry.ToUpperInvariant() -eq "S") {
+                    return $null
+                }
+                continue
+            }
+        }
+
+        Write-Host "Unknown bundle selection: $selection" -ForegroundColor Yellow
+    }
+}
+
 function Invoke-PythonEntrypoint {
     param(
         [string]$RepoRoot,
-        [string]$VenvPython
+        [string]$VenvPython,
+        [string]$CorpusBundleDir = $null
     )
 
     $CandidateFiles = @(
@@ -145,10 +324,22 @@ function Invoke-PythonEntrypoint {
     foreach ($relativePath in $CandidateFiles) {
         $fullPath = Join-Path $RepoRoot $relativePath
         if (Test-Path $fullPath) {
+            $launchArgs = @("-u", $fullPath)
+            if (-not [string]::IsNullOrWhiteSpace($CorpusBundleDir)) {
+                $launchArgs += @("--corpus-bundle-dir", $CorpusBundleDir)
+                Write-Host "Trainer launch will use corpus bundle: $CorpusBundleDir"
+                Log "Trainer launch corpus bundle: $CorpusBundleDir"
+                Save-LastCorpusBundleSelection -BundlePath $CorpusBundleDir
+            }
+            else {
+                Write-Host "Trainer launch will proceed without an explicitly selected corpus bundle."
+                Log "Trainer launch corpus bundle: skipped"
+            }
+
             Log "Launching Python entrypoint: $fullPath"
             $env:PYTHONUNBUFFERED = "1"
             $env:PYTHONIOENCODING = "utf-8"
-            & $VenvPython -u $fullPath
+            & $VenvPython @launchArgs
             if ($LASTEXITCODE -ne 0) {
                 throw "Python entrypoint failed: $fullPath"
             }
@@ -237,7 +428,8 @@ Log "Action: $ResolvedAction"
 
 switch ($ResolvedAction) {
     "Run" {
-        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython
+        $selectedBundle = Select-CorpusBundleDirectory
+        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle
     }
 
     "Test" {
@@ -259,7 +451,8 @@ switch ($ResolvedAction) {
         Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
         Invoke-TestSuite -VenvPython $venv.VenvPython
         Invoke-CompileValidation -VenvPython $venv.VenvPython
-        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython
+        $selectedBundle = Select-CorpusBundleDirectory
+        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle
     }
 
     "Quit" {

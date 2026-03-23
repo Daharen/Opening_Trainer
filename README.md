@@ -182,6 +182,8 @@ Runtime discovery keeps explicit precedence. For each asset class, the winner is
 
 Ordinary launcher-driven runs now auto-discover these workspace-root conventions when present:
 
+The repo-local `run.ps1` launcher now also prompts for an optional corpus bundle directory on actions `1) Run trainer` and `5) All (validate + run trainer)`. It lists valid bundle folders discovered under the workspace-root `artifacts` directory, allows a custom path, validates that `manifest.json` and `data/aggregated_position_move_counts.jsonl` exist, and lets you skip selection to keep the existing runtime fallback behavior unchanged. The launcher remembers the last valid bundle you picked in the workspace-root logs area for quick reuse on later runs.
+
 - runtime config: `../runtime.local.json`
 - Stockfish engine: `../tools/stockfish/stockfish-windows-x86-64-avx2.exe`
 - corpus artifact: `../data/opening_corpus.json` or `../artifacts/opening_corpus.json`
