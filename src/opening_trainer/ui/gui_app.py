@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import tkinter as tk
+from pathlib import Path
 from tkinter import simpledialog
 
 import chess
@@ -16,6 +18,7 @@ from .review_inspector import ReviewInspector
 from .status_panel import StatusPanel
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
+GUI_STATE_FILENAME = 'gui_state.json'
 
 
 class OpeningTrainerGUI:
@@ -23,34 +26,118 @@ class OpeningTrainerGUI:
         self.session = session or TrainingSession(runtime_context=runtime_context, mode='gui')
         self.root = tk.Tk()
         self.root.title('Opening Trainer')
-        toolbar = tk.Frame(self.root)
-        toolbar.pack(fill='x', padx=12, pady=(12, 4))
-        tk.Button(toolbar, text='Start drill', command=self._start_game).pack(side='left')
-        tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
-        self.board_view = BoardView(self.root)
-        self.board_view.pack(side='left', padx=12, pady=(6, 12))
-        right = tk.Frame(self.root)
-        right.pack(side='left', fill='both', expand=True, padx=(0, 12), pady=(6, 12))
-        self.status_panel = StatusPanel(right)
-        self.status_panel.pack(fill='x')
-        self.recent_var = tk.StringVar()
-        tk.Label(right, textvariable=self.recent_var, justify='left', anchor='w').pack(fill='x', pady=4)
-        self.inspector = ReviewInspector(right, self.session, self._refresh_supporting_surfaces)
-        self.inspector.pack(fill='both', expand=True)
-        self.board_view.bind('<Button-1>', self._on_board_click)
         self.selected_square = None
         self.pending_restart = False
+        self.panel_visible = self._load_panel_visibility_preference()
+        self.side_panel_padx = (0, 12)
+        self.side_panel_pady = (6, 12)
+
+        self.root.columnconfigure(0, weight=3)
+        self.root.columnconfigure(1, weight=0)
+        self.root.rowconfigure(1, weight=1)
+
+        toolbar = tk.Frame(self.root)
+        toolbar.grid(row=0, column=0, columnspan=2, sticky='ew', padx=12, pady=(12, 4))
+        tk.Button(toolbar, text='Start drill', command=self._start_game).pack(side='left')
+        tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
+        self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
+        self.panel_toggle_button.pack(side='left', padx=(6, 0))
+
+        self.main_region = tk.Frame(self.root)
+        self.main_region.grid(row=1, column=0, sticky='nsew', padx=(12, 6), pady=(6, 12))
+        self.main_region.columnconfigure(0, weight=1)
+        self.main_region.rowconfigure(1, weight=1)
+
+        self.compact_status_panel = StatusPanel(self.main_region, compact=True)
+        self.compact_status_panel.grid(row=0, column=0, sticky='ew', pady=(0, 8))
+
+        self.board_view = BoardView(self.main_region)
+        self.board_view.grid(row=1, column=0, sticky='nsew')
+
+        self.side_panel = tk.Frame(self.root)
+        self.side_panel.grid(row=1, column=1, sticky='nsew', padx=self.side_panel_padx, pady=self.side_panel_pady)
+        self.side_panel.rowconfigure(2, weight=1)
+        self.side_panel.columnconfigure(0, weight=1)
+
+        self.status_panel = StatusPanel(self.side_panel)
+        self.status_panel.grid(row=0, column=0, sticky='ew')
+
+        self.recent_var = tk.StringVar()
+        tk.Label(self.side_panel, textvariable=self.recent_var, justify='left', anchor='w').grid(row=1, column=0, sticky='ew', pady=4)
+
+        self.inspector = ReviewInspector(self.side_panel, self.session, self._refresh_supporting_surfaces)
+        self.inspector.grid(row=2, column=0, sticky='nsew')
+
+        self.board_view.bind('<Button-1>', self._on_board_click)
+        self._apply_side_panel_layout(initializing=True)
 
     def run(self) -> None:
         self._start_game()
         self.root.mainloop()
 
-    def _start_game(self):
-        self.session.start_new_game()
-        self._refresh_view()
+    def _gui_state_path(self) -> Path:
+        return self.session.review_storage.root / GUI_STATE_FILENAME
+
+    def _load_panel_visibility_preference(self) -> bool:
+        path = self._gui_state_path()
+        if not path.exists():
+            return True
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            return True
+        return bool(payload.get('side_panel_visible', True))
+
+    def _save_panel_visibility_preference(self) -> None:
+        path = self._gui_state_path()
+        path.write_text(json.dumps({'side_panel_visible': self.panel_visible}, indent=2), encoding='utf-8')
+
+    def _toggle_side_panel(self) -> None:
+        self.panel_visible = not self.panel_visible
+        self._apply_side_panel_layout()
+        self._save_panel_visibility_preference()
+
+    def _apply_side_panel_layout(self, initializing: bool = False) -> None:
+        if self.panel_visible:
+            if hasattr(self, 'side_panel'):
+                self.side_panel.grid(row=1, column=1, sticky='nsew', padx=self.side_panel_padx, pady=self.side_panel_pady)
+            if hasattr(self.root, 'grid_columnconfigure'):
+                self.root.grid_columnconfigure(1, weight=2, minsize=360)
+            if hasattr(self, 'compact_status_panel'):
+                self.compact_status_panel.grid_remove()
+            self._set_panel_toggle_label('Hide Panel')
+        else:
+            if hasattr(self, 'side_panel'):
+                self.side_panel.grid_remove()
+            if hasattr(self.root, 'grid_columnconfigure'):
+                self.root.grid_columnconfigure(1, weight=0, minsize=0)
+            if hasattr(self, 'compact_status_panel'):
+                self.compact_status_panel.grid()
+            self._set_panel_toggle_label('Show Panel')
+        if not initializing:
+            self._refresh_supporting_surfaces()
+
+    def _set_panel_toggle_label(self, label: str) -> None:
+        if hasattr(self.panel_toggle_button, 'configure'):
+            self.panel_toggle_button.configure(text=label)
 
     def _open_profiles(self):
         ProfileDialog(self.root, self.session, self._refresh_supporting_surfaces).open()
+
+    def _start_game(self):
+        self.session.start_new_game()
+        self.selected_square = None
+        self.pending_restart = False
+        self._refresh_view()
+
+    def _build_counts_summary(self, due: int, boosted: int, extreme: int) -> str:
+        return f'Due: {due} | Boosted: {boosted} | Extreme: {extreme}'
+
+    def _build_routing_summary(self, routing: str, explain: str) -> str:
+        return f'Routing: {routing} | {explain}'
+
+    def _build_compact_bundle_summary(self) -> str:
+        return f'Opponent: {self.session.opponent.status_message}'
 
     def _refresh_supporting_surfaces(self):
         items = self.session.review_storage.load_items(self.session.active_profile_id)
@@ -60,7 +147,11 @@ class OpeningTrainerGUI:
         extreme = sum(1 for item in items if item.urgency_tier == 'extreme_urgency')
         routing = self.session.current_routing.routing_source if self.session.current_routing else 'not_started'
         explain = self.session.current_routing.selection_explanation if self.session.current_routing else 'No routing decision yet.'
-        self.status_panel.update_status(profile_name=profile_name, bundle_summary=f'Opponent source: {self.session.opponent.status_message}', routing_summary=f'Routing: {routing} | {explain}', counts_summary=f'Due: {due} | Boosted: {boosted} | Extreme: {extreme}')
+        counts_summary = self._build_counts_summary(due, boosted, extreme)
+        routing_summary = self._build_routing_summary(routing, explain)
+        bundle_summary = f'Opponent source: {self.session.opponent.status_message}'
+        self.status_panel.update_status(profile_name=profile_name, bundle_summary=bundle_summary, routing_summary=routing_summary, counts_summary=counts_summary)
+        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), routing_summary=f'Route: {routing}', counts_summary=f'{due}/{boosted}/{extreme} due/boosted/extreme')
         history_path = self.session.review_storage.root / self.session.active_profile_id / 'session_history.jsonl'
         recent = history_path.read_text(encoding='utf-8').strip().splitlines()[-4:] if history_path.exists() else []
         self.recent_var.set('Recent events:\n' + ('\n'.join(recent) if recent else 'No recent events.'))
@@ -83,8 +174,18 @@ class OpeningTrainerGUI:
 
     def _show_outcome_modal(self, view):
         outcome = view.last_outcome
-        contract = OutcomeModalContract('SUCCESS' if outcome.passed else 'FAIL', outcome.reason, f'Profile: {outcome.profile_name}', outcome.reason, outcome.preferred_move, outcome.routing_reason, outcome.next_routing_reason, outcome.impact_summary, True)
-        OutcomeModal(self.root, contract, self._acknowledge_outcome)
+        if outcome is None:
+            return None
+        contract = OutcomeModalContract(
+            headline='SUCCESS' if outcome.passed else 'FAIL',
+            summary=outcome.reason,
+            reason=outcome.reason,
+            preferred_move=outcome.preferred_move,
+            routing_reason=outcome.routing_reason,
+            next_routing_reason=outcome.next_routing_reason,
+            impact_summary=f'Profile: {outcome.profile_name} | {outcome.impact_summary}',
+        )
+        return OutcomeModal(self.root, contract, self._acknowledge_outcome)
 
     def _acknowledge_outcome(self):
         self.pending_restart = False

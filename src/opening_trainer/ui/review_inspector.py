@@ -12,15 +12,25 @@ class ReviewInspector(ttk.Frame):
         self.session = session
         self.refresh_callback = refresh_callback
         self.filter_var = tk.StringVar(value='all')
-        self.tree = ttk.Treeview(self, columns=self.columns, show='headings', height=8)
+
+        ttk.Combobox(self, textvariable=self.filter_var, values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency'], state='readonly').pack(anchor='e')
+        self.filter_var.trace_add('write', lambda *_: self.refresh())
+
+        tree_frame = ttk.Frame(self)
+        tree_frame.pack(fill='both', expand=True)
+        self.tree = ttk.Treeview(tree_frame, columns=self.columns, show='headings', height=8)
+        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
         for column in self.columns:
             self.tree.heading(column, text=column.replace('_', ' ').title())
             self.tree.column(column, width=110, anchor='w')
-        ttk.Combobox(self, textvariable=self.filter_var, values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency'], state='readonly').pack(anchor='e')
-        self.filter_var.trace_add('write', lambda *_: self.refresh())
-        self.tree.pack(fill='both', expand=True)
-        ttk.Button(self, text='Delete item', command=self._delete_item).pack(side='left', padx=4, pady=4)
-        ttk.Button(self, text='Reset item', command=self._reset_item).pack(side='left', padx=4, pady=4)
+        self.tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+        button_row = ttk.Frame(self)
+        button_row.pack(fill='x', pady=4)
+        ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
+        ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
 
     def refresh(self):
         for row in self.tree.get_children():
