@@ -221,6 +221,19 @@ def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
     return manifest
 
 
+def test_normalize_builder_position_key_omits_move_counters_for_start_position():
+    board = chess.Board()
+
+    assert normalize_builder_position_key(board) == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+
+
+def test_normalize_builder_position_key_matches_builder_shape_after_e2e4():
+    board = chess.Board()
+    board.push(chess.Move.from_uci("e2e4"))
+
+    assert normalize_builder_position_key(board) == "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -"
+
+
 def test_builder_bundle_provider_parses_real_builder_candidate_fields(tmp_path):
     board = chess.Board()
     bundle_dir = _write_bundle(
@@ -409,7 +422,7 @@ def test_bundle_rejects_unsupported_move_key_format(tmp_path, monkeypatch):
     bundle_dir = _write_bundle(
         tmp_path / "bundle",
         _sample_bundle_manifest(move_key_format="san"),
-        [{"position_key": chess.STARTING_FEN, "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
     )
 
     provider = OpponentProvider(bundle_dir=str(bundle_dir), evaluator_config=TrainingSession().config, rng=random.Random(2))
