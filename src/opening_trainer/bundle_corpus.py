@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import random
+import sqlite3
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import chess
 
@@ -12,6 +15,7 @@ from .bundle_contract import (
     SUPPORTED_BUNDLE_MOVE_KEY_FORMAT,
     SUPPORTED_BUNDLE_POSITION_KEY_FORMAT,
     is_supported_builder_aggregate_bundle,
+    resolve_bundle_payload,
 )
 
 
@@ -39,7 +43,8 @@ class BuilderAggregateBundleMetadata:
     position_key_format: str
     move_key_format: str
     payload_status: str | None
-    provider_label: str = "corpus_aggregate_bundle"
+    payload_format: str
+    provider_label: str
 
 
 @dataclass(frozen=True)
@@ -58,7 +63,6 @@ class BuilderAggregateParseError(ValueError):
         super().__init__(f"{reason_code}: {detail}{suffix}")
 
 
-
 def normalize_builder_position_key(board: chess.Board) -> str:
     fen_parts = board.fen().split(" ")
     en_passant = fen_parts[3]
@@ -71,19 +75,24 @@ def normalize_builder_position_key(board: chess.Board) -> str:
     return " ".join([fen_parts[0], fen_parts[1], fen_parts[2], en_passant])
 
 
-class BuilderAggregateCorpusProvider:
-    def __init__(self, bundle_dir: str | Path, rng=None):
-        self.bundle_dir = Path(bundle_dir)
+class _BuilderAggregateDataProvider(Protocol):
+    metadata: BuilderAggregateBundleMetadata
+
+    def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
+        ...
+
+
+class JsonlAggregateCorpusProvider:
+    def __init__(self, bundle_dir: Path, manifest: dict[str, object], payload_path: Path, rng=None):
+        self.bundle_dir = bundle_dir
         self.rng = rng or random
         self.last_parse_issue: BuilderAggregateParseIssue | None = None
-        self.metadata, self.position_index = self._load_bundle()
+        self.metadata, self.position_index = self._load_bundle(manifest, payload_path)
 
-    def _load_bundle(self) -> tuple[BuilderAggregateBundleMetadata, dict[str, BuilderAggregatePosition]]:
-        manifest_path = self.bundle_dir / BUNDLE_MANIFEST_NAME
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        supported, aggregate_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, self.bundle_dir)
-        if not supported or aggregate_path is None:
-            raise ValueError(failure_reason or f"Unsupported builder aggregate bundle at {self.bundle_dir}")
+    def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
+        return self.position_index.get(position_key)
+
+    def _load_bundle(self, manifest: dict[str, object], payload_path: Path) -> tuple[BuilderAggregateBundleMetadata, dict[str, BuilderAggregatePosition]]:
         position_key_format = manifest.get("position_key_format")
         if position_key_format != SUPPORTED_BUNDLE_POSITION_KEY_FORMAT:
             raise ValueError(f"Unsupported position_key_format: {position_key_format!r}")
@@ -93,7 +102,7 @@ class BuilderAggregateCorpusProvider:
         payload_status = manifest.get("payload_status")
 
         index: dict[str, BuilderAggregatePosition] = {}
-        with aggregate_path.open("r", encoding="utf-8") as handle:
+        with payload_path.open("r", encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, start=1):
                 if not line.strip():
                     continue
@@ -114,12 +123,14 @@ class BuilderAggregateCorpusProvider:
                 index[position.position_key] = position
         metadata = BuilderAggregateBundleMetadata(
             bundle_dir=self.bundle_dir.resolve(),
-            manifest_path=manifest_path.resolve(),
-            aggregate_path=aggregate_path.resolve(),
+            manifest_path=(self.bundle_dir / BUNDLE_MANIFEST_NAME).resolve(),
+            aggregate_path=payload_path.resolve(),
             manifest=manifest,
             position_key_format=position_key_format,
             move_key_format=move_key_format,
             payload_status=payload_status,
+            payload_format="jsonl",
+            provider_label="corpus_aggregate_bundle_jsonl",
         )
         return metadata, index
 
@@ -183,3 +194,109 @@ class BuilderAggregateCorpusProvider:
         except (TypeError, ValueError):
             return None
         return BuilderAggregateCandidate(uci=uci, raw_count=parsed_raw_count)
+
+
+class SQLiteAggregateCorpusProvider:
+    def __init__(self, bundle_dir: Path, manifest: dict[str, object], payload_path: Path, cache_size: int = 512):
+        self.bundle_dir = bundle_dir
+        self.payload_path = payload_path
+        self.cache_size = max(0, cache_size)
+        self._position_cache: OrderedDict[str, BuilderAggregatePosition | None] = OrderedDict()
+        self._connection = sqlite3.connect(f"file:{payload_path}?mode=ro", uri=True)
+        self._connection.row_factory = sqlite3.Row
+        self._position_cursor = self._connection.cursor()
+        self._move_cursor = self._connection.cursor()
+        self.metadata = self._build_metadata(manifest)
+
+    def _build_metadata(self, manifest: dict[str, object]) -> BuilderAggregateBundleMetadata:
+        position_key_format = manifest.get("position_key_format")
+        move_key_format = manifest.get("move_key_format")
+        if position_key_format != SUPPORTED_BUNDLE_POSITION_KEY_FORMAT:
+            raise ValueError(f"Unsupported position_key_format: {position_key_format!r}")
+        if move_key_format != SUPPORTED_BUNDLE_MOVE_KEY_FORMAT:
+            raise ValueError(f"Unsupported move_key_format: {move_key_format!r}")
+        return BuilderAggregateBundleMetadata(
+            bundle_dir=self.bundle_dir.resolve(),
+            manifest_path=(self.bundle_dir / BUNDLE_MANIFEST_NAME).resolve(),
+            aggregate_path=self.payload_path.resolve(),
+            manifest=manifest,
+            position_key_format=position_key_format,
+            move_key_format=move_key_format,
+            payload_status=manifest.get("payload_status"),
+            payload_format="sqlite",
+            provider_label="corpus_aggregate_bundle_sqlite",
+        )
+
+    def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
+        cached = self._position_cache.get(position_key)
+        if cached is not None or position_key in self._position_cache:
+            return cached
+
+        position_row = self._position_cursor.execute(
+            "SELECT id, position_key, side_to_move, total_observed_count FROM positions WHERE position_key = ? LIMIT 1",
+            (position_key,),
+        ).fetchone()
+        if position_row is None:
+            return self._remember(position_key, None)
+
+        move_rows = self._move_cursor.execute(
+            "SELECT uci, raw_count FROM moves WHERE position_id = ? ORDER BY raw_count DESC, uci ASC",
+            (position_row["id"],),
+        ).fetchall()
+        candidates = tuple(
+            BuilderAggregateCandidate(uci=str(move_row["uci"]), raw_count=int(move_row["raw_count"]))
+            for move_row in move_rows
+            if move_row["uci"] is not None
+        )
+        total_observed_count = int(position_row["total_observed_count"] or 0)
+        if total_observed_count <= 0:
+            total_observed_count = sum(candidate.raw_count for candidate in candidates)
+
+        position = BuilderAggregatePosition(
+            position_key=str(position_row["position_key"]),
+            total_observed_count=total_observed_count,
+            candidates=candidates,
+            candidate_row_count=len(candidates),
+            unsupported_candidate_row_count=0,
+        )
+        return self._remember(position_key, position)
+
+    def _remember(self, position_key: str, position: BuilderAggregatePosition | None) -> BuilderAggregatePosition | None:
+        if self.cache_size <= 0:
+            return position
+        self._position_cache[position_key] = position
+        self._position_cache.move_to_end(position_key)
+        while len(self._position_cache) > self.cache_size:
+            self._position_cache.popitem(last=False)
+        return position
+
+
+class BuilderAggregateCorpusProvider:
+    def __init__(self, bundle_dir: str | Path, rng=None):
+        self.bundle_dir = Path(bundle_dir)
+        self.rng = rng or random
+        self.last_parse_issue: BuilderAggregateParseIssue | None = None
+        self._provider = self._load_provider()
+        self.metadata = self._provider.metadata
+        self.position_index = getattr(self._provider, "position_index", {})
+
+    def _load_provider(self) -> _BuilderAggregateDataProvider:
+        manifest_path = self.bundle_dir / BUNDLE_MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        supported, _payload_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, self.bundle_dir)
+        if not supported:
+            raise ValueError(failure_reason or f"Unsupported builder aggregate bundle at {self.bundle_dir}")
+
+        payload_resolution, resolution_error = resolve_bundle_payload(manifest, self.bundle_dir)
+        if payload_resolution is None:
+            raise ValueError(resolution_error or f"Unsupported bundle payload at {self.bundle_dir}")
+
+        if payload_resolution.payload_format == "sqlite":
+            return SQLiteAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path)
+
+        provider = JsonlAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path, rng=self.rng)
+        self.last_parse_issue = provider.last_parse_issue
+        return provider
+
+    def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
+        return self._provider.lookup_position(position_key)

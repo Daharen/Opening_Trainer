@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import chess
@@ -45,6 +46,36 @@ def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict
     data_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (data_dir / "aggregated_position_move_counts.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return bundle_dir
+
+
+def _write_sqlite_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict[str, object]]) -> Path:
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    db_path = data_dir / "corpus.sqlite"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, position_key TEXT NOT NULL, side_to_move TEXT NOT NULL, total_observed_count INTEGER NOT NULL)")
+        conn.execute("CREATE TABLE moves (id INTEGER PRIMARY KEY, position_id INTEGER NOT NULL, uci TEXT NOT NULL, raw_count INTEGER NOT NULL, FOREIGN KEY(position_id) REFERENCES positions(id))")
+        for row in rows:
+            position_key = row["position_key"]
+            side_to_move = row.get("side_to_move", "white")
+            total = int(row.get("total_observed_count", row.get("total_observations", 0)))
+            cursor = conn.execute(
+                "INSERT INTO positions(position_key, side_to_move, total_observed_count) VALUES (?, ?, ?)",
+                (position_key, side_to_move, total),
+            )
+            position_id = int(cursor.lastrowid)
+            for move in row.get("candidate_moves", []):
+                uci = move.get("uci") or move.get("move_key")
+                conn.execute(
+                    "INSERT INTO moves(position_id, uci, raw_count) VALUES (?, ?, ?)",
+                    (position_id, uci, int(move["raw_count"])),
+                )
+        conn.commit()
+    finally:
+        conn.close()
     return bundle_dir
 
 
@@ -651,6 +682,53 @@ def test_training_session_keeps_bundle_dir_out_of_legacy_artifact_loader(tmp_pat
 
     assert choice.selected_via == "corpus_aggregate_bundle"
     assert choice.move.uci() == "e2e4"
+
+
+def test_sqlite_bundle_selected_and_loaded_without_legacy_artifact(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_sqlite_bundle(
+        tmp_path / "sqlite_bundle",
+        _sample_bundle_manifest(payload_format="sqlite"),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "side_to_move": "white",
+                "candidate_moves": [{"uci": "e2e4", "raw_count": 7}, {"uci": "d2d4", "raw_count": 2}],
+                "total_observed_count": 9,
+            }
+        ],
+    )
+
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    assert runtime.corpus.available is True
+    assert "payload_format='sqlite'" in runtime.corpus.detail
+    assert session.opponent.bundle_provider is not None
+    assert session.opponent.corpus_provider is None
+
+    choice = session.opponent.choose_move_with_context(board)
+
+    assert choice.selected_via == "corpus_aggregate_bundle_sqlite"
+    assert {summary["uci"] for summary in choice.candidate_summaries} == {"e2e4", "d2d4"}
+
+
+def test_bundle_without_payload_format_prefers_sqlite_payload_when_present(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_sqlite_bundle(
+        tmp_path / "sqlite_without_manifest_flag",
+        _sample_bundle_manifest(),
+        [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
+    )
+
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    choice = session.opponent.choose_move_with_context(board)
+
+    assert runtime.corpus.available is True
+    assert "payload_format='sqlite'" in runtime.corpus.detail
+    assert choice.selected_via == "corpus_aggregate_bundle_sqlite"
 
 
 def test_real_builder_bundle_payload_status_is_accepted(tmp_path):
