@@ -4,26 +4,29 @@ import chess
 import chess.engine
 
 from .config import EvaluatorConfig
+from .engine_process import launch_engine
 from .types import EngineAuthorityResult, ReasonCode
 
 
 class EngineAuthority:
     def __init__(self, config: EvaluatorConfig):
         self.config = config
+        self._engine: chess.engine.SimpleEngine | None = None
 
     def best_reply(self, board: chess.Board) -> tuple[str | None, str | None]:
         try:
-            with chess.engine.SimpleEngine.popen_uci(self.config.engine_path) as engine:
-                limit = chess.engine.Limit(
-                    depth=self.config.engine_depth,
-                    time=self.config.engine_time_limit_seconds,
-                )
-                info = engine.analyse(board, limit)
-                best_move = info.get("pv", [None])[0]
-                if best_move is None:
-                    return None, None
-                return best_move.uci(), board.san(best_move)
+            engine = self._ensure_engine()
+            limit = chess.engine.Limit(
+                depth=self.config.engine_depth,
+                time=self.config.engine_time_limit_seconds,
+            )
+            info = engine.analyse(board, limit)
+            best_move = info.get("pv", [None])[0]
+            if best_move is None:
+                return None, None
+            return best_move.uci(), board.san(best_move)
         except (FileNotFoundError, chess.engine.EngineError, OSError):
+            self._close_engine()
             return None, None
 
     def evaluate(self, board_before_move: chess.Board, played_move: chess.Move) -> EngineAuthorityResult:
@@ -31,31 +34,32 @@ class EngineAuthority:
         played_move_san = board_before_move.san(played_move)
 
         try:
-            with chess.engine.SimpleEngine.popen_uci(self.config.engine_path) as engine:
-                limit = chess.engine.Limit(
-                    depth=self.config.engine_depth,
-                    time=self.config.engine_time_limit_seconds,
+            engine = self._ensure_engine()
+            limit = chess.engine.Limit(
+                depth=self.config.engine_depth,
+                time=self.config.engine_time_limit_seconds,
+            )
+            best_info = engine.analyse(board_before_move, limit)
+            best_move = best_info.get("pv", [None])[0]
+
+            if best_move is None:
+                return EngineAuthorityResult(
+                    accepted=False,
+                    available=False,
+                    reason_code=ReasonCode.ENGINE_UNAVAILABLE,
+                    reason_text="Engine analysis returned no principal variation.",
+                    played_move_uci=played_move_uci,
+                    played_move_san=played_move_san,
+                    metadata={"engine_available": False},
                 )
-                best_info = engine.analyse(board_before_move, limit)
-                best_move = best_info.get("pv", [None])[0]
 
-                if best_move is None:
-                    return EngineAuthorityResult(
-                        accepted=False,
-                        available=False,
-                        reason_code=ReasonCode.ENGINE_UNAVAILABLE,
-                        reason_text="Engine analysis returned no principal variation.",
-                        played_move_uci=played_move_uci,
-                        played_move_san=played_move_san,
-                        metadata={"engine_available": False},
-                    )
+            board_after_move = board_before_move.copy(stack=False)
+            board_after_move.push(played_move)
 
-                board_after_move = board_before_move.copy(stack=False)
-                board_after_move.push(played_move)
-
-                played_info = engine.analyse(board_after_move, limit)
+            played_info = engine.analyse(board_after_move, limit)
 
         except (FileNotFoundError, chess.engine.EngineError, OSError) as exc:
+            self._close_engine()
             return EngineAuthorityResult(
                 accepted=False,
                 available=False,
@@ -121,3 +125,20 @@ class EngineAuthority:
         if best_score is None or played_score is None:
             return None
         return max(0, best_score - played_score)
+
+    def _ensure_engine(self) -> chess.engine.SimpleEngine:
+        if self._engine is None:
+            self._engine = launch_engine(self.config)
+        return self._engine
+
+    def _close_engine(self) -> None:
+        if self._engine is None:
+            return
+        try:
+            self._engine.quit()
+        except Exception:
+            pass
+        self._engine = None
+
+    def __del__(self) -> None:
+        self._close_engine()

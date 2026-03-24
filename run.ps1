@@ -28,6 +28,9 @@ if ([string]::IsNullOrWhiteSpace($SessionId)) {
 $SessionLogPath = Join-Path $SessionLogsDir ("session_{0}.log" -f $SessionId)
 $env:OPENING_TRAINER_SESSION_LOG_DIR = $SessionLogsDir
 $env:OPENING_TRAINER_SESSION_LOG_PATH = $SessionLogPath
+$AppMutexName = "Local\OpeningTrainer.App." + [Math]::Abs($RepoRoot.ToLowerInvariant().GetHashCode())
+$BootMutexName = "Local\OpeningTrainer.Boot." + [Math]::Abs($RepoRoot.ToLowerInvariant().GetHashCode())
+$env:OPENING_TRAINER_APP_MUTEX_NAME = $AppMutexName
 
 function Ensure-Logs {
     if (-not (Test-Path $LogsDir)) {
@@ -503,6 +506,130 @@ function Invoke-PythonEntrypointDetached {
 
     Write-SessionLogLine -Tag "startup" -Message "Ordinary launch handoff complete (pid=$($process.Id))."
     Log "Detached ordinary launch started (pid=$($process.Id)) via $([System.IO.Path]::GetFileName($launcherExe))."
+    return $process
+}
+
+function Show-StartupSplash {
+    if ($env:OS -ne "Windows_NT") {
+        return $null
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Opening Trainer"
+    $form.Width = 420
+    $form.Height = 190
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.TopMost = $true
+
+    $title = New-Object System.Windows.Forms.Label
+    $title.Text = "Opening Trainer is starting"
+    $title.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+    $title.AutoSize = $true
+    $title.Left = 18
+    $title.Top = 18
+    $form.Controls.Add($title)
+
+    $stage = New-Object System.Windows.Forms.Label
+    $stage.Name = "StageLabel"
+    $stage.Text = "Initializing environment"
+    $stage.AutoSize = $true
+    $stage.Left = 18
+    $stage.Top = 60
+    $form.Controls.Add($stage)
+
+    $detail = New-Object System.Windows.Forms.Label
+    $detail.Name = "DetailLabel"
+    $detail.Text = ""
+    $detail.Width = 370
+    $detail.Height = 46
+    $detail.Left = 18
+    $detail.Top = 82
+    $form.Controls.Add($detail)
+
+    $bar = New-Object System.Windows.Forms.ProgressBar
+    $bar.Style = "Marquee"
+    $bar.MarqueeAnimationSpeed = 26
+    $bar.Width = 370
+    $bar.Height = 18
+    $bar.Left = 18
+    $bar.Top = 132
+    $form.Controls.Add($bar)
+    $form.Show()
+    [System.Windows.Forms.Application]::DoEvents()
+    return $form
+}
+
+function Update-StartupSplash {
+    param(
+        [object]$Splash,
+        [string]$Stage,
+        [string]$Detail = ""
+    )
+    if ($null -eq $Splash) {
+        return
+    }
+    ($Splash.Controls | Where-Object { $_.Name -eq "StageLabel" } | Select-Object -First 1).Text = $Stage
+    ($Splash.Controls | Where-Object { $_.Name -eq "DetailLabel" } | Select-Object -First 1).Text = $Detail
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Close-StartupSplash {
+    param([object]$Splash)
+    if ($null -eq $Splash) {
+        return
+    }
+    $Splash.Close()
+}
+
+function Try-OpenExistingMutex {
+    param([string]$Name)
+    try {
+        [Threading.Mutex]::OpenExisting($Name) | Out-Null
+        return $true
+    }
+    catch [System.Threading.WaitHandleCannotBeOpenedException] {
+        return $false
+    }
+}
+
+function Wait-ForStartupHandoff {
+    param(
+        [string]$SessionLogPath,
+        [int]$ChildPid,
+        [object]$Splash
+    )
+    $deadline = (Get-Date).AddSeconds(45)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $SessionLogPath) {
+            $recent = Get-Content -LiteralPath $SessionLogPath -Tail 120 -ErrorAction SilentlyContinue
+            if ($recent -match "GUI_READY:") {
+                Write-SessionLogLine -Tag "startup" -Message "Launcher observed GUI-ready success."
+                return "ready"
+            }
+            if ($recent -match "GUI_STARTUP_FAILED:") {
+                Write-SessionLogLine -Tag "error" -Message "Launcher observed GUI startup failure."
+                return "failed"
+            }
+            if ($recent -match "INSTANCE_DUPLICATE:") {
+                Write-SessionLogLine -Tag "startup" -Message "Launcher observed duplicate-instance signal."
+                return "duplicate"
+            }
+        }
+        $child = Get-Process -Id $ChildPid -ErrorAction SilentlyContinue
+        if ($null -eq $child) {
+            return "exited"
+        }
+        Start-Sleep -Milliseconds 150
+        if ($null -ne $Splash) {
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+    }
+    return "timeout"
 }
 
 function Invoke-TestSuite {
@@ -589,11 +716,55 @@ Log "Action: $ResolvedAction"
 
 switch ($ResolvedAction) {
     "Auto" {
-        Log "Launching ordinary non-interactive path (validate + run, corpus skip)."
-        Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
-        Invoke-TestSuite -VenvPython $venv.VenvPython
-        Invoke-CompileValidation -VenvPython $venv.VenvPython
-        Invoke-PythonEntrypointDetached -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $null
+        $bootMutex = $null
+        $splash = Show-StartupSplash
+        Update-StartupSplash -Splash $splash -Stage "Initializing environment"
+        if (Try-OpenExistingMutex -Name $BootMutexName) {
+            Write-SessionLogLine -Tag "startup" -Message "Duplicate launch rejected: ordinary instance is still starting."
+            Update-StartupSplash -Splash $splash -Stage "Opening Trainer is already starting" -Detail "An existing ordinary launch is still booting."
+            Start-Sleep -Seconds 3
+            Close-StartupSplash -Splash $splash
+            break
+        }
+        if (Try-OpenExistingMutex -Name $AppMutexName) {
+            Write-SessionLogLine -Tag "startup" -Message "Duplicate launch rejected: ordinary instance is already running."
+            Update-StartupSplash -Splash $splash -Stage "Opening Trainer is already running" -Detail "Check the taskbar for the active window."
+            Start-Sleep -Seconds 3
+            Close-StartupSplash -Splash $splash
+            break
+        }
+        $bootMutex = New-Object Threading.Mutex($true, $BootMutexName)
+        try {
+            Log "Launching ordinary non-interactive path (validate + run, corpus skip)."
+            Update-StartupSplash -Splash $splash -Stage "Validating runtime"
+            Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
+            Invoke-TestSuite -VenvPython $venv.VenvPython
+            Invoke-CompileValidation -VenvPython $venv.VenvPython
+            Update-StartupSplash -Splash $splash -Stage "Launching trainer"
+            $child = Invoke-PythonEntrypointDetached -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $null
+            Update-StartupSplash -Splash $splash -Stage "Opening GUI" -Detail "Waiting for trainer readiness..."
+            $handoff = Wait-ForStartupHandoff -SessionLogPath $SessionLogPath -ChildPid $child.Id -Splash $splash
+            if ($handoff -eq "ready") {
+                Close-StartupSplash -Splash $splash
+            }
+            elseif ($handoff -eq "duplicate") {
+                Update-StartupSplash -Splash $splash -Stage "Opening Trainer is already running" -Detail "A launch is already active."
+                Start-Sleep -Seconds 4
+                Close-StartupSplash -Splash $splash
+            }
+            else {
+                Update-StartupSplash -Splash $splash -Stage "Startup failed" -Detail "See session log:`n$SessionLogPath`nDeveloper path: Launch_Opening_Trainer_Dev.cmd"
+                Write-SessionLogLine -Tag "error" -Message "Startup handoff ended with state=$handoff"
+                Start-Sleep -Seconds 7
+                Close-StartupSplash -Splash $splash
+            }
+        }
+        finally {
+            if ($bootMutex -ne $null) {
+                $bootMutex.ReleaseMutex() | Out-Null
+                $bootMutex.Dispose()
+            }
+        }
     }
 
     "Run" {
