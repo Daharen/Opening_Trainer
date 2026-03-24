@@ -3,12 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import chess
+import pytest
 
 from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResult, ReasonCode
 from opening_trainer.evaluator import MoveEvaluator
 from opening_trainer.review.models import ReviewItem, ReviewPathMove
 from opening_trainer.review.profile_service import ProfileService
-from opening_trainer.review.router import ReviewRouter
+from opening_trainer.review.router import ReviewRouter, RoutingConfig
 from opening_trainer.review.scheduler import apply_failure, apply_success
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.settings import TrainerSettingsStore
@@ -109,6 +110,52 @@ def test_routing_cap_prevents_one_item_from_dominating():
         router.recent_item_ids.append(items[0].review_item_id)
     decision = router.select('default', items)
     assert decision.selected_review_item_id == items[1].review_item_id or decision.routing_source == 'ordinary_corpus_play'
+
+
+def _due_item(position_key: str, urgency_tier: str) -> ReviewItem:
+    item = ReviewItem.create('default', position_key, 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
+    item.urgency_tier = urgency_tier
+    item.due_at_utc = '2000-01-01T00:00:00+00:00'
+    item.updated_at_utc = '2026-01-01T00:00:00+00:00'
+    item.last_seen_at_utc = '2025-01-01T00:00:00+00:00'
+    return item
+
+
+def test_due_only_ordinary_keeps_corpus_at_twenty_percent():
+    router = ReviewRouter()
+    decision = router.select('default', [_due_item('a', 'ordinary_review')])
+    assert decision.corpus_share == 0.2
+    assert decision.review_share == 0.8
+    assert decision.boosted_due_count == 0
+    assert decision.extreme_due_count == 0
+
+
+def test_boosted_and_extreme_reduce_corpus_share_with_exact_penalties():
+    router = ReviewRouter()
+    items = [_due_item('a', 'ordinary_review'), _due_item('b', 'boosted_review'), _due_item('c', 'boosted_review'), _due_item('d', 'extreme_urgency')]
+    decision = router.select('default', items)
+    assert decision.corpus_share == pytest.approx(0.16)
+    assert decision.review_share == pytest.approx(0.84)
+    assert decision.boosted_due_count == 2
+    assert decision.extreme_due_count == 1
+
+
+def test_review_selection_prioritizes_extreme_then_boosted_then_ordinary():
+    router = ReviewRouter()
+    extreme = _due_item('e', 'extreme_urgency')
+    boosted = _due_item('b', 'boosted_review')
+    ordinary = _due_item('a', 'ordinary_review')
+    # Force review path deterministically by creating a 0 corpus share case.
+    decision = router.select('default', [extreme] + [_due_item(str(i), 'extreme_urgency') for i in range(10)] + [boosted, ordinary])
+    assert decision.routing_source == 'extreme_urgency_override'
+    assert decision.urgency_tier == 'extreme_urgency'
+
+
+def test_boosted_review_routing_reason_is_explicit():
+    router = ReviewRouter(RoutingConfig(due_baseline_corpus_share=0.0))
+    decision = router.select('default', [_due_item('b', 'boosted_review')])
+    assert decision.routing_source == 'boosted_review'
+    assert decision.urgency_tier == 'boosted_review'
 
 
 def test_outcome_modal_contract_requires_acknowledgement():

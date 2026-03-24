@@ -39,7 +39,8 @@ class ReviewInspector(ttk.Frame):
         tier = self.filter_var.get()
         if tier != 'all':
             items = [item for item in items if item.urgency_tier == tier]
-        items.sort(key=lambda item: (item.urgency_tier, item.due_at_utc, -item.consecutive_failures, item.last_seen_at_utc))
+        tier_rank = {'extreme_urgency': 0, 'boosted_review': 1, 'ordinary_review': 2}
+        items.sort(key=lambda item: (tier_rank.get(item.urgency_tier, 3), item.due_at_utc, -item.consecutive_failures, item.last_seen_at_utc, item.review_item_id))
         for item in items:
             self.tree.insert('', 'end', iid=item.review_item_id, values=(item.position_key[:24], item.side_to_move, item.urgency_tier, 'due' if item.due_at_utc <= item.updated_at_utc else 'scheduled', item.consecutive_failures, item.consecutive_successes, item.last_seen_at_utc or '—', item.due_at_utc, item.last_routing_reason, item.line_preview_san[:36]))
 

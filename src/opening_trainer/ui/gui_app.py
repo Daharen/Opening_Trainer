@@ -434,6 +434,14 @@ class OpeningTrainerGUI:
         extreme = sum(1 for item in items if item.urgency_tier == 'extreme_urgency')
         routing = self.session.current_routing.routing_source if self.session.current_routing else 'not_started'
         explain = self.session.current_routing.selection_explanation if self.session.current_routing else 'No routing decision yet.'
+        if self.session.current_routing and self.session.current_routing.corpus_share is not None and self.session.current_routing.review_share is not None:
+            explain = (
+                f'corpus_share={self.session.current_routing.corpus_share:.2f}; '
+                f'review_share={self.session.current_routing.review_share:.2f}; '
+                f'boosted_due_count={self.session.current_routing.boosted_due_count}; '
+                f'extreme_due_count={self.session.current_routing.extreme_due_count}; '
+                f'{explain}'
+            )
         counts_summary = self._build_counts_summary(due, boosted, extreme)
         routing_summary = self._build_routing_summary(routing, explain)
         bundle_summary = f'Opponent source: {self.session.opponent.status_message}'
