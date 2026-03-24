@@ -21,7 +21,8 @@ class RoutingSource(str, Enum):
     CORPUS = 'ordinary_corpus_play'
     IMMEDIATE_RETRY = 'immediate_retry'
     SCHEDULED_REVIEW = 'scheduled_review'
-    EXTREME = 'extreme_urgency_review'
+    BOOSTED_REVIEW = 'boosted_review'
+    EXTREME = 'extreme_urgency_override'
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,10 @@ class RoutingDecision:
     selection_explanation: str
     profile_id: str
     review_plan: ReviewPlan | None = None
+    corpus_share: float | None = None
+    review_share: float | None = None
+    boosted_due_count: int = 0
+    extreme_due_count: int = 0
 
 
 def parse_iso(value: str) -> datetime:
