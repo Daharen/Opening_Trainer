@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("Menu", "Run", "DevRun", "Test", "Compile", "Validate", "All")]
-    [string]$Action = "Menu"
+    [ValidateSet("Auto", "Menu", "Run", "DevRun", "Test", "Compile", "Validate", "All")]
+    [string]$Action = "Auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +19,15 @@ $LogsDir = Join-Path $RepoRoot "logs"
 $LogFile = Join-Path $LogsDir "repo_run_log.txt"
 $WorkspaceLogsDir = Join-Path $WorkspaceRoot "logs"
 $BundleStateFile = Join-Path $WorkspaceLogsDir "repo_last_corpus_bundle.txt"
+$SessionLogsDir = Join-Path $WorkspaceLogsDir "sessions"
+$SessionId = $env:OPENING_TRAINER_SESSION_ID
+if ([string]::IsNullOrWhiteSpace($SessionId)) {
+    $SessionId = (Get-Date -Format "yyyyMMddTHHmmssZ") + "-" + $PID
+    $env:OPENING_TRAINER_SESSION_ID = $SessionId
+}
+$SessionLogPath = Join-Path $SessionLogsDir ("session_{0}.log" -f $SessionId)
+$env:OPENING_TRAINER_SESSION_LOG_DIR = $SessionLogsDir
+$env:OPENING_TRAINER_SESSION_LOG_PATH = $SessionLogPath
 
 function Ensure-Logs {
     if (-not (Test-Path $LogsDir)) {
@@ -34,6 +43,7 @@ function Log {
     $line = "[$timestamp] $Message"
     Write-Host $line
     Add-Content -Path $LogFile -Value $line
+    Write-SessionLogLine -Tag "launcher" -Message $Message
 }
 
 function Require-Command {
@@ -138,6 +148,30 @@ function Ensure-WorkspaceLogs {
     if (-not (Test-Path $WorkspaceLogsDir)) {
         New-Item -ItemType Directory -Force -Path $WorkspaceLogsDir | Out-Null
     }
+    if (-not (Test-Path $SessionLogsDir)) {
+        New-Item -ItemType Directory -Force -Path $SessionLogsDir | Out-Null
+    }
+}
+
+function Write-SessionLogLine {
+    param(
+        [string]$Tag,
+        [string]$Message
+    )
+
+    Ensure-WorkspaceLogs
+    $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ")
+    $line = "[$timestamp] [$Tag] $Message"
+    Add-Content -LiteralPath $SessionLogPath -Value $line
+}
+
+function Prune-SessionLogs {
+    Ensure-WorkspaceLogs
+    $files = Get-ChildItem -LiteralPath $SessionLogsDir -Filter "session_*.log" -File | Sort-Object LastWriteTime -Descending
+    if ($files.Count -le 5) {
+        return
+    }
+    $files | Select-Object -Skip 5 | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 
 function Test-CorpusBundleDirectory {
@@ -365,7 +399,8 @@ function Invoke-PythonEntrypoint {
     param(
         [string]$RepoRoot,
         [string]$VenvPython,
-        [string]$CorpusBundleDir = $null
+        [string]$CorpusBundleDir = $null,
+        [bool]$MirrorConsole = $true
     )
 
     $CandidateFiles = @(
@@ -393,8 +428,10 @@ function Invoke-PythonEntrypoint {
             }
 
             Log "Launching Python entrypoint: $fullPath"
-            $env:PYTHONUNBUFFERED = "1"
+                        $env:PYTHONUNBUFFERED = "1"
             $env:PYTHONIOENCODING = "utf-8"
+            $env:OPENING_TRAINER_CONSOLE_MIRROR = if ($MirrorConsole) { "1" } else { "0" }
+            Write-SessionLogLine -Tag "startup" -Message "Launching trainer entrypoint $fullPath"
             & $VenvPython @launchArgs
             if ($LASTEXITCODE -ne 0) {
                 throw "Python entrypoint failed: $fullPath"
@@ -442,7 +479,7 @@ function Resolve-Action {
 
     Write-Host ""
     Write-Host "Opening Trainer repo runner"
-    Write-Host "1) Run trainer (desktop-first)"
+    Write-Host "1) Run trainer (ordinary non-interactive)"
     Write-Host "2) Developer run trainer (with optional console corpus selection)"
     Write-Host "3) Run tests"
     Write-Host "4) Compile validation"
@@ -454,7 +491,7 @@ function Resolve-Action {
     $choice = (Read-Host "Select action").Trim().ToUpperInvariant()
 
     switch ($choice) {
-        "1" { return "Run" }
+        "1" { return "Auto" }
         "2" { return "DevRun" }
         "3" { return "Test" }
         "4" { return "Compile" }
@@ -465,10 +502,14 @@ function Resolve-Action {
     }
 }
 
+Ensure-WorkspaceLogs
+Prune-SessionLogs
+Write-SessionLogLine -Tag "launcher" -Message "Bootstrap: run.ps1 starting action $Action"
 Ensure-Logs
 "" | Set-Content $LogFile
 
 Log "===== Opening Trainer: Repo Run ====="
+Write-SessionLogLine -Tag "startup" -Message "Session id: $SessionId"
 Log "RepoRoot: $RepoRoot"
 
 Set-Location $RepoRoot
@@ -485,14 +526,22 @@ $ResolvedAction = Resolve-Action -RequestedAction $Action
 Log "Action: $ResolvedAction"
 
 switch ($ResolvedAction) {
+    "Auto" {
+        Log "Launching ordinary non-interactive path (validate + run, corpus skip)."
+        Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
+        Invoke-TestSuite -VenvPython $venv.VenvPython
+        Invoke-CompileValidation -VenvPython $venv.VenvPython
+        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $null -MirrorConsole $false
+    }
+
     "Run" {
         Log "Launching desktop-first trainer without pre-GUI console corpus selection."
-        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython
+        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -MirrorConsole $true
     }
 
     "DevRun" {
         $selectedBundle = Select-CorpusBundleDirectory
-        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle
+        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle -MirrorConsole $true
     }
 
     "Test" {
@@ -515,7 +564,7 @@ switch ($ResolvedAction) {
         Invoke-TestSuite -VenvPython $venv.VenvPython
         Invoke-CompileValidation -VenvPython $venv.VenvPython
         $selectedBundle = Select-CorpusBundleDirectory
-        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle
+        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle -MirrorConsole $true
     }
 
     "Quit" {
@@ -527,4 +576,5 @@ switch ($ResolvedAction) {
     }
 }
 
+Prune-SessionLogs
 Log "Done."

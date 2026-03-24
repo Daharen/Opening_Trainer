@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import queue
+import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -14,8 +16,10 @@ from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, l
 from ..settings import TrainerSettings
 from ..session import TrainingSession
 from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
+from ..session_logging import get_session_logger
 from .board_view import BoardView
 from .captured_material_panel import CapturedMaterialPanel
+from .dev_console import DevConsoleWindow
 from .move_list_panel import MoveListPanel
 from .outcome_modal import OutcomeModal
 from .profile_dialog import ProfileDialog
@@ -46,9 +50,13 @@ class OpeningTrainerGUI:
         self._loading_queue: queue.Queue | None = None
         self._loading_thread = None
         self._loading_job_active = False
+        self.session_logger = get_session_logger()
+        self.dev_console = DevConsoleWindow(self.root, self.session_logger)
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
+
+        self._build_menubar()
 
         toolbar = tk.Frame(self.root)
         toolbar.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 4))
@@ -609,6 +617,42 @@ class OpeningTrainerGUI:
                 code = (choice or 'q').strip().lower()
                 return chess.Move(from_square, to_square, promotion=PROMOTION_CHOICES.get(code, chess.QUEEN))
         return None
+
+
+    def _build_menubar(self) -> None:
+        menubar = tk.Menu(self.root)
+        dev_menu = tk.Menu(menubar, tearoff=0)
+        dev_menu.add_command(label='Open Dev Console', command=self._open_dev_console)
+        dev_menu.add_command(label='Open Logs Folder', command=self._open_logs_folder)
+        dev_menu.add_command(label='Copy Current Session Log Path', command=self._copy_session_log_path)
+        dev_menu.add_command(label='Clear Visible Buffer', command=self._clear_visible_log_buffer)
+        menubar.add_cascade(label='Developer', menu=dev_menu)
+        self.root.config(menu=menubar)
+
+    def _open_dev_console(self) -> None:
+        self.dev_console.open()
+
+    def _open_logs_folder(self) -> None:
+        logs_folder = str(self.session_logger.log_path.parent.resolve())
+        try:
+            if os.name == 'nt':
+                os.startfile(logs_folder)
+            elif os.uname().sysname == 'Darwin':
+                subprocess.Popen(['open', logs_folder])
+            else:
+                subprocess.Popen(['xdg-open', logs_folder])
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror('Logs Folder', f'Could not open logs folder.\n{exc}', parent=self.root)
+
+    def _copy_session_log_path(self) -> None:
+        log_path = str(self.session_logger.log_path.resolve())
+        self.root.clipboard_clear()
+        self.root.clipboard_append(log_path)
+        self.root.update_idletasks()
+        messagebox.showinfo('Session Log Path', f'Copied to clipboard:\n{log_path}', parent=self.root)
+
+    def _clear_visible_log_buffer(self) -> None:
+        self.session_logger.clear_visible_buffer()
 
 
 def launch_gui(runtime_context: RuntimeContext | None = None) -> None:

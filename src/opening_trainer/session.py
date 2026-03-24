@@ -28,6 +28,7 @@ from .runtime import (
 )
 from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
+from .session_logging import log_line
 
 
 class TrainingSession:
@@ -143,9 +144,9 @@ class TrainingSession:
         self.current_review_item_id = self.current_routing.selected_review_item_id
         self.active_review_plan = self.current_routing.review_plan
         self._print_new_game_banner()
-        print(self.opponent.status_message, flush=True)
+        log_line(self.opponent.status_message, tag='startup')
         self._print_startup_summary()
-        print(f'Routing: {self.current_routing.selection_explanation}', flush=True)
+        log_line(f'Routing: {self.current_routing.selection_explanation}', tag='review')
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
         else:
@@ -223,10 +224,10 @@ class TrainingSession:
     def _handle_player_turn(self, input_func=None) -> None:
         if input_func is None:
             input_func = input
-        print('', flush=True)
-        print(self.board, flush=True)
-        print('', flush=True)
-        print('Your move: ', end='', flush=True)
+        log_line('', tag='startup')
+        log_line(str(self.board), tag='startup')
+        log_line('', tag='startup')
+        log_line('Your move prompt displayed.', tag='startup')
         self._submit_user_move(input_func().strip())
 
     def _record_path_move(self, board_before: chess.Board, move: chess.Move) -> None:
@@ -283,7 +284,7 @@ class TrainingSession:
         if self.state != SessionState.PLAYER_TURN:
             raise RuntimeError('Cannot submit a user move when the session is not awaiting player input.')
         if not self.board.is_legal(move_str):
-            print('Illegal move. Try again.', flush=True)
+            log_line('Illegal move. Try again.', tag='evaluation')
             return self.get_view()
         board_before_move = self.board.board.copy(stack=True)
         pre_fail_fen = board_before_move.fen()
@@ -414,7 +415,7 @@ class TrainingSession:
         san = self.board.board.san(move)
         self.board.board.push(move)
         self._record_path_move(board_before, move)
-        print(f'Opponent plays: {san}{self._format_opponent_choice_detail(choice)}', flush=True)
+        log_line(f'Opponent plays: {san}{self._format_opponent_choice_detail(choice)}', tag='corpus')
         if self._resolve_terminal_board_state():
             return
         self.state = SessionState.PLAYER_TURN if self.board.turn() == self.player_color else SessionState.OPPONENT_TURN
@@ -437,43 +438,43 @@ class TrainingSession:
         return ' [' + ' | '.join([f'via {choice.selected_via}', f'reason={choice.corpus_lookup_reason_code}', f'position={choice.normalized_position_key}', f'candidate_rows={choice.candidate_row_count}', f'legal_candidates={choice.legal_candidate_count}']) + ']'
 
     def _resolve_fail(self) -> None:
-        print('\nFAIL', flush=True)
+        log_line('FAIL', tag='evaluation')
         if self.last_outcome is not None:
-            print(self.last_outcome.reason, flush=True)
+            log_line(self.last_outcome.reason, tag='evaluation')
             if self.last_outcome.preferred_move:
-                print(f'Preferred move: {self.last_outcome.preferred_move}', flush=True)
+                log_line(f'Preferred move: {self.last_outcome.preferred_move}', tag='evaluation')
             if self.last_outcome.punishing_reply_san or self.last_outcome.punishing_reply_uci:
-                print(f'Punishing reply: {self.last_outcome.punishing_reply_san or self.last_outcome.punishing_reply_uci}', flush=True)
-            print(f'Routing reason: {self.last_outcome.routing_reason}', flush=True)
-            print(f'Next run: {self.last_outcome.next_routing_reason}', flush=True)
-        print('Restarting training game after acknowledgement in GUI or caller control.', flush=True)
+                log_line(f'Punishing reply: {self.last_outcome.punishing_reply_san or self.last_outcome.punishing_reply_uci}', tag='evaluation')
+            log_line(f'Routing reason: {self.last_outcome.routing_reason}', tag='review')
+            log_line(f'Next run: {self.last_outcome.next_routing_reason}', tag='review')
+        log_line('Restarting training game after acknowledgement in GUI or caller control.', tag='startup')
         self.state = SessionState.RESTART_PENDING
 
     def _resolve_success(self) -> None:
-        print('\nSUCCESS', flush=True)
+        log_line('SUCCESS', tag='evaluation')
         if self.last_outcome is not None:
-            print(self.last_outcome.reason, flush=True)
-            print(f'Routing reason: {self.last_outcome.routing_reason}', flush=True)
-            print(f'Profile: {self.last_outcome.profile_name}', flush=True)
-        print('Opening window cleared. Restarting training game after acknowledgement in GUI or caller control.', flush=True)
+            log_line(self.last_outcome.reason, tag='evaluation')
+            log_line(f'Routing reason: {self.last_outcome.routing_reason}', tag='review')
+            log_line(f'Profile: {self.last_outcome.profile_name}', tag='review')
+        log_line('Opening window cleared. Restarting training game after acknowledgement in GUI or caller control.', tag='startup')
         self.state = SessionState.RESTART_PENDING
 
     def _resolve_authority_unavailable(self) -> None:
-        print('\nAUTHORITY UNAVAILABLE', flush=True)
+        log_line('AUTHORITY UNAVAILABLE', tag='error')
         if self.last_outcome is not None:
-            print(self.last_outcome.reason, flush=True)
-        print('Run paused explicitly because engine authority is unavailable; no fail was recorded.', flush=True)
+            log_line(self.last_outcome.reason, tag='evaluation')
+        log_line('Run paused explicitly because engine authority is unavailable; no fail was recorded.', tag='error')
         self.state = SessionState.RESTART_PENDING
 
     def _print_new_game_banner(self) -> None:
-        print('\n=== New Training Game ===', flush=True)
-        print('You are WHITE' if self.player_color == chess.WHITE else 'You are BLACK', flush=True)
+        log_line('=== New Training Game ===', tag='startup')
+        log_line('You are WHITE' if self.player_color == chess.WHITE else 'You are BLACK', tag='startup')
 
     def _print_startup_summary(self) -> None:
         color_name = 'WHITE' if self.player_color == chess.WHITE else 'BLACK'
         for line in self.runtime_context.startup_status(mode=self.mode.upper(), user_color=color_name).lines:
-            print(line, flush=True)
+            log_line(line, tag='evaluation')
 
     def _print_evaluation_feedback(self, evaluation: EvaluationResult) -> None:
         for line in format_evaluation_feedback(evaluation):
-            print(line, flush=True)
+            log_line(line, tag='evaluation')
