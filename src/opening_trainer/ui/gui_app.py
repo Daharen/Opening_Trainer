@@ -16,7 +16,8 @@ from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, l
 from ..settings import TrainerSettings
 from ..session import TrainingSession
 from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
-from ..session_logging import get_session_logger
+from ..session_logging import get_session_logger, log_line
+from ..single_instance import acquire_single_instance_guard
 from .board_view import BoardView
 from .captured_material_panel import CapturedMaterialPanel
 from .dev_console import DevConsoleWindow
@@ -656,4 +657,14 @@ class OpeningTrainerGUI:
 
 
 def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
-    OpeningTrainerGUI(runtime_context=runtime_context).run()
+    if not acquire_single_instance_guard():
+        log_line("INSTANCE_DUPLICATE: Opening Trainer is already starting or running.", tag="startup")
+        return
+    log_line("GUI_BOOTSTRAP: creating Tk root.", tag="startup")
+    try:
+        app = OpeningTrainerGUI(runtime_context=runtime_context)
+        log_line("GUI_READY: Opening Trainer GUI initialized.", tag="startup")
+        app.run()
+    except Exception as exc:
+        log_line(f"GUI_STARTUP_FAILED: {exc}", tag="error")
+        raise

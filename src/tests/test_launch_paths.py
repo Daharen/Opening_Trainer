@@ -54,3 +54,26 @@ def test_ordinary_and_developer_launchers_are_split():
     assert "shell.Run cmd, 0" in ordinary
     assert "-Action Menu" in developer
 
+
+def test_powershell_ordinary_launch_includes_splash_and_single_instance_guards():
+    script = Path('run.ps1').read_text(encoding='utf-8')
+
+    assert 'function Show-StartupSplash' in script
+    assert 'Opening Trainer is starting' in script
+    assert 'Initializing environment' in script
+    assert 'Validating runtime' in script
+    assert 'Launching trainer' in script
+    assert 'Opening GUI' in script
+    assert 'Try-OpenExistingMutex -Name $BootMutexName' in script
+    assert 'Try-OpenExistingMutex -Name $AppMutexName' in script
+    assert 'Wait-ForStartupHandoff' in script
+    assert 'GUI_READY:' in script
+    assert 'GUI_STARTUP_FAILED:' in script
+
+
+def test_powershell_ordinary_failure_message_points_to_session_log_and_dev_launcher():
+    script = Path('run.ps1').read_text(encoding='utf-8')
+
+    assert 'Startup failed' in script
+    assert 'See session log:' in script
+    assert 'Launch_Opening_Trainer_Dev.cmd' in script

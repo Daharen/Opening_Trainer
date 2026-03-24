@@ -15,6 +15,7 @@ from .bundle_corpus import (
 )
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact, normalize_position_key
 from .evaluation import EvaluatorConfig
+from .evaluation.engine_process import launch_engine
 from .runtime import corpus_status_detail
 
 
@@ -71,13 +72,14 @@ class RandomOpponentProvider:
 class StockfishOpponentProvider:
     def __init__(self, config: EvaluatorConfig):
         self.config = config
+        self._engine: chess.engine.SimpleEngine | None = None
 
     def choose_move(self, board: chess.Board) -> OpponentMoveChoice:
-        with chess.engine.SimpleEngine.popen_uci(self.config.engine_path) as engine:
-            info = engine.play(
-                board,
-                chess.engine.Limit(depth=self.config.engine_depth, time=self.config.engine_time_limit_seconds),
-            )
+        engine = self._ensure_engine()
+        info = engine.play(
+            board,
+            chess.engine.Limit(depth=self.config.engine_depth, time=self.config.engine_time_limit_seconds),
+        )
         move = info.move
         if move is None or move not in board.legal_moves:
             raise LookupError("Stockfish fallback returned no legal move.")
@@ -97,6 +99,23 @@ class StockfishOpponentProvider:
             fallback_applied=True,
             candidate_summaries=({"uci": move.uci(), "raw_count": 0, "effective_weight": 1.0},),
         )
+
+    def _ensure_engine(self) -> chess.engine.SimpleEngine:
+        if self._engine is None:
+            self._engine = launch_engine(self.config)
+        return self._engine
+
+    def _close_engine(self) -> None:
+        if self._engine is None:
+            return
+        try:
+            self._engine.quit()
+        except Exception:
+            pass
+        self._engine = None
+
+    def __del__(self) -> None:
+        self._close_engine()
 
 
 class CorpusBackedOpponentProvider:
