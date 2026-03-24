@@ -235,33 +235,41 @@ class SQLiteAggregateCorpusProvider:
         connection = self._get_connection_for_current_thread()
         position_cursor = connection.cursor()
         move_cursor = connection.cursor()
-
-        position_row = position_cursor.execute(
-            "SELECT id, position_key, side_to_move, total_observed_count FROM positions WHERE position_key = ? LIMIT 1",
-            (position_key,),
-        ).fetchone()
+        try:
+            position_row = position_cursor.execute(
+                "SELECT position_id, position_key, position_key_format, side_to_move, candidate_move_count, total_observations FROM positions WHERE position_key = ? LIMIT 1",
+                (position_key,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"SQLite corpus schema mismatch or unsupported bundle schema: {exc}") from exc
         if position_row is None:
             return self._remember(position_key, None)
 
-        move_rows = move_cursor.execute(
-            "SELECT uci, raw_count FROM moves WHERE position_id = ? ORDER BY raw_count DESC, uci ASC",
-            (position_row["id"],),
-        ).fetchall()
+        try:
+            move_rows = move_cursor.execute(
+                "SELECT move_key, move_key_format, raw_count, example_san FROM moves WHERE position_id = ? ORDER BY raw_count DESC, move_key ASC",
+                (position_row["position_id"],),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"SQLite corpus schema mismatch or unsupported bundle schema: {exc}") from exc
         candidates = tuple(
-            BuilderAggregateCandidate(uci=str(move_row["uci"]), raw_count=int(move_row["raw_count"]))
+            BuilderAggregateCandidate(uci=str(move_row["move_key"]), raw_count=int(move_row["raw_count"]))
             for move_row in move_rows
-            if move_row["uci"] is not None
+            if move_row["move_key"] is not None and move_row["move_key_format"] == SUPPORTED_BUNDLE_MOVE_KEY_FORMAT
         )
-        total_observed_count = int(position_row["total_observed_count"] or 0)
+        total_observed_count = int(position_row["total_observations"] or 0)
         if total_observed_count <= 0:
             total_observed_count = sum(candidate.raw_count for candidate in candidates)
+        candidate_row_count = int(position_row["candidate_move_count"] or 0)
+        if candidate_row_count <= 0:
+            candidate_row_count = len(move_rows)
 
         position = BuilderAggregatePosition(
             position_key=str(position_row["position_key"]),
             total_observed_count=total_observed_count,
             candidates=candidates,
-            candidate_row_count=len(candidates),
-            unsupported_candidate_row_count=0,
+            candidate_row_count=candidate_row_count,
+            unsupported_candidate_row_count=max(0, len(move_rows) - len(candidates)),
         )
         return self._remember(position_key, position)
 

@@ -56,22 +56,27 @@ def _write_sqlite_bundle(bundle_dir: Path, manifest: dict[str, object], rows: li
     db_path = data_dir / "corpus.sqlite"
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, position_key TEXT NOT NULL, side_to_move TEXT NOT NULL, total_observed_count INTEGER NOT NULL)")
-        conn.execute("CREATE TABLE moves (id INTEGER PRIMARY KEY, position_id INTEGER NOT NULL, uci TEXT NOT NULL, raw_count INTEGER NOT NULL, FOREIGN KEY(position_id) REFERENCES positions(id))")
+        conn.execute(
+            "CREATE TABLE positions (position_id INTEGER PRIMARY KEY, position_key TEXT NOT NULL, position_key_format TEXT NOT NULL, side_to_move TEXT NOT NULL, candidate_move_count INTEGER NOT NULL, total_observations INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE moves (move_id INTEGER PRIMARY KEY, position_id INTEGER NOT NULL, move_key TEXT NOT NULL, move_key_format TEXT NOT NULL, raw_count INTEGER NOT NULL, example_san TEXT, FOREIGN KEY(position_id) REFERENCES positions(position_id))"
+        )
         for row in rows:
             position_key = row["position_key"]
             side_to_move = row.get("side_to_move", "white")
             total = int(row.get("total_observed_count", row.get("total_observations", 0)))
+            candidate_rows = row.get("candidate_moves", [])
             cursor = conn.execute(
-                "INSERT INTO positions(position_key, side_to_move, total_observed_count) VALUES (?, ?, ?)",
-                (position_key, side_to_move, total),
+                "INSERT INTO positions(position_key, position_key_format, side_to_move, candidate_move_count, total_observations) VALUES (?, ?, ?, ?, ?)",
+                (position_key, "fen_normalized", side_to_move, len(candidate_rows), total),
             )
             position_id = int(cursor.lastrowid)
-            for move in row.get("candidate_moves", []):
-                uci = move.get("uci") or move.get("move_key")
+            for move in candidate_rows:
+                move_key = move.get("uci") or move.get("move_key")
                 conn.execute(
-                    "INSERT INTO moves(position_id, uci, raw_count) VALUES (?, ?, ?)",
-                    (position_id, uci, int(move["raw_count"])),
+                    "INSERT INTO moves(position_id, move_key, move_key_format, raw_count, example_san) VALUES (?, ?, ?, ?, ?)",
+                    (position_id, move_key, "uci", int(move["raw_count"]), move.get("example_san")),
                 )
         conn.commit()
     finally:
