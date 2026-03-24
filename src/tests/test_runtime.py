@@ -6,6 +6,7 @@ from pathlib import Path
 
 import chess
 
+import opening_trainer.session_logging as session_logging
 from opening_trainer.bundle_corpus import normalize_builder_position_key
 from opening_trainer.corpus import CorpusIngestor, save_artifact
 from opening_trainer.evaluation import AuthoritySource, CanonicalJudgment, EvaluationResult, OverlayLabel, ReasonCode, EngineAuthorityResult
@@ -20,6 +21,14 @@ from opening_trainer.evaluation import BookAuthorityResult
 from opening_trainer.session import TrainingSession
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_corpus.pgn"
+
+
+def _reset_session_logger(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(session_logging.SESSION_LOG_DIR_ENV, str(tmp_path / "sessions"))
+    monkeypatch.delenv(session_logging.SESSION_LOG_PATH_ENV, raising=False)
+    monkeypatch.delenv(session_logging.SESSION_ID_ENV, raising=False)
+    monkeypatch.delenv(session_logging.CONSOLE_MIRROR_ENV, raising=False)
+    session_logging.reset_logger_for_tests()
 
 
 class StubBookAuthority:
@@ -586,16 +595,17 @@ def test_environment_book_override_beats_workspace_default(tmp_path, monkeypatch
     assert "configured value=" in runtime.book.detail
 
 
-def test_show_runtime_reports_workspace_default_activation(tmp_path, monkeypatch, capsys):
+def test_show_runtime_reports_workspace_default_activation(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     (tmp_path / "runtime.local.json").write_text(json.dumps({"engine_executable_path": "/tmp/workspace-stockfish"}), encoding="utf-8")
     monkeypatch.chdir(repo_root)
+    _reset_session_logger(tmp_path, monkeypatch)
 
     from opening_trainer.main import run
 
     run(["--show-runtime"])
-    output = capsys.readouterr().out
+    output = "\n".join(session_logging.get_session_logger().visible_lines())
 
     assert "Runtime config source: workspace-root default runtime config:" in output
 
@@ -843,13 +853,14 @@ def _accepted_evaluation(move_uci: str) -> EvaluationResult:
     )
 
 
-def test_session_opponent_turn_uses_bundle_move_for_black_start_position(tmp_path, monkeypatch, capsys):
+def test_session_opponent_turn_uses_bundle_move_for_black_start_position(tmp_path, monkeypatch):
     board = chess.Board()
     bundle_dir = _write_bundle(
         tmp_path / "bundle",
         _sample_bundle_manifest(),
         [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
     )
+    _reset_session_logger(tmp_path, monkeypatch)
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime)
     session.board.reset()
@@ -858,7 +869,7 @@ def test_session_opponent_turn_uses_bundle_move_for_black_start_position(tmp_pat
     monkeypatch.setattr(session.opponent.stockfish_provider, "choose_move", lambda board: (_ for _ in ()).throw(AssertionError("stockfish should not be used on corpus hit")))
 
     session.advance_until_user_turn()
-    output = capsys.readouterr().out
+    output = "\n".join(session_logging.get_session_logger().visible_lines())
 
     assert session.board.board.move_stack[0].uci() == "e2e4"
     assert session.last_opponent_choice is not None
@@ -895,13 +906,14 @@ def test_session_player_move_reply_uses_bundle_move_for_white(tmp_path, monkeypa
 
 
 
-def test_session_bundle_diagnostic_reports_actual_normalized_lookup_key(tmp_path, monkeypatch, capsys):
+def test_session_bundle_diagnostic_reports_actual_normalized_lookup_key(tmp_path, monkeypatch):
     board = chess.Board()
     bundle_dir = _write_bundle(
         tmp_path / "bundle",
         _sample_bundle_manifest(),
         [{"position_key": normalize_builder_position_key(board), "candidate_moves": [{"uci": "e2e4", "raw_count": 3}], "total_observed_count": 3}],
     )
+    _reset_session_logger(tmp_path, monkeypatch)
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime)
     session.board.reset()
@@ -910,7 +922,7 @@ def test_session_bundle_diagnostic_reports_actual_normalized_lookup_key(tmp_path
     monkeypatch.setattr(session.opponent.stockfish_provider, "choose_move", lambda board: (_ for _ in ()).throw(AssertionError("stockfish should not be used on corpus hit")))
 
     session.advance_until_user_turn()
-    output = capsys.readouterr().out
+    output = "\n".join(session_logging.get_session_logger().visible_lines())
 
     assert f"position={normalize_builder_position_key(board)}" in output
     assert " 0 1" not in output

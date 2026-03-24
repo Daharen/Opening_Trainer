@@ -403,6 +403,27 @@ function Invoke-PythonEntrypoint {
         [bool]$MirrorConsole = $true
     )
 
+    $resolved = Resolve-PythonEntrypoint -RepoRoot $RepoRoot -CorpusBundleDir $CorpusBundleDir
+    $fullPath = $resolved.Path
+    $launchArgs = @("-u", $fullPath) + $resolved.ExtraArgs
+
+    Log "Launching Python entrypoint: $fullPath"
+    $env:PYTHONUNBUFFERED = "1"
+    $env:PYTHONIOENCODING = "utf-8"
+    $env:OPENING_TRAINER_CONSOLE_MIRROR = if ($MirrorConsole) { "1" } else { "0" }
+    Write-SessionLogLine -Tag "startup" -Message "Launching trainer entrypoint $fullPath"
+    & $VenvPython @launchArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python entrypoint failed: $fullPath"
+    }
+}
+
+function Resolve-PythonEntrypoint {
+    param(
+        [string]$RepoRoot,
+        [string]$CorpusBundleDir = $null
+    )
+
     $CandidateFiles = @(
         "main.py",
         "run_trainer.py",
@@ -414,33 +435,74 @@ function Invoke-PythonEntrypoint {
 
     foreach ($relativePath in $CandidateFiles) {
         $fullPath = Join-Path $RepoRoot $relativePath
-        if (Test-Path $fullPath) {
-            $launchArgs = @("-u", $fullPath)
-            if (-not [string]::IsNullOrWhiteSpace($CorpusBundleDir)) {
-                $launchArgs += @("--corpus-bundle-dir", $CorpusBundleDir)
-                Write-Host "Trainer launch will use corpus bundle: $CorpusBundleDir"
-                Log "Trainer launch corpus bundle: $CorpusBundleDir"
-                Save-LastCorpusBundleSelection -BundlePath $CorpusBundleDir
-            }
-            else {
-                Write-Host "Trainer launch will proceed without an explicitly selected corpus bundle."
-                Log "Trainer launch corpus bundle: skipped"
-            }
+        if (-not (Test-Path $fullPath)) {
+            continue
+        }
 
-            Log "Launching Python entrypoint: $fullPath"
-                        $env:PYTHONUNBUFFERED = "1"
-            $env:PYTHONIOENCODING = "utf-8"
-            $env:OPENING_TRAINER_CONSOLE_MIRROR = if ($MirrorConsole) { "1" } else { "0" }
-            Write-SessionLogLine -Tag "startup" -Message "Launching trainer entrypoint $fullPath"
-            & $VenvPython @launchArgs
-            if ($LASTEXITCODE -ne 0) {
-                throw "Python entrypoint failed: $fullPath"
-            }
-            return
+        $extraArgs = @()
+        if (-not [string]::IsNullOrWhiteSpace($CorpusBundleDir)) {
+            $extraArgs += @("--corpus-bundle-dir", $CorpusBundleDir)
+            Write-Host "Trainer launch will use corpus bundle: $CorpusBundleDir"
+            Log "Trainer launch corpus bundle: $CorpusBundleDir"
+            Save-LastCorpusBundleSelection -BundlePath $CorpusBundleDir
+        }
+        else {
+            Write-Host "Trainer launch will proceed without an explicitly selected corpus bundle."
+            Log "Trainer launch corpus bundle: skipped"
+        }
+
+        return @{
+            Path = $fullPath
+            ExtraArgs = $extraArgs
         }
     }
 
     throw "No Python entrypoint found. Checked: $($CandidateFiles -join ', ')"
+}
+
+function Invoke-PythonEntrypointDetached {
+    param(
+        [string]$RepoRoot,
+        [string]$VenvPython,
+        [string]$CorpusBundleDir = $null
+    )
+
+    $resolved = Resolve-PythonEntrypoint -RepoRoot $RepoRoot -CorpusBundleDir $CorpusBundleDir
+    $fullPath = $resolved.Path
+    $scriptArgs = @($fullPath) + $resolved.ExtraArgs
+    $pythonwPath = Join-Path (Split-Path -Parent $VenvPython) "pythonw.exe"
+    $launcherExe = if (Test-Path $pythonwPath) { $pythonwPath } else { $VenvPython }
+    $usesPythonw = [System.StringComparer]::OrdinalIgnoreCase.Equals([System.IO.Path]::GetFileName($launcherExe), "pythonw.exe")
+
+    $env:PYTHONUNBUFFERED = "1"
+    $env:PYTHONIOENCODING = "utf-8"
+    $env:OPENING_TRAINER_CONSOLE_MIRROR = "0"
+    Write-SessionLogLine -Tag "startup" -Message "Ordinary launch handoff prepared (detached executable=$launcherExe)"
+
+    try {
+        $startInfo = @{
+            FilePath = $launcherExe
+            ArgumentList = $scriptArgs
+            WorkingDirectory = $RepoRoot
+            ErrorAction = "Stop"
+        }
+        if (-not $usesPythonw) {
+            $startInfo.WindowStyle = "Hidden"
+        }
+        $process = Start-Process @startInfo -PassThru
+    }
+    catch {
+        Write-SessionLogLine -Tag "error" -Message "Ordinary launch spawn failed: $($_.Exception.Message)"
+        throw
+    }
+
+    if ($null -eq $process -or $process.Id -le 0) {
+        Write-SessionLogLine -Tag "error" -Message "Ordinary launch spawn failed: no process id returned."
+        throw "Detached launch failed: process was not created."
+    }
+
+    Write-SessionLogLine -Tag "startup" -Message "Ordinary launch handoff complete (pid=$($process.Id))."
+    Log "Detached ordinary launch started (pid=$($process.Id)) via $([System.IO.Path]::GetFileName($launcherExe))."
 }
 
 function Invoke-TestSuite {
@@ -531,7 +593,7 @@ switch ($ResolvedAction) {
         Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
         Invoke-TestSuite -VenvPython $venv.VenvPython
         Invoke-CompileValidation -VenvPython $venv.VenvPython
-        Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $null -MirrorConsole $false
+        Invoke-PythonEntrypointDetached -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $null
     }
 
     "Run" {
