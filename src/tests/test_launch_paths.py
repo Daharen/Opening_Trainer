@@ -24,13 +24,13 @@ def test_default_run_launches_gui_without_cli_flag(monkeypatch):
 
 
 
-def test_powershell_runner_run_mode_skips_console_bundle_selection():
+def test_powershell_runner_auto_mode_is_non_interactive_and_skips_console_bundle_selection():
     script = Path('run.ps1').read_text(encoding='utf-8')
 
-    assert '"Run" {' in script
-    run_block = script.split('"Run" {', 1)[1].split('"DevRun" {', 1)[0]
+    assert '"Auto" {' in script
+    run_block = script.split('"Auto" {', 1)[1].split('"Run" {', 1)[0]
     assert 'Select-CorpusBundleDirectory' not in run_block
-    assert 'desktop-first trainer without pre-GUI console corpus selection' in run_block
+    assert 'non-interactive path (validate + run, corpus skip)' in run_block
     dev_block = script.split('"DevRun" {', 1)[1].split('"Test" {', 1)[0]
     assert 'Select-CorpusBundleDirectory' in dev_block
 
@@ -44,3 +44,13 @@ def test_powershell_runner_bundle_validation_recognizes_sqlite_and_legacy_fallba
     assert "if (Test-Path $sqlitePath -PathType Leaf)" in script
     assert "if (Test-Path $aggregatePath -PathType Leaf)" in script
     assert "manifest payload_format -> data/corpus.sqlite -> data/aggregated_position_move_counts.jsonl (legacy)" in script
+
+
+def test_ordinary_and_developer_launchers_are_split():
+    ordinary = Path('Launch_Opening_Trainer.vbs').read_text(encoding='utf-8')
+    developer = Path('Launch_Opening_Trainer_Dev.cmd').read_text(encoding='utf-8')
+
+    assert "-Action Auto" in ordinary
+    assert "shell.Run cmd, 0" in ordinary
+    assert "-Action Menu" in developer
+

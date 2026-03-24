@@ -5,6 +5,7 @@ import argparse
 from .corpus import CorpusIngestor, DEFAULT_ARTIFACT_PATH, save_artifact
 from .runtime import RuntimeOverrides, load_runtime_config
 from .session import TrainingSession
+from .session_logging import get_session_logger, log_line
 
 
 def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:
@@ -22,7 +23,8 @@ def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:
 
 def run_cli(runtime_overrides: RuntimeOverrides | None = None) -> None:
     runtime_context = load_runtime_config(runtime_overrides)
-    print("Opening Trainer v2 (CLI)", flush=True)
+    get_session_logger()
+    log_line("Opening Trainer v2 (CLI)", tag="startup")
     session = TrainingSession(runtime_context=runtime_context, mode="cli")
     while True:
         session.start_new_game()
@@ -55,20 +57,22 @@ def run(argv: list[str] | None = None) -> None:
         help="Output path for --build-corpus (default: data/opening_corpus.json).",
     )
     args = parser.parse_args(argv)
+    get_session_logger()
     runtime_overrides = _build_runtime_overrides(args)
 
     if args.build_corpus:
         artifact = CorpusIngestor().build_artifact(args.build_corpus)
         output_path = save_artifact(artifact, args.build_corpus_output)
-        print(f"Built corpus artifact with {len(artifact.positions)} positions at {output_path}", flush=True)
+        message = f"Built corpus artifact with {len(artifact.positions)} positions at {output_path}"
+        log_line(message, tag="corpus")
         return
 
     runtime_context = load_runtime_config(runtime_overrides)
     if args.show_runtime:
-        print(f"Runtime config source: {runtime_context.config_source}", flush=True)
-        print(runtime_context.corpus.detail, flush=True)
-        print(runtime_context.book.detail, flush=True)
-        print(runtime_context.engine.detail, flush=True)
+        log_line(f"Runtime config source: {runtime_context.config_source}", tag="startup")
+        log_line(runtime_context.corpus.detail, tag="startup")
+        log_line(runtime_context.book.detail, tag="startup")
+        log_line(runtime_context.engine.detail, tag="startup")
         return
 
     if runtime_context.config.strict_assets:
@@ -83,7 +87,7 @@ def run(argv: list[str] | None = None) -> None:
     try:
         from .ui.gui_app import launch_gui
     except Exception as exc:
-        print(f"GUI unavailable ({exc}). Falling back to CLI.", flush=True)
+        log_line(f"GUI unavailable ({exc}). Falling back to CLI.", tag="error")
         run_cli(runtime_overrides)
         return
 
