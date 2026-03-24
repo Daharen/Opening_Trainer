@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+import threading
 from pathlib import Path
 
 import chess
@@ -521,3 +522,44 @@ def test_builder_sqlite_bundle_lookup_reads_position_on_demand(tmp_path):
     assert position is not None
     assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
     assert [candidate.raw_count for candidate in position.candidates] == [5, 2]
+
+
+def test_builder_sqlite_bundle_lookup_is_thread_safe_across_loader_and_runtime_threads(tmp_path):
+    board = chess.Board()
+    position_key = normalize_builder_position_key(board)
+    bundle_dir = _write_sqlite_bundle(
+        tmp_path / "sqlite_bundle_threaded",
+        _sample_bundle_manifest(payload_format="sqlite"),
+        [
+            {
+                "position_key": position_key,
+                "side_to_move": "white",
+                "candidate_moves": [
+                    {"uci": "e2e4", "raw_count": 9},
+                    {"uci": "d2d4", "raw_count": 3},
+                ],
+                "total_observed_count": 12,
+            }
+        ],
+    )
+
+    provider = BuilderAggregateCorpusProvider(bundle_dir)
+    result: dict[str, object] = {}
+
+    def _lookup_on_runtime_thread() -> None:
+        try:
+            result["position"] = provider.lookup_position(position_key)
+        except Exception as exc:  # pragma: no cover - explicit failure capture for thread join
+            result["error"] = exc
+
+    lookup_thread = threading.Thread(target=_lookup_on_runtime_thread)
+    lookup_thread.start()
+    lookup_thread.join(timeout=5)
+
+    assert not lookup_thread.is_alive()
+    assert "error" not in result
+    position = result.get("position")
+    assert position is not None
+    assert position.total_observed_count == 12
+    assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
+    assert [candidate.raw_count for candidate in position.candidates] == [9, 3]

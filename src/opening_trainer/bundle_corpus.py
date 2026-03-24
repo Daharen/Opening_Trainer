@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -202,10 +203,8 @@ class SQLiteAggregateCorpusProvider:
         self.payload_path = payload_path
         self.cache_size = max(0, cache_size)
         self._position_cache: OrderedDict[str, BuilderAggregatePosition | None] = OrderedDict()
-        self._connection = sqlite3.connect(f"file:{payload_path}?mode=ro", uri=True)
-        self._connection.row_factory = sqlite3.Row
-        self._position_cursor = self._connection.cursor()
-        self._move_cursor = self._connection.cursor()
+        self._cache_lock = threading.Lock()
+        self._thread_local = threading.local()
         self.metadata = self._build_metadata(manifest)
 
     def _build_metadata(self, manifest: dict[str, object]) -> BuilderAggregateBundleMetadata:
@@ -228,18 +227,23 @@ class SQLiteAggregateCorpusProvider:
         )
 
     def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
-        cached = self._position_cache.get(position_key)
-        if cached is not None or position_key in self._position_cache:
-            return cached
+        with self._cache_lock:
+            cached = self._position_cache.get(position_key)
+            if cached is not None or position_key in self._position_cache:
+                return cached
 
-        position_row = self._position_cursor.execute(
+        connection = self._get_connection_for_current_thread()
+        position_cursor = connection.cursor()
+        move_cursor = connection.cursor()
+
+        position_row = position_cursor.execute(
             "SELECT id, position_key, side_to_move, total_observed_count FROM positions WHERE position_key = ? LIMIT 1",
             (position_key,),
         ).fetchone()
         if position_row is None:
             return self._remember(position_key, None)
 
-        move_rows = self._move_cursor.execute(
+        move_rows = move_cursor.execute(
             "SELECT uci, raw_count FROM moves WHERE position_id = ? ORDER BY raw_count DESC, uci ASC",
             (position_row["id"],),
         ).fetchall()
@@ -261,13 +265,22 @@ class SQLiteAggregateCorpusProvider:
         )
         return self._remember(position_key, position)
 
+    def _get_connection_for_current_thread(self) -> sqlite3.Connection:
+        connection = getattr(self._thread_local, "connection", None)
+        if connection is None:
+            connection = sqlite3.connect(f"file:{self.payload_path}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            self._thread_local.connection = connection
+        return connection
+
     def _remember(self, position_key: str, position: BuilderAggregatePosition | None) -> BuilderAggregatePosition | None:
         if self.cache_size <= 0:
             return position
-        self._position_cache[position_key] = position
-        self._position_cache.move_to_end(position_key)
-        while len(self._position_cache) > self.cache_size:
-            self._position_cache.popitem(last=False)
+        with self._cache_lock:
+            self._position_cache[position_key] = position
+            self._position_cache.move_to_end(position_key)
+            while len(self._position_cache) > self.cache_size:
+                self._position_cache.popitem(last=False)
         return position
 
 
