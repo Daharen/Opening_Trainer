@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import chess
+import pytest
 
 from opening_trainer.zstd_compat import compress as zstd_compress
 
@@ -218,18 +219,29 @@ def _write_sqlite_bundle(bundle_dir: Path, manifest: dict[str, object], rows: li
     db_path = data_dir / "corpus.sqlite"
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, position_key TEXT NOT NULL, side_to_move TEXT NOT NULL, total_observed_count INTEGER NOT NULL)")
-        conn.execute("CREATE TABLE moves (id INTEGER PRIMARY KEY, position_id INTEGER NOT NULL, uci TEXT NOT NULL, raw_count INTEGER NOT NULL, FOREIGN KEY(position_id) REFERENCES positions(id))")
+        conn.execute(
+            "CREATE TABLE positions (position_id INTEGER PRIMARY KEY, position_key TEXT NOT NULL, position_key_format TEXT NOT NULL, side_to_move TEXT NOT NULL, candidate_move_count INTEGER NOT NULL, total_observations INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE moves (move_id INTEGER PRIMARY KEY, position_id INTEGER NOT NULL, move_key TEXT NOT NULL, move_key_format TEXT NOT NULL, raw_count INTEGER NOT NULL, example_san TEXT, FOREIGN KEY(position_id) REFERENCES positions(position_id))"
+        )
         for row in rows:
+            candidate_rows = row.get("candidate_moves", [])
             cursor = conn.execute(
-                "INSERT INTO positions(position_key, side_to_move, total_observed_count) VALUES (?, ?, ?)",
-                (row["position_key"], row.get("side_to_move", "white"), int(row.get("total_observed_count", row.get("total_observations", 0)))),
+                "INSERT INTO positions(position_key, position_key_format, side_to_move, candidate_move_count, total_observations) VALUES (?, ?, ?, ?, ?)",
+                (
+                    row["position_key"],
+                    "fen_normalized",
+                    row.get("side_to_move", "white"),
+                    len(candidate_rows),
+                    int(row.get("total_observed_count", row.get("total_observations", 0))),
+                ),
             )
             position_id = int(cursor.lastrowid)
-            for move in row.get("candidate_moves", []):
+            for move in candidate_rows:
                 conn.execute(
-                    "INSERT INTO moves(position_id, uci, raw_count) VALUES (?, ?, ?)",
-                    (position_id, move.get("uci") or move.get("move_key"), int(move["raw_count"])),
+                    "INSERT INTO moves(position_id, move_key, move_key_format, raw_count, example_san) VALUES (?, ?, ?, ?, ?)",
+                    (position_id, move.get("uci") or move.get("move_key"), "uci", int(move["raw_count"]), move.get("example_san")),
                 )
         conn.commit()
     finally:
@@ -522,6 +534,36 @@ def test_builder_sqlite_bundle_lookup_reads_position_on_demand(tmp_path):
     assert position is not None
     assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
     assert [candidate.raw_count for candidate in position.candidates] == [5, 2]
+    assert position.total_observed_count == 7
+    assert position.candidate_row_count == 2
+    assert position.unsupported_candidate_row_count == 0
+
+
+def test_builder_sqlite_bundle_lookup_reports_schema_mismatch_with_helpful_message(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_sqlite_bundle(
+        tmp_path / "sqlite_bundle_schema_mismatch",
+        _sample_bundle_manifest(payload_format="sqlite"),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "candidate_moves": [{"uci": "e2e4", "raw_count": 3}],
+                "total_observed_count": 3,
+            }
+        ],
+    )
+    db_path = bundle_dir / "data" / "corpus.sqlite"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("ALTER TABLE positions RENAME COLUMN position_id TO id")
+        conn.commit()
+    finally:
+        conn.close()
+
+    provider = BuilderAggregateCorpusProvider(bundle_dir)
+
+    with pytest.raises(ValueError, match="SQLite corpus schema mismatch or unsupported bundle schema"):
+        provider.lookup_position(normalize_builder_position_key(board))
 
 
 def test_builder_sqlite_bundle_lookup_is_thread_safe_across_loader_and_runtime_threads(tmp_path):
