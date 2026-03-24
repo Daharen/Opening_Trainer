@@ -127,11 +127,16 @@ def _session_log_path(session_id: str) -> Path:
     return _default_log_dir() / f"session_{session_id}.log"
 
 
-def _prune_old_session_files(log_dir: Path) -> None:
+def _prune_old_session_files(log_dir: Path, active_log_path: Path | None = None) -> None:
     if not log_dir.exists():
         return
     candidates = sorted(log_dir.glob("session_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for old_file in candidates[MAX_SESSION_FILES:]:
+    if active_log_path is not None:
+        candidates = [path for path in candidates if path != active_log_path]
+        max_non_active = max(0, MAX_SESSION_FILES - 1)
+    else:
+        max_non_active = MAX_SESSION_FILES
+    for old_file in candidates[max_non_active:]:
         try:
             old_file.unlink()
         except OSError:
@@ -146,7 +151,7 @@ def get_session_logger() -> SessionLogger:
         log_path = _session_log_path(session_id)
         mirror = os.getenv(CONSOLE_MIRROR_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}
         _active_logger = SessionLogger(session_id=session_id, log_path=log_path, mirror_to_console=mirror)
-        _prune_old_session_files(log_path.parent)
+        _prune_old_session_files(log_path.parent, active_log_path=log_path)
     return _active_logger
 
 
