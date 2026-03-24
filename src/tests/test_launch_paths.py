@@ -33,3 +33,14 @@ def test_powershell_runner_run_mode_skips_console_bundle_selection():
     assert 'desktop-first trainer without pre-GUI console corpus selection' in run_block
     dev_block = script.split('"DevRun" {', 1)[1].split('"Test" {', 1)[0]
     assert 'Select-CorpusBundleDirectory' in dev_block
+
+
+def test_powershell_runner_bundle_validation_recognizes_sqlite_and_legacy_fallback_order():
+    script = Path('run.ps1').read_text(encoding='utf-8')
+
+    assert 'manifest payload_format=sqlite but sqlite payload is missing' in script
+    assert "if ($payloadFormat -eq \"sqlite\")" in script
+    assert "if ($payloadFormat -eq \"jsonl\")" in script
+    assert "if (Test-Path $sqlitePath -PathType Leaf)" in script
+    assert "if (Test-Path $aggregatePath -PathType Leaf)" in script
+    assert "manifest payload_format -> data/corpus.sqlite -> data/aggregated_position_move_counts.jsonl (legacy)" in script
