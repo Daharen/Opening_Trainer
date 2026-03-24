@@ -11,9 +11,9 @@ from typing import Any
 from .bundle_contract import (
     BUNDLE_AGGREGATE_RELATIVE_PATH,
     BUNDLE_MANIFEST_NAME,
-    SUPPORTED_BUNDLE_MOVE_KEY_FORMAT,
-    SUPPORTED_BUNDLE_POSITION_KEY_FORMAT,
+    BUNDLE_SQLITE_RELATIVE_PATH,
     is_supported_builder_aggregate_bundle,
+    resolve_bundle_payload,
 )
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact
 from .evaluation import EvaluatorConfig
@@ -320,6 +320,7 @@ class BundleCompatibility:
     failure_reason: str | None = None
     retained_ply_depth: int | None = None
     retained_ply_source: str | None = None
+    payload_format: str | None = None
 
 
 def bundle_retained_ply_depth_from_metadata(bundle_dir: Path, manifest: dict[str, object] | None = None) -> tuple[int | None, str | None]:
@@ -373,21 +374,23 @@ def _extract_ply_depth_from_text(value: object) -> int | None:
 def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
     resolved_dir = bundle_dir.expanduser()
     manifest_path = resolved_dir / BUNDLE_MANIFEST_NAME
-    aggregate_path = resolved_dir / BUNDLE_AGGREGATE_RELATIVE_PATH
+    default_payload_path = resolved_dir / BUNDLE_AGGREGATE_RELATIVE_PATH
     if not resolved_dir.exists():
-        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle directory missing at {resolved_dir}", "bundle directory does not exist")
+        return BundleCompatibility(resolved_dir, manifest_path, default_payload_path, False, f"bundle directory missing at {resolved_dir}", "bundle directory does not exist")
     if not resolved_dir.is_dir():
-        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle path {resolved_dir} is not a directory", "bundle path is not a directory")
+        return BundleCompatibility(resolved_dir, manifest_path, default_payload_path, False, f"bundle path {resolved_dir} is not a directory", "bundle path is not a directory")
     if not manifest_path.exists():
-        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle directory {resolved_dir} missing manifest.json", "manifest.json is missing")
+        return BundleCompatibility(resolved_dir, manifest_path, default_payload_path, False, f"bundle directory {resolved_dir} missing manifest.json", "manifest.json is missing")
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        return BundleCompatibility(resolved_dir, manifest_path, aggregate_path, False, f"bundle manifest could not be parsed: {exc}", "manifest.json is not valid JSON")
+        return BundleCompatibility(resolved_dir, manifest_path, default_payload_path, False, f"bundle manifest could not be parsed: {exc}", "manifest.json is not valid JSON")
 
     retained_ply_depth, retained_source = bundle_retained_ply_depth_from_metadata(resolved_dir, manifest)
-    supported, declared_aggregate_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
+    payload_resolution, _ = resolve_bundle_payload(manifest, resolved_dir)
+    payload_path = payload_resolution.payload_path if payload_resolution is not None else (resolved_dir / BUNDLE_SQLITE_RELATIVE_PATH)
+    supported, declared_payload_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
     if not supported:
         detail = f"bundle manifest rejected: {failure_reason}"
         payload_status = manifest.get("payload_status")
@@ -396,7 +399,7 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         return BundleCompatibility(
             resolved_dir,
             manifest_path,
-            declared_aggregate_path or aggregate_path,
+            declared_payload_path or payload_path,
             False,
             detail,
             failure_reason,
@@ -404,23 +407,30 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
             retained_ply_source=retained_source,
         )
 
-    aggregate_path = declared_aggregate_path or aggregate_path
+    payload_path = declared_payload_path or payload_path
+    payload_format = manifest.get("payload_format")
+    if not isinstance(payload_format, str) or not payload_format.strip():
+        if payload_path.resolve() == (resolved_dir / BUNDLE_SQLITE_RELATIVE_PATH).resolve():
+            payload_format = "sqlite"
+        else:
+            payload_format = "jsonl"
     position_key_format = manifest.get("position_key_format")
     move_key_format = manifest.get("move_key_format")
     payload_status = manifest.get("payload_status")
     return BundleCompatibility(
         resolved_dir.resolve(),
         manifest_path.resolve(),
-        aggregate_path.resolve(),
+        payload_path.resolve(),
         True,
         (
-            f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, aggregate ok, "
-            f"build_status={manifest.get('build_status')}, aggregate_position_file={manifest.get('aggregate_position_file')!r}, "
+            f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, payload ok, "
+            f"build_status={manifest.get('build_status')}, payload_format={payload_format!r}, payload_path={str(payload_path)!r}, "
             f"position_key_format={position_key_format}, move_key_format={move_key_format}, payload_status={payload_status!r}, "
             f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r})"
         ),
         retained_ply_depth=retained_ply_depth,
         retained_ply_source=retained_source,
+        payload_format=str(payload_format),
     )
 
 

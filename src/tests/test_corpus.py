@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import sqlite3
 from pathlib import Path
 
 import chess
@@ -206,6 +207,32 @@ def _write_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict
     data_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (data_dir / "aggregated_position_move_counts.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return bundle_dir
+
+
+def _write_sqlite_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict[str, object]]) -> Path:
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    db_path = data_dir / "corpus.sqlite"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, position_key TEXT NOT NULL, side_to_move TEXT NOT NULL, total_observed_count INTEGER NOT NULL)")
+        conn.execute("CREATE TABLE moves (id INTEGER PRIMARY KEY, position_id INTEGER NOT NULL, uci TEXT NOT NULL, raw_count INTEGER NOT NULL, FOREIGN KEY(position_id) REFERENCES positions(id))")
+        for row in rows:
+            cursor = conn.execute(
+                "INSERT INTO positions(position_key, side_to_move, total_observed_count) VALUES (?, ?, ?)",
+                (row["position_key"], row.get("side_to_move", "white"), int(row.get("total_observed_count", row.get("total_observations", 0)))),
+            )
+            position_id = int(cursor.lastrowid)
+            for move in row.get("candidate_moves", []):
+                conn.execute(
+                    "INSERT INTO moves(position_id, uci, raw_count) VALUES (?, ?, ?)",
+                    (position_id, move.get("uci") or move.get("move_key"), int(move["raw_count"])),
+                )
+        conn.commit()
+    finally:
+        conn.close()
     return bundle_dir
 
 
@@ -466,3 +493,31 @@ def test_no_corpus_and_engine_unavailable_uses_random_fallback(monkeypatch):
 
     assert choice.selected_via == "random_legal_move"
     assert choice.fallback_applied is True
+
+
+def test_builder_sqlite_bundle_lookup_reads_position_on_demand(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_sqlite_bundle(
+        tmp_path / "sqlite_bundle",
+        _sample_bundle_manifest(payload_format="sqlite"),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "side_to_move": "white",
+                "candidate_moves": [
+                    {"uci": "e2e4", "raw_count": 5},
+                    {"uci": "d2d4", "raw_count": 2},
+                ],
+                "total_observed_count": 7,
+            }
+        ],
+    )
+
+    provider = BuilderAggregateCorpusProvider(bundle_dir)
+    position = provider.lookup_position(normalize_builder_position_key(board))
+
+    assert provider.metadata.payload_format == "sqlite"
+    assert provider.position_index == {}
+    assert position is not None
+    assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
+    assert [candidate.raw_count for candidate in position.candidates] == [5, 2]

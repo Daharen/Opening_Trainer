@@ -168,7 +168,7 @@ class BuilderAggregateOpponentProvider:
 
     def choose_move(self, board: chess.Board) -> OpponentMoveChoice:
         position_key = normalize_builder_position_key(board)
-        position = self.bundle.position_index.get(position_key)
+        position = self.bundle.lookup_position(position_key)
         if position is None:
             diagnostic = f"reason_code=position_key_not_found; position_key={position_key}"
             self.last_lookup_diagnostic = diagnostic
@@ -214,7 +214,7 @@ class BuilderAggregateOpponentProvider:
         return OpponentMoveChoice(
             move=selected_move,
             position_key=position_key,
-            selected_via="corpus_aggregate_bundle",
+            selected_via=("corpus_aggregate_bundle" if self.bundle.metadata.payload_format == "jsonl" else self.bundle.metadata.provider_label),
             corpus_lookup_reason_code="corpus_hit",
             normalized_position_key=position_key,
             candidate_row_count=position.candidate_row_count,
