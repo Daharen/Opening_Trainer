@@ -395,7 +395,7 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         detail = f"bundle manifest rejected: {failure_reason}"
         payload_status = manifest.get("payload_status")
         if payload_status is not None:
-            detail = f"{detail} (payload_status={payload_status!r})"
+            detail = f"{detail} (builder_payload_status={payload_status!r})"
         return BundleCompatibility(
             resolved_dir,
             manifest_path,
@@ -425,7 +425,7 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         (
             f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, payload ok, "
             f"build_status={manifest.get('build_status')}, payload_format={payload_format!r}, payload_path={str(payload_path)!r}, "
-            f"position_key_format={position_key_format}, move_key_format={move_key_format}, payload_status={payload_status!r}, "
+            f"position_key_format={position_key_format}, move_key_format={move_key_format}, builder_payload_status={payload_status!r}, "
             f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r})"
         ),
         retained_ply_depth=retained_ply_depth,

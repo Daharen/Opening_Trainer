@@ -754,7 +754,7 @@ def test_real_builder_bundle_payload_status_is_accepted(tmp_path):
     session = TrainingSession(runtime_context=runtime)
 
     assert runtime.corpus.available is True
-    assert "payload_status='raw_aggregate_counts_present_non_final_trainer_payload'" in runtime.corpus.detail
+    assert "builder_payload_status='raw_aggregate_counts_present_non_final_trainer_payload'" in runtime.corpus.detail
     assert session.opponent.bundle_provider is not None
     assert session.opponent.corpus_provider is None
 

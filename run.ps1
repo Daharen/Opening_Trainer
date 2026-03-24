@@ -163,12 +163,67 @@ function Test-CorpusBundleDirectory {
         return @{ IsValid = $false; Reason = "missing manifest"; ResolvedPath = $candidate }
     }
 
-    $aggregatePath = Join-Path $candidate "data\aggregated_position_move_counts.jsonl"
-    if (-not (Test-Path $aggregatePath -PathType Leaf)) {
-        return @{ IsValid = $false; Reason = "missing aggregated payload"; ResolvedPath = $candidate }
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -AsHashtable
+    }
+    catch {
+        return @{ IsValid = $false; Reason = "manifest is not valid JSON"; ResolvedPath = $candidate }
     }
 
-    return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
+    $payloadFormat = $null
+    if ($manifest.ContainsKey("payload_format") -and -not [string]::IsNullOrWhiteSpace([string]$manifest.payload_format)) {
+        $payloadFormat = ([string]$manifest.payload_format).Trim().ToLowerInvariant()
+    }
+
+    $sqliteRelativePath = if ($manifest.ContainsKey("sqlite_corpus_file")) {
+        [string]$manifest.sqlite_corpus_file
+    }
+    elseif ($manifest.ContainsKey("corpus_sqlite_file")) {
+        [string]$manifest.corpus_sqlite_file
+    }
+    elseif ($manifest.ContainsKey("payload_file")) {
+        [string]$manifest.payload_file
+    }
+    else {
+        "data/corpus.sqlite"
+    }
+    $aggregateRelativePath = if ($manifest.ContainsKey("aggregate_position_file")) {
+        [string]$manifest.aggregate_position_file
+    }
+    else {
+        "data/aggregated_position_move_counts.jsonl"
+    }
+
+    $sqlitePath = Join-Path $candidate $sqliteRelativePath
+    $aggregatePath = Join-Path $candidate $aggregateRelativePath
+
+    if ($payloadFormat -eq "sqlite") {
+        if (-not (Test-Path $sqlitePath -PathType Leaf)) {
+            return @{ IsValid = $false; Reason = "manifest payload_format=sqlite but sqlite payload is missing"; ResolvedPath = $candidate }
+        }
+        return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
+    }
+
+    if ($payloadFormat -eq "jsonl") {
+        if (-not (Test-Path $aggregatePath -PathType Leaf)) {
+            return @{ IsValid = $false; Reason = "manifest payload_format=jsonl but aggregate payload is missing"; ResolvedPath = $candidate }
+        }
+        return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
+    }
+
+    if ($payloadFormat) {
+        return @{ IsValid = $false; Reason = "unsupported payload_format '$payloadFormat'"; ResolvedPath = $candidate }
+    }
+
+    if (Test-Path $sqlitePath -PathType Leaf) {
+        return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
+    }
+
+    if (Test-Path $aggregatePath -PathType Leaf) {
+        return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
+    }
+
+    return @{ IsValid = $false; Reason = "missing bundle payload; expected data/corpus.sqlite or data/aggregated_position_move_counts.jsonl"; ResolvedPath = $candidate }
 }
 
 function Get-DiscoveredCorpusBundles {
@@ -228,7 +283,8 @@ function Select-CorpusBundleDirectory {
         Write-Host ""
         Write-Host "Optional corpus bundle selection before trainer launch"
         Write-Host "Choose a numbered bundle from workspace-root artifacts, enter L to reuse the last bundle, enter C to paste a custom path, or press Enter/S to skip."
-        Write-Host "A valid bundle directory must contain manifest.json and data\aggregated_position_move_counts.jsonl."
+        Write-Host "A valid bundle directory must contain manifest.json and a supported payload."
+        Write-Host "Selector detection order: manifest payload_format -> data/corpus.sqlite -> data/aggregated_position_move_counts.jsonl (legacy)."
 
         if ($lastSelection) {
             Write-Host "L) Reuse last selected bundle [$lastSelection]"

@@ -182,7 +182,7 @@ Runtime discovery keeps explicit precedence. For each asset class, the winner is
 
 Ordinary launcher-driven runs now auto-discover these workspace-root conventions when present:
 
-The repo-local `run.ps1` launcher now also prompts for an optional corpus bundle directory on actions `1) Run trainer` and `5) All (validate + run trainer)`. It lists valid bundle folders discovered under the workspace-root `artifacts` directory, allows a custom path, validates that `manifest.json` and `data/aggregated_position_move_counts.jsonl` exist, and lets you skip selection to keep the existing runtime fallback behavior unchanged. The launcher remembers the last valid bundle you picked in the workspace-root logs area for quick reuse on later runs.
+The repo-local `run.ps1` launcher bypasses console corpus selection for ordinary `1) Run trainer` launches. Optional console-side selection remains available in developer actions (for example `2) Developer run trainer`) and now validates modern aggregate bundles using this order: manifest-declared `payload_format`, then `data/corpus.sqlite`, then legacy `data/aggregated_position_move_counts.jsonl`. The launcher still remembers the last valid bundle picked in developer selection mode in the workspace-root logs area for quick reuse.
 
 - runtime config: `../runtime.local.json`
 - Stockfish engine: `../tools/stockfish/stockfish-windows-x86-64-avx2.exe`
@@ -194,7 +194,7 @@ Manual CLI flags still override discovered workspace defaults.
 
 ## Runtime Opponent Sourcing
 
-At startup, the session now prefers an explicitly selected builder corpus bundle directory before any legacy `opening_corpus.json` path. The supported builder bundle contract for this runtime lane is `manifest.json` plus `data/aggregated_position_move_counts.jsonl`, with `position_key_format=fen_normalized` and `move_key_format=uci`.
+At startup, the session now prefers an explicitly selected builder corpus bundle directory before any legacy `opening_corpus.json` path. The supported builder bundle contract is `manifest.json` plus a supported payload discovered by manifest-declared `payload_format` (preferred), then `data/corpus.sqlite`, then legacy `data/aggregated_position_move_counts.jsonl`, with `position_key_format=fen_normalized` and `move_key_format=uci`.
 
 - Preferred corpus discovery order: CLI `--corpus-bundle-dir`, runtime config `corpus_bundle_dir`, environment `OPENING_TRAINER_CORPUS_BUNDLE_DIR`, workspace-root `runtime.local.json`, then legacy corpus artifact conventions such as `data/opening_corpus.json`.
 - Opponent fallback order is explicit: selected corpus bundle (or legacy corpus artifact if bundle resolution fails), then Stockfish-generated fallback, then random legal move only as the last resort.
