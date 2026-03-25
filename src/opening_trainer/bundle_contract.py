@@ -10,6 +10,8 @@ BUNDLE_MANIFEST_NAME = "manifest.json"
 BUNDLE_AGGREGATE_RELATIVE_PATH = Path("data/aggregated_position_move_counts.jsonl")
 BUNDLE_SQLITE_RELATIVE_PATH = Path("data/corpus.sqlite")
 SUPPORTED_BUNDLE_PAYLOAD_FORMATS = {"jsonl", "sqlite"}
+BUNDLE_EXACT_SQLITE_DEFAULT_RELATIVE_PATH = Path("data/exact_corpus.sqlite")
+BUNDLE_BEHAVIORAL_PROFILE_SET_DEFAULT_RELATIVE_PATH = Path("data/behavioral_profile_set.sqlite")
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,32 @@ def manifest_declared_aggregate_path(manifest: dict[str, object], bundle_dir: Pa
 
 def manifest_declared_sqlite_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
     for key in ("sqlite_corpus_file", "corpus_sqlite_file", "payload_file"):
+        declared_path = manifest.get(key)
+        if not isinstance(declared_path, str) or not declared_path.strip():
+            continue
+        return bundle_dir / Path(declared_path)
+    return None
+
+
+def manifest_declared_exact_sqlite_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
+    for key in (
+        "exact_corpus_file",
+        "exact_corpus_payload_file",
+        "exact_sqlite_file",
+        "exact_payload_file",
+        "sqlite_corpus_file",
+        "corpus_sqlite_file",
+        "payload_file",
+    ):
+        declared_path = manifest.get(key)
+        if not isinstance(declared_path, str) or not declared_path.strip():
+            continue
+        return bundle_dir / Path(declared_path)
+    return None
+
+
+def manifest_declared_behavioral_profile_set_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
+    for key in ("behavioral_profile_set_file", "behavioral_profile_set_sqlite_file", "timing_profile_set_file"):
         declared_path = manifest.get(key)
         if not isinstance(declared_path, str) or not declared_path.strip():
             continue
@@ -118,3 +146,52 @@ def is_supported_builder_aggregate_bundle(manifest: dict[str, object], bundle_di
         if not (aggregate_payload_exposes_raw_counts(payload_resolution.payload_path) or payload_status_mentions_counts(payload_status)):
             return False, payload_resolution.payload_path, "aggregate payload does not expose raw counts required by the trainer runtime"
     return True, payload_resolution.payload_path, "supported builder aggregate bundle"
+
+
+def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle_dir: Path) -> tuple[BundlePayloadResolution | None, str | None]:
+    declared_sqlite = manifest_declared_exact_sqlite_path(manifest, bundle_dir)
+    candidate_paths: list[Path] = []
+    if declared_sqlite is not None:
+        candidate_paths.append(declared_sqlite)
+    candidate_paths.extend(
+        [
+            bundle_dir / BUNDLE_EXACT_SQLITE_DEFAULT_RELATIVE_PATH,
+            bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH,
+        ]
+    )
+    for candidate in candidate_paths:
+        if not candidate.exists():
+            continue
+        if not candidate.is_file():
+            return None, f"exact corpus payload path {candidate} is not a file"
+        return BundlePayloadResolution(payload_format="sqlite", payload_path=candidate), None
+    return None, "timing-conditioned bundle did not expose a supported exact SQLite payload"
+
+
+def is_supported_timing_conditioned_bundle(manifest: dict[str, object], bundle_dir: Path) -> tuple[bool, Path | None, str]:
+    payload_resolution, error = resolve_timing_conditioned_exact_payload(manifest, bundle_dir)
+    if payload_resolution is None:
+        return False, None, error or "missing exact payload"
+    return True, payload_resolution.payload_path, "supported timing-conditioned bundle"
+
+
+def classify_bundle_contract(manifest: dict[str, object]) -> str:
+    if manifest.get("build_status") == "aggregation_complete":
+        return "legacy_aggregate"
+
+    timing_keys = (
+        "timing_overlay",
+        "timing_overlay_file",
+        "timing_overlay_payload_file",
+        "behavioral_profile_set_file",
+        "behavioral_profile_set_sqlite_file",
+        "timing_overlay_policy_version",
+        "context_contract_version",
+        "time_control_scope",
+        "rating_scope",
+        "exact_corpus_file",
+        "exact_corpus_payload_file",
+    )
+    if any(key in manifest for key in timing_keys):
+        return "timing_conditioned"
+    return "unknown"

@@ -50,6 +50,12 @@ class OpponentMoveChoice:
     think_time_profile_id: str | None = None
     sampled_think_time_seconds: float | None = None
     modulation_summary: dict[str, object] | None = None
+    timing_overlay_available: bool = False
+    timing_overlay_source: str | None = None
+    bundle_kind: str | None = None
+    exact_payload_path: str | None = None
+    visible_delay_applied: bool = False
+    visible_delay_seconds: float | None = None
 
 
 class OpponentMoveProvider(Protocol):
@@ -308,6 +314,10 @@ class BuilderAggregateOpponentProvider:
             think_time_profile_id=think_time_profile_id,
             sampled_think_time_seconds=sampled_think_time_seconds,
             modulation_summary=modulation_summary,
+            timing_overlay_available=self.bundle.timing_overlay_available,
+            timing_overlay_source=self.bundle.overlay_source,
+            bundle_kind=self.bundle.bundle_kind,
+            exact_payload_path=str(self.bundle.exact_payload_path) if self.bundle.exact_payload_path is not None else None,
         )
 
 

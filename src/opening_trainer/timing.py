@@ -3,11 +3,19 @@ from __future__ import annotations
 import json
 import math
 import random
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from .bundle_contract import BUNDLE_MANIFEST_NAME
-from .bundle_corpus import BuilderAggregateCorpusProvider
+from .bundle_contract import (
+    BUNDLE_BEHAVIORAL_PROFILE_SET_DEFAULT_RELATIVE_PATH,
+    BUNDLE_MANIFEST_NAME,
+    classify_bundle_contract,
+    manifest_declared_behavioral_profile_set_path,
+    resolve_bundle_payload,
+    resolve_timing_conditioned_exact_payload,
+)
+from .bundle_corpus import BuilderAggregateCorpusProvider, JsonlAggregateCorpusProvider, SQLiteAggregateCorpusProvider
 
 
 @dataclass(frozen=True)
@@ -71,6 +79,9 @@ class TimingConditionedCorpusBundleHandle:
     manifest: dict[str, object]
     exact_corpus: BuilderAggregateCorpusProvider
     overlay: TimingOverlayPayload | None
+    bundle_kind: str
+    exact_payload_path: Path | None
+    overlay_source: str
 
     @property
     def timing_overlay_available(self) -> bool:
@@ -108,23 +119,126 @@ class TimingConditionedCorpusBundleLoader:
     def load(self, bundle_dir: str | Path, rng=None) -> TimingConditionedCorpusBundleHandle:
         local_dir = Path(bundle_dir)
         manifest = json.loads((local_dir / BUNDLE_MANIFEST_NAME).read_text(encoding="utf-8"))
-        exact = BuilderAggregateCorpusProvider(local_dir, rng=rng)
-        overlay = _load_timing_overlay(local_dir, manifest)
-        return TimingConditionedCorpusBundleHandle(bundle_dir=local_dir, manifest=manifest, exact_corpus=exact, overlay=overlay)
+        exact, bundle_kind, exact_payload_path = _load_exact_corpus_provider(local_dir, manifest, rng=rng)
+        overlay, overlay_source = _load_timing_overlay(local_dir, manifest)
+        return TimingConditionedCorpusBundleHandle(
+            bundle_dir=local_dir,
+            manifest=manifest,
+            exact_corpus=exact,
+            overlay=overlay,
+            bundle_kind=bundle_kind,
+            exact_payload_path=exact_payload_path,
+            overlay_source=overlay_source,
+        )
 
 
-def _load_timing_overlay(bundle_dir: Path, manifest: dict[str, object]) -> TimingOverlayPayload | None:
+def _load_exact_corpus_provider(bundle_dir: Path, manifest: dict[str, object], rng=None) -> tuple[BuilderAggregateCorpusProvider, str, Path | None]:
+    bundle_kind = classify_bundle_contract(manifest)
+    if bundle_kind == "legacy_aggregate":
+        provider = BuilderAggregateCorpusProvider(bundle_dir, rng=rng)
+        return provider, bundle_kind, provider.metadata.aggregate_path
+
+    payload_resolution, error = resolve_timing_conditioned_exact_payload(manifest, bundle_dir)
+    if payload_resolution is None:
+        legacy_resolution, legacy_error = resolve_bundle_payload(manifest, bundle_dir)
+        if legacy_resolution is None:
+            raise ValueError(error or legacy_error or "unsupported exact payload for timing-conditioned bundle")
+        payload_resolution = legacy_resolution
+
+    manifest_for_provider = {
+        **manifest,
+        "position_key_format": manifest.get("position_key_format", "fen_normalized"),
+        "move_key_format": manifest.get("move_key_format", "uci"),
+        "payload_status": manifest.get("payload_status", "timing_conditioned_exact_payload"),
+    }
+    if payload_resolution.payload_format == "sqlite":
+        return SQLiteAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path), "timing_conditioned", payload_resolution.payload_path
+    return JsonlAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path, rng=rng), "timing_conditioned", payload_resolution.payload_path
+
+
+def _load_timing_overlay(bundle_dir: Path, manifest: dict[str, object]) -> tuple[TimingOverlayPayload | None, str]:
     overlay_payload = manifest.get("timing_overlay")
     if isinstance(overlay_payload, dict):
-        return _parse_overlay_payload(overlay_payload)
+        return _parse_overlay_payload(overlay_payload), "inline_json"
     overlay_file = manifest.get("timing_overlay_file") or manifest.get("timing_overlay_payload_file")
     if isinstance(overlay_file, str) and overlay_file.strip():
         overlay_path = bundle_dir / Path(overlay_file)
         if overlay_path.exists():
             payload = json.loads(overlay_path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
-                return _parse_overlay_payload(payload)
+                return _parse_overlay_payload(payload), "json_file"
+    sqlite_overlay = _load_overlay_from_behavioral_profile_set_sqlite(bundle_dir, manifest)
+    if sqlite_overlay is not None:
+        return sqlite_overlay, "behavioral_profile_set_sqlite"
+    return None, "absent"
+
+
+def _load_overlay_from_behavioral_profile_set_sqlite(bundle_dir: Path, manifest: dict[str, object]) -> TimingOverlayPayload | None:
+    declared = manifest_declared_behavioral_profile_set_path(manifest, bundle_dir)
+    candidate_paths = [declared] if declared is not None else []
+    candidate_paths.append(bundle_dir / BUNDLE_BEHAVIORAL_PROFILE_SET_DEFAULT_RELATIVE_PATH)
+    for candidate in candidate_paths:
+        if candidate is None or not candidate.exists() or not candidate.is_file():
+            continue
+        connection = sqlite3.connect(f"file:{candidate}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            return _parse_overlay_sqlite_connection(connection, manifest)
+        finally:
+            connection.close()
     return None
+
+
+def _parse_overlay_sqlite_connection(connection: sqlite3.Connection, manifest: dict[str, object]) -> TimingOverlayPayload:
+    move_profiles: dict[str, MovePressureProfile] = {}
+    think_profiles: dict[str, ThinkTimeProfile] = {}
+    context_profile_map: dict[str, dict[str, str]] = {}
+    for row in connection.execute(
+        "SELECT profile_id, pressure_sensitivity, decisiveness, move_diversity FROM move_pressure_profiles ORDER BY profile_id ASC"
+    ).fetchall():
+        profile_id = str(row["profile_id"])
+        move_profiles[profile_id] = MovePressureProfile(
+            profile_id=profile_id,
+            pressure_sensitivity=float(row["pressure_sensitivity"] or 0.0),
+            decisiveness=float(row["decisiveness"] or 0.0),
+            move_diversity=float(row["move_diversity"] or 0.1),
+        )
+    for row in connection.execute(
+        "SELECT profile_id, base_time_scale, spread, short_mass, deep_think_tail_mass, timeout_tail_mass FROM think_time_profiles ORDER BY profile_id ASC"
+    ).fetchall():
+        profile_id = str(row["profile_id"])
+        think_profiles[profile_id] = ThinkTimeProfile(
+            profile_id=profile_id,
+            base_time_scale=float(row["base_time_scale"] or 1.0),
+            spread=float(row["spread"] or 1.0),
+            short_mass=float(row["short_mass"] or 0.2),
+            deep_think_tail_mass=float(row["deep_think_tail_mass"] or 0.1),
+            timeout_tail_mass=float(row["timeout_tail_mass"] or 0.0),
+        )
+    context_rows = connection.execute("SELECT * FROM context_profile_map ORDER BY context_key ASC").fetchall()
+    for row in context_rows:
+        context_key = row["context_key"] if "context_key" in row.keys() else None
+        if not context_key:
+            context_key = "|".join(
+                [
+                    str(row["time_control_id"]),
+                    str(row["mover_elo_band"]),
+                    str(row["clock_pressure_bucket"]),
+                    str(row["prev_opp_think_bucket"]),
+                    str(row["opening_ply_band"]),
+                ]
+            )
+        context_profile_map[str(context_key)] = {
+            "move_pressure_profile_id": str(row["move_pressure_profile_id"]),
+            "think_time_profile_id": str(row["think_time_profile_id"]),
+        }
+    return TimingOverlayPayload(
+        context_profile_map=context_profile_map,
+        move_pressure_profiles=move_profiles,
+        think_time_profiles=think_profiles,
+        context_contract_version=str(manifest.get("context_contract_version")) if manifest.get("context_contract_version") is not None else None,
+        timing_overlay_policy_version=str(manifest.get("timing_overlay_policy_version")) if manifest.get("timing_overlay_policy_version") is not None else None,
+    )
 
 
 def _parse_overlay_payload(payload: dict[str, object]) -> TimingOverlayPayload:
