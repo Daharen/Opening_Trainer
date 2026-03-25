@@ -478,3 +478,7 @@ class TrainingSession:
     def _print_evaluation_feedback(self, evaluation: EvaluationResult) -> None:
         for line in format_evaluation_feedback(evaluation):
             log_line(line, tag='evaluation')
+
+    def close(self) -> None:
+        self.opponent.close()
+        self.evaluator.engine_authority.close()

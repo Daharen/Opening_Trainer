@@ -15,7 +15,7 @@ from .bundle_corpus import (
 )
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact, normalize_position_key
 from .evaluation import EvaluatorConfig
-from .evaluation.engine_process import launch_engine
+from .evaluation.engine_process import launch_engine, shutdown_engine
 from .runtime import corpus_status_detail
 
 
@@ -108,13 +108,10 @@ class StockfishOpponentProvider:
     def _close_engine(self) -> None:
         if self._engine is None:
             return
-        try:
-            self._engine.quit()
-        except Exception:
-            pass
+        shutdown_engine(self._engine)
         self._engine = None
 
-    def __del__(self) -> None:
+    def close(self) -> None:
         self._close_engine()
 
 
@@ -352,6 +349,9 @@ class OpponentProvider:
             )
         self.last_choice = choice
         return choice
+
+    def close(self) -> None:
+        self.stockfish_provider.close()
 
     def _extract_candidate_row_count(self) -> int:
         diagnostic = getattr(self.bundle_provider, "last_lookup_diagnostic", None)

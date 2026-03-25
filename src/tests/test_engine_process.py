@@ -82,3 +82,42 @@ def test_stockfish_fallback_reuses_long_lived_engine(monkeypatch):
     provider.choose_move(board)
 
     assert launches["count"] == 1
+
+
+def test_engine_authority_close_invokes_engine_shutdown(monkeypatch):
+    closed = {"count": 0}
+
+    class FakeEngine:
+        def quit(self):
+            closed["count"] += 1
+
+    monkeypatch.setattr("opening_trainer.evaluation.engine.launch_engine", lambda _config: FakeEngine())
+    authority = EngineAuthority(EvaluatorConfig(engine_path="fake-stockfish"))
+
+    authority._ensure_engine()
+    authority.close()
+
+    assert closed["count"] == 1
+
+
+def test_stockfish_provider_close_invokes_engine_shutdown(monkeypatch):
+    closed = {"count": 0}
+
+    class PlayResult:
+        def __init__(self, move):
+            self.move = move
+
+    class FakeEngine:
+        def play(self, board, limit):
+            return PlayResult(next(iter(board.legal_moves)))
+
+        def quit(self):
+            closed["count"] += 1
+
+    monkeypatch.setattr("chess.engine.SimpleEngine.popen_uci", lambda path, **kwargs: FakeEngine())
+    provider = StockfishOpponentProvider(EvaluatorConfig(engine_path="fake-stockfish"))
+    provider.choose_move(chess.Board())
+
+    provider.close()
+
+    assert closed["count"] == 1

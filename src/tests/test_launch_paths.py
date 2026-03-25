@@ -69,6 +69,7 @@ def test_powershell_ordinary_launch_includes_splash_and_single_instance_guards()
     assert 'Wait-ForStartupHandoff' in script
     assert 'GUI_READY:' in script
     assert 'GUI_STARTUP_FAILED:' in script
+    assert 'APP_DUPLICATE_OWNER_INFO_AVAILABLE:' in script
 
 
 def test_powershell_ordinary_failure_message_points_to_session_log_and_dev_launcher():

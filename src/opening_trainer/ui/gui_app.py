@@ -17,7 +17,13 @@ from ..settings import TrainerSettings
 from ..session import TrainingSession
 from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
 from ..session_logging import get_session_logger, log_line
-from ..single_instance import acquire_single_instance_guard
+from ..single_instance import (
+    acquire_single_instance_guard,
+    read_instance_diagnostics,
+    release_single_instance_guard,
+    remove_instance_diagnostics,
+    write_instance_diagnostics,
+)
 from .board_view import BoardView
 from .captured_material_panel import CapturedMaterialPanel
 from .dev_console import DevConsoleWindow
@@ -53,6 +59,10 @@ class OpeningTrainerGUI:
         self._loading_job_active = False
         self.session_logger = get_session_logger()
         self.dev_console = DevConsoleWindow(self.root, self.session_logger)
+        self._shutdown_started = False
+        self._is_shutting_down = False
+        self._after_handles: set[str] = set()
+        self._child_windows: list[tk.Toplevel] = []
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
@@ -136,9 +146,10 @@ class OpeningTrainerGUI:
         self._apply_shell_layout(initializing=True)
         self._populate_bundle_options()
         self._update_bundle_summary()
+        self.root.protocol('WM_DELETE_WINDOW', self._request_shutdown)
 
     def run(self) -> None:
-        self.root.after(0, self._initialize_app_shell)
+        self._schedule_after(0, self._initialize_app_shell)
         self.root.mainloop()
 
     def _initialize_app_shell(self) -> None:
@@ -375,7 +386,7 @@ class OpeningTrainerGUI:
             self.root.update_idletasks()
 
     def _start_loading_job(self, *, initial_message: str, worker, on_success, on_error) -> None:
-        if self._loading_job_active:
+        if self._loading_job_active or getattr(self, '_is_shutting_down', False):
             return
         self._loading_job_active = True
         self._show_loading(initial_message)
@@ -391,7 +402,7 @@ class OpeningTrainerGUI:
 
         self._loading_thread = threading.Thread(target=wrapped_worker, daemon=True)
         self._loading_thread.start()
-        self.root.after(25, lambda: self._poll_loading_job(on_success=on_success, on_error=on_error))
+        self._schedule_after(25, lambda: self._poll_loading_job(on_success=on_success, on_error=on_error))
 
     def _poll_loading_job(self, *, on_success, on_error) -> None:
         if self._loading_queue is None:
@@ -399,7 +410,8 @@ class OpeningTrainerGUI:
         try:
             status, payload = self._loading_queue.get_nowait()
         except queue.Empty:
-            self.root.after(25, lambda: self._poll_loading_job(on_success=on_success, on_error=on_error))
+            if not getattr(self, '_is_shutting_down', False):
+                self._schedule_after(25, lambda: self._poll_loading_job(on_success=on_success, on_error=on_error))
             return
         self._loading_job_active = False
         self._hide_loading()
@@ -461,6 +473,7 @@ class OpeningTrainerGUI:
 
     def _open_options(self):
         window = tk.Toplevel(self.root)
+        self._child_windows.append(window)
         window.title('Trainer Options')
         window.transient(self.root)
         frame = ttk.Frame(window, padding=12)
@@ -630,6 +643,9 @@ class OpeningTrainerGUI:
 
     def _build_menubar(self) -> None:
         menubar = tk.Menu(self.root)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label='Exit', command=self._request_shutdown)
+        menubar.add_cascade(label='File', menu=file_menu)
         dev_menu = tk.Menu(menubar, tearoff=0)
         dev_menu.add_command(label='Open Dev Console', command=self._open_dev_console)
         dev_menu.add_command(label='Open Logs Folder', command=self._open_logs_folder)
@@ -663,16 +679,79 @@ class OpeningTrainerGUI:
     def _clear_visible_log_buffer(self) -> None:
         self.session_logger.clear_visible_buffer()
 
+    def _schedule_after(self, delay_ms: int, callback) -> None:
+        if getattr(self, '_is_shutting_down', False):
+            return
+        handle = self.root.after(delay_ms, callback)
+        if not hasattr(self, '_after_handles'):
+            self._after_handles = set()
+        self._after_handles.add(handle)
+
+    def _cancel_after_handles(self) -> None:
+        for handle in list(self._after_handles):
+            try:
+                self.root.after_cancel(handle)
+            except Exception:
+                pass
+            self._after_handles.discard(handle)
+
+    def _request_shutdown(self) -> None:
+        self._shutdown_coordinator(reason='window_close')
+
+    def _shutdown_coordinator(self, reason: str) -> None:
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+        self._is_shutting_down = True
+        log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
+        self._cancel_after_handles()
+        self.dev_console.close()
+        log_line('ENGINE_SHUTDOWN_BEGIN', tag='startup')
+        try:
+            self.session.close()
+        finally:
+            log_line('ENGINE_SHUTDOWN_COMPLETE', tag='startup')
+        for window in list(self._child_windows):
+            try:
+                if window.winfo_exists():
+                    window.destroy()
+            except Exception:
+                continue
+        for child in list(self.root.winfo_children()):
+            if isinstance(child, tk.Toplevel):
+                try:
+                    child.destroy()
+                except Exception:
+                    continue
+        remove_instance_diagnostics()
+        release_single_instance_guard()
+        log_line('APP_SHUTDOWN_COMPLETE', tag='startup')
+        self.root.destroy()
+
 
 def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
+    log_line("APP_BOOT_BEGIN", tag="startup")
     if not acquire_single_instance_guard():
+        log_line("APP_DUPLICATE_BLOCKED", tag="startup")
+        diagnostics = read_instance_diagnostics()
+        if diagnostics is not None:
+            log_line(
+                f"APP_DUPLICATE_OWNER_INFO_AVAILABLE: pid={diagnostics.pid}; "
+                f"started_at={diagnostics.startup_utc}; log_path={diagnostics.session_log_path}; session_id={diagnostics.session_id}",
+                tag="startup",
+            )
+        else:
+            log_line("APP_DUPLICATE_OWNER_INFO_MISSING", tag="startup")
         log_line("INSTANCE_DUPLICATE: Opening Trainer is already starting or running.", tag="startup")
         return
     log_line("GUI_BOOTSTRAP: creating Tk root.", tag="startup")
     try:
         app = OpeningTrainerGUI(runtime_context=runtime_context)
+        write_instance_diagnostics(window_title='Opening Trainer')
         log_line("GUI_READY: Opening Trainer GUI initialized.", tag="startup")
         app.run()
     except Exception as exc:
         log_line(f"GUI_STARTUP_FAILED: {exc}", tag="error")
+        remove_instance_diagnostics()
+        release_single_instance_guard()
         raise
