@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import asdict
 from pathlib import Path
 
@@ -46,6 +46,9 @@ class TimedSessionState:
 
 class TrainingSession:
     restart_delay_ms = 900
+    opponent_visible_delay_min_seconds = 0.15
+    opponent_visible_delay_max_seconds = 2.5
+    opponent_visible_delay_speed_multiplier = 1.0
 
     def __init__(self, runtime_context: RuntimeContext | None = None, mode: str = 'cli', review_storage: ReviewStorage | None = None):
         self.runtime_context = runtime_context or load_runtime_config(RuntimeOverrides())
@@ -444,7 +447,15 @@ class TrainingSession:
             choice = self.opponent.choose_move_with_context(self.board.board)
         else:
             choice = self.opponent.choose_move_with_runtime_context(self.board.board, timing_context=timing_context)
+        visible_delay_seconds = self._visible_opponent_delay_seconds(choice.sampled_think_time_seconds)
+        if visible_delay_seconds > 0:
+            time.sleep(visible_delay_seconds)
         self._consume_opponent_think_time(choice.sampled_think_time_seconds)
+        choice = replace(
+            choice,
+            visible_delay_applied=visible_delay_seconds > 0,
+            visible_delay_seconds=visible_delay_seconds if visible_delay_seconds > 0 else None,
+        )
         move = choice.move
         self.last_opponent_choice = choice
         san = self.board.board.san(move)
@@ -484,7 +495,23 @@ class TrainingSession:
                     f"sampled_think={choice.sampled_think_time_seconds:.2f}s" if choice.sampled_think_time_seconds is not None else "sampled_think=n/a",
                 ]
             )
+        elif choice.timing_overlay_available:
+            parts.append("timing_overlay=available_unmatched")
+        parts.extend(
+            [
+                f"overlay_source={choice.timing_overlay_source or 'absent'}",
+                f"bundle_kind={choice.bundle_kind or 'unknown'}",
+                f"exact_payload={choice.exact_payload_path or 'n/a'}",
+                f"visible_delay={choice.visible_delay_seconds:.2f}s" if choice.visible_delay_applied and choice.visible_delay_seconds is not None else "visible_delay=none",
+            ]
+        )
         return ' [' + ' | '.join(parts) + ']'
+
+    def _visible_opponent_delay_seconds(self, sampled_seconds: float | None) -> float:
+        if sampled_seconds is None:
+            return 0.0
+        scaled = max(0.0, sampled_seconds) * max(0.0, self.opponent_visible_delay_speed_multiplier)
+        return max(self.opponent_visible_delay_min_seconds, min(self.opponent_visible_delay_max_seconds, scaled))
 
     def _build_timed_state_from_bundle(self) -> TimedSessionState | None:
         provider = getattr(self.opponent, "bundle_provider", None)
@@ -552,8 +579,29 @@ class TrainingSession:
             return " | Timing overlay: inactive"
         white = self.timed_state.white_remaining_ms / 1000.0
         black = self.timed_state.black_remaining_ms / 1000.0
-        overlay_active = bool(getattr(self.last_opponent_choice, "timing_overlay_active", False))
-        return f" | Timing overlay: {'active' if overlay_active else 'available'} | Clocks W/B: {white:.1f}s/{black:.1f}s"
+        choice = self.last_opponent_choice
+        if choice is None:
+            timing_status = "available"
+        elif not getattr(choice, "timing_overlay_available", False):
+            timing_status = "absent"
+        elif not getattr(choice, "timing_overlay_active", False):
+            timing_status = "available_unmatched"
+        elif getattr(choice, "timing_fallback_used", False):
+            timing_status = "active_fallback"
+        else:
+            timing_status = "active_direct"
+        if choice is not None and getattr(choice, "visible_delay_applied", False):
+            timing_status = f"{timing_status}_visible_delay"
+        context_key = getattr(choice, "timing_context_key", None) if choice is not None else None
+        sampled = getattr(choice, "sampled_think_time_seconds", None) if choice is not None else None
+        sampled_text = f"{sampled:.2f}s" if isinstance(sampled, float) else "n/a"
+        return (
+            f" | Timing overlay: {timing_status}"
+            f" | Overlay source: {getattr(choice, 'timing_overlay_source', None) or 'unknown'}"
+            f" | Context: {context_key or 'n/a'}"
+            f" | Sampled think: {sampled_text}"
+            f" | Clocks W/B: {white:.1f}s/{black:.1f}s"
+        )
 
     def _resolve_fail(self) -> None:
         log_line('FAIL', tag='evaluation')

@@ -12,8 +12,11 @@ from .bundle_contract import (
     BUNDLE_AGGREGATE_RELATIVE_PATH,
     BUNDLE_MANIFEST_NAME,
     BUNDLE_SQLITE_RELATIVE_PATH,
+    classify_bundle_contract,
     is_supported_builder_aggregate_bundle,
+    is_supported_timing_conditioned_bundle,
     resolve_bundle_payload,
+    resolve_timing_conditioned_exact_payload,
 )
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact
 from .evaluation import EvaluatorConfig
@@ -321,6 +324,7 @@ class BundleCompatibility:
     retained_ply_depth: int | None = None
     retained_ply_source: str | None = None
     payload_format: str | None = None
+    bundle_kind: str | None = None
 
 
 def bundle_retained_ply_depth_from_metadata(bundle_dir: Path, manifest: dict[str, object] | None = None) -> tuple[int | None, str | None]:
@@ -388,9 +392,16 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         return BundleCompatibility(resolved_dir, manifest_path, default_payload_path, False, f"bundle manifest could not be parsed: {exc}", "manifest.json is not valid JSON")
 
     retained_ply_depth, retained_source = bundle_retained_ply_depth_from_metadata(resolved_dir, manifest)
-    payload_resolution, _ = resolve_bundle_payload(manifest, resolved_dir)
+    bundle_kind = classify_bundle_contract(manifest)
+    if bundle_kind == "legacy_aggregate":
+        payload_resolution, _ = resolve_bundle_payload(manifest, resolved_dir)
+        supported, declared_payload_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
+    else:
+        payload_resolution, _ = resolve_timing_conditioned_exact_payload(manifest, resolved_dir)
+        supported, declared_payload_path, failure_reason = is_supported_timing_conditioned_bundle(manifest, resolved_dir)
+        if payload_resolution is None:
+            payload_resolution, _ = resolve_bundle_payload(manifest, resolved_dir)
     payload_path = payload_resolution.payload_path if payload_resolution is not None else (resolved_dir / BUNDLE_SQLITE_RELATIVE_PATH)
-    supported, declared_payload_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
     if not supported:
         detail = f"bundle manifest rejected: {failure_reason}"
         payload_status = manifest.get("payload_status")
@@ -405,6 +416,7 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
             failure_reason,
             retained_ply_depth=retained_ply_depth,
             retained_ply_source=retained_source,
+            bundle_kind=bundle_kind,
         )
 
     payload_path = declared_payload_path or payload_path
@@ -424,13 +436,14 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         True,
         (
             f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, payload ok, "
-            f"build_status={manifest.get('build_status')}, payload_format={payload_format!r}, payload_path={str(payload_path)!r}, "
+            f"bundle_kind={bundle_kind}, build_status={manifest.get('build_status')}, payload_format={payload_format!r}, payload_path={str(payload_path)!r}, "
             f"position_key_format={position_key_format}, move_key_format={move_key_format}, builder_payload_status={payload_status!r}, "
             f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r})"
         ),
         retained_ply_depth=retained_ply_depth,
         retained_ply_source=retained_source,
         payload_format=str(payload_format),
+        bundle_kind=bundle_kind,
     )
 
 
