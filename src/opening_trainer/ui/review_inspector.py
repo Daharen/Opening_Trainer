@@ -13,6 +13,11 @@ class ReviewInspector(ttk.Frame):
         'fails',
         'success_streak',
         'freq_retired',
+        'hijack_stage',
+        'hijack_pass_ticker',
+        'dormant',
+        'avoidance_count',
+        'anchor_count',
         'stubborn_state',
         'skipped_slots',
         'last_seen',
@@ -67,6 +72,11 @@ class ReviewInspector(ttk.Frame):
                     item.consecutive_failures,
                     item.success_streak,
                     item.frequency_retired_for_current_due_cycle,
+                    item.hijack_stage,
+                    item.hijack_pass_ticker,
+                    item.dormant,
+                    item.avoidance_count,
+                    len(item.canonical_anchor_positions),
                     item.stubborn_extreme_state,
                     item.skipped_review_slots,
                     item.last_seen_at_utc or '—',
@@ -102,6 +112,11 @@ class ReviewInspector(ttk.Frame):
                     item.stubborn_extreme_state = 'none'
                     item.stubborn_extra_repeat_consumed_until_success = False
                     item.skipped_review_slots = 0
+                    item.hijack_stage = 'none'
+                    item.hijack_pass_ticker = 0
+                    item.dormant = False
+                    item.avoidance_count = 0
+                    item.last_hijack_routing_source = 'manual_reset'
                     item.last_routing_reason = 'manual_reset'
             self.session.review_storage.save_items(self.session.active_profile_id, items)
             self.refresh_callback()

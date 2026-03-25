@@ -24,6 +24,19 @@ class RoutingSource(str, Enum):
     BOOSTED_REVIEW = 'boosted_review'
     EXTREME = 'extreme_urgency_review'
     STUBBORN_EXTREME_REPEAT = 'stubborn_extreme_repeat'
+    HIJACK_REENTRY = 'hijack_reentry'
+    HIJACK_DECAY_PASS = 'hijack_decay_pass'
+    HIJACK_NO_ANCHOR = 'hijack_no_anchor'
+    HIJACK_DORMANT_SKIP = 'hijack_dormant_skip'
+
+
+class HijackStage(str, Enum):
+    NONE = 'none'
+    H80 = 'h80'
+    H60 = 'h60'
+    H40 = 'h40'
+    H20 = 'h20'
+    DORMANT = 'dormant'
 
 
 @dataclass(frozen=True)
@@ -70,6 +83,15 @@ class ReviewItem:
     skipped_review_slots: int = 0
     was_due_previous_check: bool = True
     pending_forced_stubborn_repeat: bool = False
+    canonical_predecessor_path_id: str | None = None
+    canonical_predecessor_path_metadata: dict[str, Any] = field(default_factory=dict)
+    canonical_anchor_positions: list[str] = field(default_factory=list)
+    hijack_stage: str = HijackStage.NONE.value
+    hijack_pass_ticker: int = 0
+    dormant: bool = False
+    avoidance_count: int = 0
+    last_hijack_routing_source: str = ''
+    last_anchor_seen_at: str | None = None
 
     @classmethod
     def create(
@@ -114,6 +136,9 @@ class ReviewItem:
             line_preview_san=' '.join(move.san for move in predecessor_path[-6:]),
             profile_id=profile_id,
             was_due_previous_check=True,
+            canonical_predecessor_path_id='legacy_default',
+            canonical_predecessor_path_metadata={'path_count': 1, 'selection_rule': 'legacy_single_path'},
+            canonical_anchor_positions=[move.fen_before for move in predecessor_path[-2:]] if predecessor_path else [],
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -129,6 +154,15 @@ class ReviewItem:
         payload.setdefault('skipped_review_slots', 0)
         payload.setdefault('was_due_previous_check', due_state(payload.get('due_at_utc', utc_now_iso())) == 'due')
         payload.setdefault('pending_forced_stubborn_repeat', False)
+        payload.setdefault('canonical_predecessor_path_id', 'legacy_default')
+        payload.setdefault('canonical_predecessor_path_metadata', {'path_count': 1, 'selection_rule': 'legacy_single_path'})
+        payload.setdefault('canonical_anchor_positions', [])
+        payload.setdefault('hijack_stage', HijackStage.NONE.value)
+        payload.setdefault('hijack_pass_ticker', 0)
+        payload.setdefault('dormant', False)
+        payload.setdefault('avoidance_count', 0)
+        payload.setdefault('last_hijack_routing_source', '')
+        payload.setdefault('last_anchor_seen_at', None)
         return cls(**payload)
 
 
