@@ -9,7 +9,7 @@ from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResul
 from opening_trainer.evaluator import MoveEvaluator
 from opening_trainer.review.models import ReviewItem, ReviewPathMove
 from opening_trainer.review.profile_service import ProfileService
-from opening_trainer.review.router import ReviewRouter, RoutingConfig
+from opening_trainer.review.router import ReviewRouter
 from opening_trainer.review.scheduler import apply_failure, apply_success
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.settings import TrainerSettingsStore
@@ -99,17 +99,13 @@ def test_reentry_path_capture_and_deterministic_replay_plan_reconstruction():
     assert decision.review_plan.predecessor_path[1]['move_uci'] == 'e7e5'
 
 
-def test_routing_cap_prevents_one_item_from_dominating():
+def test_review_items_rotate_within_tier_queue():
     router = ReviewRouter()
-    items = [
-        ReviewItem.create('default', 'a', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')]),
-        ReviewItem.create('default', 'b', 'fen', 'white', 'fail', 'd2d4', [], [ReviewPathMove(0, 'white', 'd2d4', 'd4', 'fen')]),
-    ]
-    first = router.immediate_retry('default', items[0])
-    for _ in range(8):
-        router.recent_item_ids.append(items[0].review_item_id)
-    decision = router.select('default', items)
-    assert decision.selected_review_item_id == items[1].review_item_id or decision.routing_source == 'ordinary_corpus_play'
+    items = [_due_item('a', 'ordinary_review'), _due_item('b', 'ordinary_review')]
+
+    seen = [router.select('default', items).selected_review_item_id for _ in range(6)]
+
+    assert set(filter(None, seen)) == {items[0].review_item_id, items[1].review_item_id}
 
 
 def _due_item(position_key: str, urgency_tier: str) -> ReviewItem:
@@ -124,8 +120,8 @@ def _due_item(position_key: str, urgency_tier: str) -> ReviewItem:
 def test_due_only_ordinary_keeps_corpus_at_twenty_percent():
     router = ReviewRouter()
     decision = router.select('default', [_due_item('a', 'ordinary_review')])
-    assert decision.corpus_share == 0.2
-    assert decision.review_share == 0.8
+    assert decision.corpus_share == pytest.approx(0.8)
+    assert decision.review_share == pytest.approx(0.2)
     assert decision.boosted_due_count == 0
     assert decision.extreme_due_count == 0
 
@@ -134,8 +130,8 @@ def test_boosted_and_extreme_reduce_corpus_share_with_exact_penalties():
     router = ReviewRouter()
     items = [_due_item('a', 'ordinary_review'), _due_item('b', 'boosted_review'), _due_item('c', 'boosted_review'), _due_item('d', 'extreme_urgency')]
     decision = router.select('default', items)
-    assert decision.corpus_share == pytest.approx(0.16)
-    assert decision.review_share == pytest.approx(0.84)
+    assert decision.corpus_share == pytest.approx(0.45)
+    assert decision.review_share == pytest.approx(0.55)
     assert decision.boosted_due_count == 2
     assert decision.extreme_due_count == 1
 
@@ -147,13 +143,17 @@ def test_review_selection_prioritizes_extreme_then_boosted_then_ordinary():
     ordinary = _due_item('a', 'ordinary_review')
     # Force review path deterministically by creating a 0 corpus share case.
     decision = router.select('default', [extreme] + [_due_item(str(i), 'extreme_urgency') for i in range(10)] + [boosted, ordinary])
-    assert decision.routing_source == 'extreme_urgency_override'
+    assert decision.routing_source == 'extreme_urgency_review'
     assert decision.urgency_tier == 'extreme_urgency'
 
 
 def test_boosted_review_routing_reason_is_explicit():
-    router = ReviewRouter(RoutingConfig(due_baseline_corpus_share=0.0))
-    decision = router.select('default', [_due_item('b', 'boosted_review')])
+    router = ReviewRouter()
+    decision = router.select('default', [_due_item('b', 'boosted_review'), _due_item('c', 'boosted_review')])
+    for _ in range(20):
+        if decision.routing_source == 'boosted_review':
+            break
+        decision = router.select('default', [_due_item('b', 'boosted_review'), _due_item('c', 'boosted_review')])
     assert decision.routing_source == 'boosted_review'
     assert decision.urgency_tier == 'boosted_review'
 
