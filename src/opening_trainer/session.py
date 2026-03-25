@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import random
+import time
+from dataclasses import dataclass
 from dataclasses import asdict
 from pathlib import Path
 
@@ -29,6 +31,17 @@ from .runtime import (
 from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
 from .session_logging import log_line
+
+
+@dataclass
+class TimedSessionState:
+    time_control_id: str
+    initial_seconds: float
+    increment_seconds: float
+    white_remaining_ms: int
+    black_remaining_ms: int
+    previous_player_think_seconds: float | None = None
+    previous_opponent_think_seconds: float | None = None
 
 
 class TrainingSession:
@@ -68,6 +81,8 @@ class TrainingSession:
         self.run_path: list[ReviewPathMove] = []
         self.settings = self.settings_store.load(maximum_depth=self.max_supported_training_depth())
         self._apply_settings(self.settings)
+        self.timed_state: TimedSessionState | None = None
+        self._player_turn_started_at: float | None = None
 
     def max_supported_training_depth(self) -> int:
         retained_ply_depth = self.bundle_retained_ply_depth()
@@ -95,8 +110,7 @@ class TrainingSession:
                 provider = self.opponent.bundle_provider
             except AttributeError:
                 provider = None
-            manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
-            manifest = getattr(manifest, 'manifest', None)
+            manifest = getattr(getattr(provider, 'bundle', None), 'manifest', None)
             retained_ply_depth, _source = bundle_retained_ply_depth_from_metadata(Path(bundle_dir), manifest)
             if retained_ply_depth is not None:
                 return retained_ply_depth
@@ -138,6 +152,8 @@ class TrainingSession:
         self.last_evaluation = None
         self.last_outcome = None
         self.last_opponent_choice = None
+        self.timed_state = self._build_timed_state_from_bundle()
+        self._player_turn_started_at = None
         self.run_path = []
         items = self._items()
         transition_changed = False
@@ -154,6 +170,7 @@ class TrainingSession:
         log_line(f'Routing: {self.current_routing.selection_explanation}', tag='review')
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
+            self._player_turn_started_at = time.monotonic()
         else:
             self.state = SessionState.OPPONENT_TURN
             self.advance_until_user_turn()
@@ -246,27 +263,31 @@ class TrainingSession:
         return history
 
     def corpus_summary_text(self) -> str:
+        timing_text = self._timing_summary_text()
         bundle_dir = self.runtime_context.config.corpus_bundle_dir
         if bundle_dir:
             provider = getattr(self.opponent, 'bundle_provider', None)
-            manifest = getattr(getattr(provider, 'bundle', None), 'metadata', None)
-            manifest = getattr(manifest, 'manifest', None)
+            bundle_handle = getattr(provider, 'bundle', None)
+            manifest = getattr(bundle_handle, 'manifest', None)
+            if not isinstance(manifest, dict):
+                metadata = getattr(bundle_handle, 'metadata', None)
+                manifest = getattr(metadata, 'manifest', None)
             if isinstance(manifest, dict):
                 band = manifest.get('target_rating_band') or manifest.get('rating_band') or manifest.get('elo_band')
                 retained = manifest.get('retained_ply_depth')
                 band_text = self._format_rating_band(band) or self._bundle_name_fallback(bundle_dir)
                 retained_text = f' | Retained depth: {retained}' if retained is not None else ''
-                return f'Corpus: {band_text}{retained_text}'
-            return f'Corpus: {self._bundle_name_fallback(bundle_dir)}'
+                return f'Corpus: {band_text}{retained_text}{timing_text}'
+            return f'Corpus: {self._bundle_name_fallback(bundle_dir)}{timing_text}'
         artifact_path = self.runtime_context.config.corpus_artifact_path
         if artifact_path:
             try:
                 artifact = load_artifact(artifact_path)
                 band_text = self._format_rating_band(getattr(artifact, 'target_rating_band', None)) or 'artifact'
-                return f'Corpus: {band_text} | Retained depth: {artifact.retained_ply_depth}'
+                return f'Corpus: {band_text} | Retained depth: {artifact.retained_ply_depth}{timing_text}'
             except Exception:
-                return 'Corpus: legacy artifact'
-        return 'Corpus: fallback / no bundle metadata'
+                return f'Corpus: legacy artifact{timing_text}'
+        return f'Corpus: fallback / no bundle metadata{timing_text}'
 
     def _format_rating_band(self, band: object) -> str | None:
         if isinstance(band, dict):
@@ -292,6 +313,7 @@ class TrainingSession:
             log_line('Illegal move. Try again.', tag='evaluation')
             return self.get_view()
         board_before_move = self.board.board.copy(stack=True)
+        self._consume_player_think_time()
         pre_fail_fen = board_before_move.fen()
         move = self.board.push(move_str)
         self._record_path_move(board_before_move, move)
@@ -415,7 +437,14 @@ class TrainingSession:
     def _handle_opponent_turn(self) -> None:
         board_before = self.board.board.copy(stack=True)
         scripted = self._planned_opponent_move(board_before)
-        choice = scripted or self.opponent.choose_move_with_context(self.board.board)
+        timing_context = self._build_opponent_timing_context()
+        if scripted is not None:
+            choice = scripted
+        elif timing_context is None:
+            choice = self.opponent.choose_move_with_context(self.board.board)
+        else:
+            choice = self.opponent.choose_move_with_runtime_context(self.board.board, timing_context=timing_context)
+        self._consume_opponent_think_time(choice.sampled_think_time_seconds)
         move = choice.move
         self.last_opponent_choice = choice
         san = self.board.board.san(move)
@@ -425,6 +454,8 @@ class TrainingSession:
         if self._resolve_terminal_board_state():
             return
         self.state = SessionState.PLAYER_TURN if self.board.turn() == self.player_color else SessionState.OPPONENT_TURN
+        if self.state == SessionState.PLAYER_TURN:
+            self._player_turn_started_at = time.monotonic()
 
     def _planned_opponent_move(self, board: chess.Board):
         if not self.active_review_plan:
@@ -441,7 +472,88 @@ class TrainingSession:
         return OpponentMoveChoice(move, expected.get('fen_before', board.fen()), 'review_predecessor_path', 'review_plan_reentry', expected.get('fen_before', board.fen()), 1, 1, 1, 1.0, 1, False, None, False, ({'uci': move.uci(), 'raw_count': 1, 'effective_weight': 1.0},))
 
     def _format_opponent_choice_detail(self, choice) -> str:
-        return ' [' + ' | '.join([f'via {choice.selected_via}', f'reason={choice.corpus_lookup_reason_code}', f'position={choice.normalized_position_key}', f'candidate_rows={choice.candidate_row_count}', f'legal_candidates={choice.legal_candidate_count}']) + ']'
+        parts = [f'via {choice.selected_via}', f'reason={choice.corpus_lookup_reason_code}', f'position={choice.normalized_position_key}', f'candidate_rows={choice.candidate_row_count}', f'legal_candidates={choice.legal_candidate_count}']
+        if choice.timing_overlay_active:
+            parts.extend(
+                [
+                    f"timing_overlay=active",
+                    f"context={choice.timing_context_key}",
+                    f"fallback={choice.timing_fallback_used}",
+                    f"move_profile={choice.move_pressure_profile_id}",
+                    f"think_profile={choice.think_time_profile_id}",
+                    f"sampled_think={choice.sampled_think_time_seconds:.2f}s" if choice.sampled_think_time_seconds is not None else "sampled_think=n/a",
+                ]
+            )
+        return ' [' + ' | '.join(parts) + ']'
+
+    def _build_timed_state_from_bundle(self) -> TimedSessionState | None:
+        provider = getattr(self.opponent, "bundle_provider", None)
+        manifest = getattr(getattr(provider, "bundle", None), "manifest", None)
+        if not isinstance(manifest, dict):
+            return None
+        time_control_id = str(manifest.get("time_control_id", "rapid_300_0"))
+        initial_seconds = float(manifest.get("initial_time_seconds", manifest.get("initial_seconds", 300.0)))
+        increment_seconds = float(manifest.get("increment_seconds", 0.0))
+        return TimedSessionState(
+            time_control_id=time_control_id,
+            initial_seconds=initial_seconds,
+            increment_seconds=increment_seconds,
+            white_remaining_ms=int(initial_seconds * 1000),
+            black_remaining_ms=int(initial_seconds * 1000),
+        )
+
+    def _consume_player_think_time(self) -> None:
+        if self.timed_state is None or self._player_turn_started_at is None:
+            return
+        elapsed = max(0.0, time.monotonic() - self._player_turn_started_at)
+        is_white = self.player_color == chess.WHITE
+        if is_white:
+            self.timed_state.white_remaining_ms = max(0, self.timed_state.white_remaining_ms - int(elapsed * 1000))
+        else:
+            self.timed_state.black_remaining_ms = max(0, self.timed_state.black_remaining_ms - int(elapsed * 1000))
+        self.timed_state.previous_opponent_think_seconds = elapsed
+        if self.timed_state.increment_seconds > 0:
+            if is_white:
+                self.timed_state.white_remaining_ms += int(self.timed_state.increment_seconds * 1000)
+            else:
+                self.timed_state.black_remaining_ms += int(self.timed_state.increment_seconds * 1000)
+
+    def _consume_opponent_think_time(self, sampled_seconds: float | None) -> None:
+        if self.timed_state is None:
+            return
+        think_seconds = 0.2 if sampled_seconds is None else max(0.0, sampled_seconds)
+        is_opponent_white = self.player_color == chess.BLACK
+        if is_opponent_white:
+            self.timed_state.white_remaining_ms = max(0, self.timed_state.white_remaining_ms - int(think_seconds * 1000))
+            if self.timed_state.increment_seconds > 0:
+                self.timed_state.white_remaining_ms += int(self.timed_state.increment_seconds * 1000)
+        else:
+            self.timed_state.black_remaining_ms = max(0, self.timed_state.black_remaining_ms - int(think_seconds * 1000))
+            if self.timed_state.increment_seconds > 0:
+                self.timed_state.black_remaining_ms += int(self.timed_state.increment_seconds * 1000)
+        self.timed_state.previous_player_think_seconds = think_seconds
+
+    def _build_opponent_timing_context(self) -> dict[str, object] | None:
+        if self.timed_state is None:
+            return None
+        opponent_remaining_ms = self.timed_state.white_remaining_ms if self.player_color == chess.BLACK else self.timed_state.black_remaining_ms
+        remaining_seconds = opponent_remaining_ms / 1000.0
+        return {
+            "time_control_id": self.timed_state.time_control_id,
+            "mover_elo_band": self._format_rating_band(getattr(getattr(self.opponent.bundle_provider, 'bundle', None), 'manifest', {}).get("target_rating_band")) or "unknown",
+            "remaining_ratio": remaining_seconds / max(1.0, self.timed_state.initial_seconds),
+            "remaining_seconds": remaining_seconds,
+            "prev_opp_think_seconds": self.timed_state.previous_opponent_think_seconds,
+            "opening_ply": len(self.board.board.move_stack) + 1,
+        }
+
+    def _timing_summary_text(self) -> str:
+        if self.timed_state is None:
+            return " | Timing overlay: inactive"
+        white = self.timed_state.white_remaining_ms / 1000.0
+        black = self.timed_state.black_remaining_ms / 1000.0
+        overlay_active = bool(getattr(self.last_opponent_choice, "timing_overlay_active", False))
+        return f" | Timing overlay: {'active' if overlay_active else 'available'} | Clocks W/B: {white:.1f}s/{black:.1f}s"
 
     def _resolve_fail(self) -> None:
         log_line('FAIL', tag='evaluation')

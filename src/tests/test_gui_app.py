@@ -380,7 +380,7 @@ def test_corpus_summary_prefers_manifest_band_and_falls_back_to_bundle_name(tmp_
     metadata = type('Meta', (), {'manifest': {'target_rating_band': {'minimum': 1200, 'maximum': 1400}, 'retained_ply_depth': 12}})()
     session.opponent = type('Opponent', (), {'bundle_provider': type('Provider', (), {'bundle': type('Bundle', (), {'metadata': metadata})()})()})()
 
-    assert session.corpus_summary_text() == 'Corpus: 1200-1400 | Retained depth: 12'
+    assert session.corpus_summary_text() == 'Corpus: 1200-1400 | Retained depth: 12 | Timing overlay: inactive'
 
     session.opponent = type('Opponent', (), {'bundle_provider': type('Provider', (), {'bundle': type('Bundle', (), {'metadata': type('Meta', (), {'manifest': {}})()})()})()})()
     assert '1200 1400' in session.corpus_summary_text()
