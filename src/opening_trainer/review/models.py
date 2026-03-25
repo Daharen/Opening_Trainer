@@ -23,6 +23,7 @@ class RoutingSource(str, Enum):
     SCHEDULED_REVIEW = 'scheduled_review'
     BOOSTED_REVIEW = 'boosted_review'
     EXTREME = 'extreme_urgency_review'
+    STUBBORN_EXTREME_REPEAT = 'stubborn_extreme_repeat'
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class ReviewItem:
     times_passed: int
     consecutive_failures: int
     consecutive_successes: int
+    success_streak: int
     mastery_score: float
     stability_score: float
     urgency_tier: str
@@ -62,6 +64,12 @@ class ReviewItem:
     predecessor_path: list[dict[str, Any]] = field(default_factory=list)
     line_preview_san: str = ''
     profile_id: str = 'default'
+    frequency_retired_for_current_due_cycle: bool = False
+    stubborn_extreme_state: str = 'none'
+    stubborn_extra_repeat_consumed_until_success: bool = False
+    skipped_review_slots: int = 0
+    was_due_previous_check: bool = True
+    pending_forced_stubborn_repeat: bool = False
 
     @classmethod
     def create(
@@ -92,6 +100,7 @@ class ReviewItem:
             times_passed=0,
             consecutive_failures=1,
             consecutive_successes=0,
+            success_streak=0,
             mastery_score=0.0,
             stability_score=0.0,
             urgency_tier=UrgencyTier.ORDINARY.value,
@@ -104,6 +113,7 @@ class ReviewItem:
             predecessor_path=[asdict(move) for move in predecessor_path],
             line_preview_san=' '.join(move.san for move in predecessor_path[-6:]),
             profile_id=profile_id,
+            was_due_previous_check=True,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,6 +121,14 @@ class ReviewItem:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> 'ReviewItem':
+        payload = dict(payload)
+        payload.setdefault('success_streak', payload.get('consecutive_successes', 0))
+        payload.setdefault('frequency_retired_for_current_due_cycle', False)
+        payload.setdefault('stubborn_extreme_state', 'none')
+        payload.setdefault('stubborn_extra_repeat_consumed_until_success', False)
+        payload.setdefault('skipped_review_slots', 0)
+        payload.setdefault('was_due_previous_check', due_state(payload.get('due_at_utc', utc_now_iso())) == 'due')
+        payload.setdefault('pending_forced_stubborn_repeat', False)
         return cls(**payload)
 
 

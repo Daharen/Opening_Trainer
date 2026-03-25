@@ -16,7 +16,7 @@ from .opponent import OpponentProvider
 from .review.models import ReviewItem, ReviewPathMove, RoutingDecision
 from .review.profile_service import ProfileService
 from .review.router import ReviewRouter
-from .review.scheduler import apply_failure, apply_success
+from .review.scheduler import apply_failure, apply_success, sync_due_cycle_transition
 from .review.storage import ReviewStorage
 from .runtime import (
     RuntimeContext,
@@ -140,6 +140,11 @@ class TrainingSession:
         self.last_opponent_choice = None
         self.run_path = []
         items = self._items()
+        transition_changed = False
+        for item in items:
+            transition_changed = sync_due_cycle_transition(item) or transition_changed
+        if transition_changed:
+            self._save_items(items)
         self.current_routing = self.router.select(self.active_profile_id, items)
         self.current_review_item_id = self.current_routing.selected_review_item_id
         self.active_review_plan = self.current_routing.review_plan
@@ -388,8 +393,9 @@ class TrainingSession:
         else:
             item = apply_failure(existing, evaluation.reason_text, evaluation.preferred_move_uci, [asdict(move) for move in self.run_path], line_preview, self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')
             impact_summary = f'Updated review item; urgency is now {item.urgency_tier}.'
+        decision = self.router.stubborn_extreme_repeat(self.active_profile_id, item) if item.pending_forced_stubborn_repeat else self.router.immediate_retry(self.active_profile_id, item)
+        item.pending_forced_stubborn_repeat = False
         self._save_items(items)
-        decision = self.router.immediate_retry(self.active_profile_id, item)
         self.review_storage.append_history(self.active_profile_id, event_to_dict(build_event('failure', review_item_id=item.review_item_id, routing=decision.routing_source, reason=evaluation.reason_text)))
         return item, impact_summary, decision.routing_source
 

@@ -132,3 +132,46 @@ def test_integration_interleaves_corpus_and_review_with_finite_deck():
     assert 'ordinary_corpus_play' in sources
     assert 'scheduled_review' in sources or 'boosted_review' in sources or 'extreme_urgency_review' in sources
     assert all(decision.deck_size in (20, 40, 80) for decision in decisions)
+
+
+def test_minimum_tier_representation_forces_non_empty_tiers_when_possible():
+    router = ReviewRouter()
+    counts = {'C': 10, 'D': 0, 'B': 1, 'E': 9}
+    adjusted = router._enforce_minimum_tier_representation(counts, d=1, b=1, e=1)
+    assert adjusted['D'] == 1
+    assert adjusted['E'] == 8
+    assert adjusted['B'] == 1
+
+
+def test_minimum_tier_representation_donor_tie_break_is_e_then_b_then_d():
+    router = ReviewRouter()
+    counts = {'C': 5, 'D': 3, 'B': 3, 'E': 3}
+    assert router._choose_min_representation_donor(counts) == 'E'
+
+
+def test_starvation_bump_selects_due_item_with_highest_skipped_slots():
+    router = ReviewRouter()
+    d1 = _item('d1', 'ordinary_review')
+    d2 = _item('d2', 'ordinary_review')
+    d1.skipped_review_slots = 8
+    d2.skipped_review_slots = 9
+    router.deck.tokens = ['D']
+    router.deck.index = 0
+    decision = router.select('default', [d1, d2])
+    assert decision.selected_review_item_id == d2.review_item_id
+    assert decision.rebuild_trigger == 'ORDINARY_DUE_STARVATION_BUMP'
+
+
+def test_skipped_review_slots_increment_on_review_token_only():
+    router = ReviewRouter()
+    d1 = _item('d1', 'ordinary_review')
+    d2 = _item('d2', 'ordinary_review')
+    router.deck.tokens = ['C']
+    router.deck.index = 0
+    router.select('default', [d1, d2])
+    assert d1.skipped_review_slots == 0 and d2.skipped_review_slots == 0
+    router.deck.tokens = ['B']
+    router.deck.index = 0
+    boosted = _item('b', 'boosted_review')
+    router.select('default', [d1, d2, boosted])
+    assert {d1.skipped_review_slots, d2.skipped_review_slots} == {1}
