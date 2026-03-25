@@ -131,6 +131,16 @@ def _build_gui(tmp_path):
     return gui
 
 
+def test_request_shutdown_routes_to_authoritative_coordinator():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    calls: list[str] = []
+    gui._shutdown_coordinator = lambda reason: calls.append(reason)
+
+    gui._request_shutdown()
+
+    assert calls == ['window_close']
+
+
 def test_outcome_modal_contract_shape_includes_required_acknowledgement_default():
     contract = OutcomeModalContract('FAIL', 'summary', 'reason', 'e4', 'route', 'next', 'impact')
 

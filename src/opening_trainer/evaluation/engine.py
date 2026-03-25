@@ -4,7 +4,7 @@ import chess
 import chess.engine
 
 from .config import EvaluatorConfig
-from .engine_process import launch_engine
+from .engine_process import launch_engine, shutdown_engine
 from .types import EngineAuthorityResult, ReasonCode
 
 
@@ -134,11 +134,8 @@ class EngineAuthority:
     def _close_engine(self) -> None:
         if self._engine is None:
             return
-        try:
-            self._engine.quit()
-        except Exception:
-            pass
+        shutdown_engine(self._engine)
         self._engine = None
 
-    def __del__(self) -> None:
+    def close(self) -> None:
         self._close_engine()

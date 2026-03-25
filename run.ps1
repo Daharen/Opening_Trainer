@@ -617,6 +617,10 @@ function Wait-ForStartupHandoff {
             }
             if ($recent -match "INSTANCE_DUPLICATE:") {
                 Write-SessionLogLine -Tag "startup" -Message "Launcher observed duplicate-instance signal."
+                $ownerInfo = $recent | Where-Object { $_ -match "APP_DUPLICATE_OWNER_INFO_AVAILABLE:" } | Select-Object -Last 1
+                if ($ownerInfo) {
+                    Write-SessionLogLine -Tag "startup" -Message "Launcher found duplicate owner diagnostics."
+                }
                 return "duplicate"
             }
         }
@@ -748,7 +752,17 @@ switch ($ResolvedAction) {
                 Close-StartupSplash -Splash $splash
             }
             elseif ($handoff -eq "duplicate") {
-                Update-StartupSplash -Splash $splash -Stage "Opening Trainer is already running" -Detail "A launch is already active."
+                $ownerInfo = $null
+                if (Test-Path -LiteralPath $SessionLogPath) {
+                    $ownerInfo = Get-Content -LiteralPath $SessionLogPath -Tail 200 -ErrorAction SilentlyContinue | Where-Object { $_ -match "APP_DUPLICATE_OWNER_INFO_AVAILABLE:" } | Select-Object -Last 1
+                }
+                if ($ownerInfo) {
+                    $detail = ($ownerInfo -split "APP_DUPLICATE_OWNER_INFO_AVAILABLE:\s*", 2 | Select-Object -Last 1).Trim()
+                    Update-StartupSplash -Splash $splash -Stage "Opening Trainer is already running" -Detail ("Owner: " + $detail)
+                }
+                else {
+                    Update-StartupSplash -Splash $splash -Stage "Opening Trainer is already running" -Detail "A launch is already active."
+                }
                 Start-Sleep -Seconds 4
                 Close-StartupSplash -Splash $splash
             }
