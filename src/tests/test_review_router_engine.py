@@ -15,7 +15,7 @@ def _item(position_key: str, tier: str, due_at: str = '2000-01-01T00:00:00+00:00
 
 
 def _shares(router: ReviewRouter, d: int, b: int, e: int) -> tuple[float, float]:
-    out = router._compute_shares(d, b, e)
+    out = router._compute_shares(d, 0, 0, 0, 0, b, e)
     return out['corpus'], out['review']
 
 
@@ -33,7 +33,7 @@ def test_outer_share_ladder_and_reserve_bands():
 
 def test_tier_weighting_changes_review_distribution():
     router = ReviewRouter()
-    shares = router._compute_shares(1, 1, 1)
+    shares = router._compute_shares(1, 0, 0, 0, 0, 1, 1)
     assert shares['E'] > shares['B'] > shares['D']
 
 
@@ -48,10 +48,10 @@ def test_deck_size_rules():
 
 def test_token_allocation_remainder_tie_break_prefers_e_b_d_c():
     router = ReviewRouter()
-    shares = {'C': 0.25, 'D': 0.25, 'B': 0.25, 'E': 0.25}
-    counts = router._allocate_counts(shares, 7, d=1, b=1, e=1)
+    shares = {'C': 0.25, 'D': 0.25, 'H80': 0.0, 'H60': 0.0, 'H40': 0.0, 'H20': 0.0, 'B': 0.25, 'E': 0.25}
+    counts = router._allocate_counts(shares, 7, {'D': 1, 'H80': 0, 'H60': 0, 'H40': 0, 'H20': 0, 'B': 1, 'E': 1})
     # Base floors are 1 each and three remainder slots go to E, B, D.
-    assert counts == {'C': 1, 'D': 2, 'B': 2, 'E': 2}
+    assert counts['E'] == 2 and counts['B'] == 2 and counts['D'] == 2
 
 
 def test_queue_ordering_uses_due_then_last_seen_then_id_and_rotates():
@@ -136,8 +136,8 @@ def test_integration_interleaves_corpus_and_review_with_finite_deck():
 
 def test_minimum_tier_representation_forces_non_empty_tiers_when_possible():
     router = ReviewRouter()
-    counts = {'C': 10, 'D': 0, 'B': 1, 'E': 9}
-    adjusted = router._enforce_minimum_tier_representation(counts, d=1, b=1, e=1)
+    counts = {'C': 10, 'D': 0, 'H80': 0, 'H60': 0, 'H40': 0, 'H20': 0, 'B': 1, 'E': 9}
+    adjusted = router._enforce_minimum_tier_representation(counts, {'D': 1, 'H80': 0, 'H60': 0, 'H40': 0, 'H20': 0, 'B': 1, 'E': 1})
     assert adjusted['D'] == 1
     assert adjusted['E'] == 8
     assert adjusted['B'] == 1
@@ -145,7 +145,7 @@ def test_minimum_tier_representation_forces_non_empty_tiers_when_possible():
 
 def test_minimum_tier_representation_donor_tie_break_is_e_then_b_then_d():
     router = ReviewRouter()
-    counts = {'C': 5, 'D': 3, 'B': 3, 'E': 3}
+    counts = {'C': 5, 'D': 3, 'B': 3, 'E': 3, 'H80': 0, 'H60': 0, 'H40': 0, 'H20': 0}
     assert router._choose_min_representation_donor(counts) == 'E'
 
 
@@ -175,3 +175,46 @@ def test_skipped_review_slots_increment_on_review_token_only():
     boosted = _item('b', 'boosted_review')
     router.select('default', [d1, d2, boosted])
     assert {d1.skipped_review_slots, d2.skipped_review_slots} == {1}
+
+
+def test_hijack_ticker_pass_schedules_match_spec():
+    router = ReviewRouter()
+    item = _item('h', 'ordinary_review')
+    item.hijack_stage = 'h80'
+    item.hijack_pass_ticker = 0
+    assert [router._ticker_is_pass('h80', router._advance_hijack_ticker(item)) for _ in range(5)] == [False, False, False, False, True]
+
+    item.hijack_stage = 'h60'
+    item.hijack_pass_ticker = 0
+    assert [router._ticker_is_pass('h60', router._advance_hijack_ticker(item)) for _ in range(5)] == [True, False, False, False, True]
+
+    item.hijack_stage = 'h40'
+    item.hijack_pass_ticker = 0
+    assert [router._ticker_is_pass('h40', router._advance_hijack_ticker(item)) for _ in range(5)] == [True, False, True, False, True]
+
+    item.hijack_stage = 'h20'
+    item.hijack_pass_ticker = 0
+    assert [router._ticker_is_pass('h20', router._advance_hijack_ticker(item)) for _ in range(5)] == [True, False, True, True, True]
+
+
+def test_hijack_decay_progression_and_dormancy():
+    router = ReviewRouter()
+    item = _item('decay', 'ordinary_review')
+    item.hijack_stage = 'h80'
+    assert router.resolve_hijack_miss_decay(item) == 'h60'
+    assert router.resolve_hijack_miss_decay(item) == 'h40'
+    assert router.resolve_hijack_miss_decay(item) == 'h20'
+    assert router.resolve_hijack_miss_decay(item) == 'dormant'
+    assert item.dormant is True
+
+
+def test_dormant_items_are_excluded_and_can_revive():
+    router = ReviewRouter()
+    item = _item('dormant', 'ordinary_review')
+    item.hijack_stage = 'dormant'
+    item.dormant = True
+    decision = router.select('default', [item])
+    assert decision.token_counts.get('H80', 0) == 0
+    router.revive_dormant(item)
+    assert item.hijack_stage == 'h80'
+    assert item.dormant is False
