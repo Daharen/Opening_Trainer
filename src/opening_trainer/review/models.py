@@ -22,7 +22,7 @@ class RoutingSource(str, Enum):
     IMMEDIATE_RETRY = 'immediate_retry'
     SCHEDULED_REVIEW = 'scheduled_review'
     BOOSTED_REVIEW = 'boosted_review'
-    EXTREME = 'extreme_urgency_override'
+    EXTREME = 'extreme_urgency_review'
 
 
 @dataclass(frozen=True)
@@ -167,8 +167,15 @@ class RoutingDecision:
     review_plan: ReviewPlan | None = None
     corpus_share: float | None = None
     review_share: float | None = None
+    due_count: int = 0
     boosted_due_count: int = 0
     extreme_due_count: int = 0
+    deck_size: int = 0
+    token_counts: dict[str, int] = field(default_factory=dict)
+    selected_token_category: str | None = None
+    queue_position_before: int | None = None
+    queue_position_after: int | None = None
+    rebuild_trigger: str | None = None
 
 
 def parse_iso(value: str) -> datetime:

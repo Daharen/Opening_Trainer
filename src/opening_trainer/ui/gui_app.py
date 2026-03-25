@@ -450,8 +450,10 @@ class OpeningTrainerGUI:
             explain = (
                 f'corpus_share={self.session.current_routing.corpus_share:.2f}; '
                 f'review_share={self.session.current_routing.review_share:.2f}; '
+                f'due_count={self.session.current_routing.due_count}; '
                 f'boosted_due_count={self.session.current_routing.boosted_due_count}; '
                 f'extreme_due_count={self.session.current_routing.extreme_due_count}; '
+                f'deck_size={self.session.current_routing.deck_size}; '
                 f'{explain}'
             )
         counts_summary = self._build_counts_summary(due, boosted, extreme)
