@@ -9,7 +9,6 @@ import chess
 import chess.engine
 
 from .bundle_corpus import (
-    BuilderAggregateCorpusProvider,
     BuilderAggregateParseError,
     normalize_builder_position_key,
 )
@@ -17,6 +16,15 @@ from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact, normalize_position_key
 from .evaluation import EvaluatorConfig
 from .evaluation.engine_process import launch_engine, shutdown_engine
 from .runtime import corpus_status_detail
+from .timing import (
+    TimingConditionedCorpusBundleLoader,
+    TimingContext,
+    apply_move_pressure_modulation,
+    bucket_clock_pressure,
+    bucket_opening_ply_band,
+    bucket_prev_opp_think,
+    sample_think_time_seconds,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,13 @@ class OpponentMoveChoice:
     sparse_reason: str | None
     fallback_applied: bool
     candidate_summaries: tuple[dict[str, object], ...]
+    timing_overlay_active: bool = False
+    timing_context_key: str | None = None
+    timing_fallback_used: bool = False
+    move_pressure_profile_id: str | None = None
+    think_time_profile_id: str | None = None
+    sampled_think_time_seconds: float | None = None
+    modulation_summary: dict[str, object] | None = None
 
 
 class OpponentMoveProvider(Protocol):
@@ -177,12 +192,12 @@ class BuilderAggregateOpponentProvider:
         self.rng = rng or random
         self.last_lookup_diagnostic: str | None = None
         try:
-            self.bundle = BuilderAggregateCorpusProvider(self.bundle_dir, rng=self.rng)
+            self.bundle = TimingConditionedCorpusBundleLoader().load(self.bundle_dir, rng=self.rng)
         except BuilderAggregateParseError as exc:
             self.last_lookup_diagnostic = f"reason_code={exc.reason_code}; detail={exc.detail}"
             raise
 
-    def choose_move(self, board: chess.Board) -> OpponentMoveChoice:
+    def choose_move(self, board: chess.Board, timing_context: dict[str, object] | None = None) -> OpponentMoveChoice:
         position_key = normalize_builder_position_key(board)
         position = self.bundle.lookup_position(position_key)
         if position is None:
@@ -221,7 +236,44 @@ class BuilderAggregateOpponentProvider:
             raise LookupError(diagnostic)
 
         weighted_candidates = [candidate for _, candidate in legal_candidates]
-        selected = self.rng.choices(weighted_candidates, weights=[max(0, candidate.raw_count) for candidate in weighted_candidates], k=1)[0]
+        base_weights = [(candidate.uci, float(max(0, candidate.raw_count))) for candidate in weighted_candidates]
+        sampling_weights = [weight for _uci, weight in base_weights]
+        timing_overlay_active = False
+        timing_fallback_used = False
+        timing_context_key = None
+        move_pressure_profile_id = None
+        think_time_profile_id = None
+        sampled_think_time_seconds = None
+        modulation_summary: dict[str, object] | None = None
+        if timing_context and self.bundle.timing_overlay_available:
+            context = TimingContext(
+                time_control_id=str(timing_context.get("time_control_id", "unknown")),
+                mover_elo_band=str(timing_context.get("mover_elo_band", "unknown")),
+                clock_pressure_bucket=bucket_clock_pressure(float(timing_context.get("remaining_ratio", 1.0))),
+                prev_opp_think_bucket=bucket_prev_opp_think(timing_context.get("prev_opp_think_seconds")),
+                opening_ply_band=bucket_opening_ply_band(int(timing_context.get("opening_ply", 1))),
+            )
+            overlay = self.bundle.resolve_overlay(context)
+            if overlay is not None:
+                adjusted_weights, summary = apply_move_pressure_modulation(base_weights, overlay.move_pressure_profile, context.clock_pressure_bucket)
+                if adjusted_weights:
+                    sampling_weights = [weight for _uci, weight in adjusted_weights]
+                timing_overlay_active = True
+                timing_fallback_used = overlay.fallback_used
+                timing_context_key = overlay.matched_key
+                move_pressure_profile_id = overlay.move_pressure_profile.profile_id
+                think_time_profile_id = overlay.think_time_profile.profile_id
+                sampled_think_time_seconds = sample_think_time_seconds(
+                    overlay.think_time_profile,
+                    float(timing_context.get("remaining_seconds", 0.0)),
+                    rng=self.rng,
+                )
+                modulation_summary = {
+                    **summary,
+                    "pre_top_moves": [f"{uci}:{weight:.4f}" for uci, weight in sorted(base_weights, key=lambda item: item[1], reverse=True)[:3]],
+                    "post_top_moves": [f"{uci}:{weight:.4f}" for uci, weight in sorted(adjusted_weights, key=lambda item: item[1], reverse=True)[:3]],
+                }
+        selected = self.rng.choices(weighted_candidates, weights=sampling_weights, k=1)[0]
         selected_move = next(move for move, candidate in legal_candidates if candidate == selected)
         self.last_lookup_diagnostic = (
             "reason_code=corpus_hit; "
@@ -230,7 +282,7 @@ class BuilderAggregateOpponentProvider:
         return OpponentMoveChoice(
             move=selected_move,
             position_key=position_key,
-            selected_via=("corpus_aggregate_bundle" if self.bundle.metadata.payload_format == "jsonl" else self.bundle.metadata.provider_label),
+            selected_via=("corpus_aggregate_bundle" if self.bundle.exact_corpus.metadata.payload_format == "jsonl" else self.bundle.exact_corpus.metadata.provider_label),
             corpus_lookup_reason_code="corpus_hit",
             normalized_position_key=position_key,
             candidate_row_count=position.candidate_row_count,
@@ -249,6 +301,13 @@ class BuilderAggregateOpponentProvider:
                 }
                 for _, candidate in legal_candidates
             ),
+            timing_overlay_active=timing_overlay_active,
+            timing_context_key=timing_context_key,
+            timing_fallback_used=timing_fallback_used,
+            move_pressure_profile_id=move_pressure_profile_id,
+            think_time_profile_id=think_time_profile_id,
+            sampled_think_time_seconds=sampled_think_time_seconds,
+            modulation_summary=modulation_summary,
         )
 
 
@@ -286,11 +345,14 @@ class OpponentProvider:
         return self.last_choice.move
 
     def choose_move_with_context(self, board: chess.Board) -> OpponentMoveChoice:
+        return self.choose_move_with_runtime_context(board, timing_context=None)
+
+    def choose_move_with_runtime_context(self, board: chess.Board, timing_context: dict[str, object] | None = None) -> OpponentMoveChoice:
         failures: list[str] = []
         normalized_position_key = normalize_builder_position_key(board)
         if self.bundle_provider is not None:
             try:
-                choice = self.bundle_provider.choose_move(board)
+                choice = self.bundle_provider.choose_move(board, timing_context=timing_context)
                 self.last_choice = choice
                 return choice
             except LookupError as exc:
