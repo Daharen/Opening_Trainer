@@ -30,9 +30,27 @@ def test_powershell_runner_auto_mode_is_non_interactive_and_skips_console_bundle
     assert '"Auto" {' in script
     run_block = script.split('"Auto" {', 1)[1].split('"Run" {', 1)[0]
     assert 'Select-CorpusBundleDirectory' not in run_block
-    assert 'non-interactive path (validate + run, corpus skip)' in run_block
+    assert 'non-interactive path (AutoSafe validate + run, corpus skip)' in run_block
+    assert 'Invoke-ValidationProfile -ProfileName "AutoSafe"' in run_block
     dev_block = script.split('"DevRun" {', 1)[1].split('"Test" {', 1)[0]
     assert 'Select-CorpusBundleDirectory' in dev_block
+
+
+def test_powershell_runner_has_split_validation_profiles_and_timeout_markers():
+    script = Path('run.ps1').read_text(encoding='utf-8')
+
+    assert '"AutoSafe"' in script
+    assert '"DevFast"' in script
+    assert '"DevFull"' in script
+    assert 'VALIDATION_PROFILE_$($ProfileName.ToUpperInvariant())_BEGIN' in script
+    assert 'VALIDATION_PROFILE_TIMEOUT' in script
+    assert 'VALIDATION_CHILD_PROCESS_CLEANUP_BEGIN' in script
+    assert 'VALIDATION_CHILD_PROCESS_CLEANUP_COMPLETE' in script
+    assert 'src/tests/test_launch_paths.py' in script
+    assert 'src/tests/test_gui_app.py' in script
+    assert 'src/tests/test_shutdown_and_single_instance.py' in script
+    assert 'src/tests/test_session_logging.py' in script
+    assert 'src/tests/test_engine_process.py' not in script
 
 
 def test_powershell_runner_bundle_validation_recognizes_sqlite_and_legacy_fallback_order():

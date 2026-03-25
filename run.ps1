@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Auto", "Menu", "Run", "DevRun", "Test", "Compile", "Validate", "All")]
+    [ValidateSet("Auto", "Menu", "Run", "DevRun", "Test", "Compile", "Validate", "All", "AutoSafe", "DevFast", "DevFull")]
     [string]$Action = "Auto"
 )
 
@@ -28,6 +28,9 @@ if ([string]::IsNullOrWhiteSpace($SessionId)) {
 $SessionLogPath = Join-Path $SessionLogsDir ("session_{0}.log" -f $SessionId)
 $env:OPENING_TRAINER_SESSION_LOG_DIR = $SessionLogsDir
 $env:OPENING_TRAINER_SESSION_LOG_PATH = $SessionLogPath
+$AutoSafeValidationTimeoutSeconds = 90
+$DevFastValidationTimeoutSeconds = 150
+$DevFullValidationTimeoutSeconds = 600
 $AppMutexName = "Local\OpeningTrainer.App." + [Math]::Abs($RepoRoot.ToLowerInvariant().GetHashCode())
 $BootMutexName = "Local\OpeningTrainer.Boot." + [Math]::Abs($RepoRoot.ToLowerInvariant().GetHashCode())
 $env:OPENING_TRAINER_APP_MUTEX_NAME = $AppMutexName
@@ -663,6 +666,122 @@ function Invoke-CompileValidation {
     }
 }
 
+function Stop-ValidationChildProcesses {
+    param(
+        [int]$ValidationPid = 0,
+        [string]$Reason = "failure",
+        [bool]$IncludeStockfishSweep = $false
+    )
+
+    Write-SessionLogLine -Tag "validation" -Message "VALIDATION_CHILD_PROCESS_CLEANUP_BEGIN reason=$Reason pid=$ValidationPid stockfish_sweep=$IncludeStockfishSweep"
+    Log "Validation child-process cleanup begin (reason=$Reason, pid=$ValidationPid, stockfish_sweep=$IncludeStockfishSweep)."
+
+    if ($ValidationPid -gt 0) {
+        try {
+            if ($env:OS -eq "Windows_NT") {
+                & taskkill /PID $ValidationPid /T /F *> $null
+            }
+            else {
+                Stop-Process -Id $ValidationPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Log "Validation cleanup note: unable to terminate process tree for pid=$ValidationPid ($($_.Exception.Message))"
+        }
+    }
+
+    if ($IncludeStockfishSweep) {
+        try {
+            $stockfish = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match "^stockfish($|_)" }
+            foreach ($process in $stockfish) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            if ($stockfish) {
+                Log "Validation cleanup sweep terminated stockfish-like processes: $($stockfish.Count)"
+            }
+        }
+        catch {
+            Log "Validation cleanup note: stockfish sweep failed ($($_.Exception.Message))"
+        }
+    }
+
+    Write-SessionLogLine -Tag "validation" -Message "VALIDATION_CHILD_PROCESS_CLEANUP_COMPLETE reason=$Reason"
+    Log "Validation child-process cleanup complete (reason=$Reason)."
+}
+
+function Invoke-ValidationCommand {
+    param(
+        [string]$Name,
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [int]$TimeoutSeconds,
+        [bool]$CleanupStockfishOnFailure = $false
+    )
+
+    $argLine = if ($Arguments) { $Arguments -join " " } else { "" }
+    $commandText = "$FilePath $argLine".Trim()
+    Write-SessionLogLine -Tag "validation" -Message "VALIDATION_COMMAND_BEGIN name=$Name command=$commandText timeout_s=$TimeoutSeconds"
+    Log "Validation command [$Name]: $commandText (timeout=${TimeoutSeconds}s)"
+
+    $process = $null
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $RepoRoot -PassThru
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            Write-SessionLogLine -Tag "validation" -Message "VALIDATION_PROFILE_TIMEOUT command=$Name timeout_s=$TimeoutSeconds"
+            Stop-ValidationChildProcesses -ValidationPid $process.Id -Reason "timeout:$Name" -IncludeStockfishSweep $true
+            throw "Validation command '$Name' timed out after $TimeoutSeconds seconds."
+        }
+
+        if ($process.ExitCode -ne 0) {
+            Stop-ValidationChildProcesses -ValidationPid $process.Id -Reason "failure:$Name" -IncludeStockfishSweep $CleanupStockfishOnFailure
+            throw "Validation command '$Name' failed with exit code $($process.ExitCode)."
+        }
+    }
+    catch {
+        if ($process -and -not $process.HasExited) {
+            Stop-ValidationChildProcesses -ValidationPid $process.Id -Reason "exception:$Name" -IncludeStockfishSweep $CleanupStockfishOnFailure
+        }
+        throw
+    }
+    finally {
+        if ($process) {
+            $process.Dispose()
+        }
+    }
+
+    Write-SessionLogLine -Tag "validation" -Message "VALIDATION_COMMAND_PASS name=$Name"
+}
+
+function Invoke-ValidationProfile {
+    param(
+        [string]$ProfileName,
+        [string]$VenvPython
+    )
+
+    Write-SessionLogLine -Tag "validation" -Message "VALIDATION_PROFILE_$($ProfileName.ToUpperInvariant())_BEGIN"
+    switch ($ProfileName) {
+        "AutoSafe" {
+            Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip
+            Invoke-ValidationCommand -Name "compileall_src" -FilePath $VenvPython -Arguments @("-m", "compileall", "src") -TimeoutSeconds $AutoSafeValidationTimeoutSeconds
+            Invoke-ValidationCommand -Name "autosafe_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q", "src/tests/test_launch_paths.py", "src/tests/test_gui_app.py", "src/tests/test_shutdown_and_single_instance.py", "src/tests/test_session_logging.py") -TimeoutSeconds $AutoSafeValidationTimeoutSeconds -CleanupStockfishOnFailure $true
+        }
+        "DevFast" {
+            Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip
+            Invoke-ValidationCommand -Name "compileall_src" -FilePath $VenvPython -Arguments @("-m", "compileall", "src") -TimeoutSeconds $DevFastValidationTimeoutSeconds
+            Invoke-ValidationCommand -Name "devfast_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q", "src/tests/test_launch_paths.py", "src/tests/test_gui_app.py", "src/tests/test_shutdown_and_single_instance.py", "src/tests/test_session_logging.py", "src/tests/test_smoke.py") -TimeoutSeconds $DevFastValidationTimeoutSeconds -CleanupStockfishOnFailure $true
+        }
+        "DevFull" {
+            Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip
+            Invoke-ValidationCommand -Name "pytest_full" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q") -TimeoutSeconds $DevFullValidationTimeoutSeconds -CleanupStockfishOnFailure $true
+            Invoke-ValidationCommand -Name "compileall_src" -FilePath $VenvPython -Arguments @("-m", "compileall", "src") -TimeoutSeconds $DevFullValidationTimeoutSeconds
+        }
+        default {
+            throw "Unknown validation profile: $ProfileName"
+        }
+    }
+    Write-SessionLogLine -Tag "validation" -Message "VALIDATION_PROFILE_$($ProfileName.ToUpperInvariant())_PASS"
+}
+
 function Resolve-Action {
     param([string]$RequestedAction)
 
@@ -674,10 +793,12 @@ function Resolve-Action {
     Write-Host "Opening Trainer repo runner"
     Write-Host "1) Run trainer (ordinary non-interactive)"
     Write-Host "2) Developer run trainer (with optional console corpus selection)"
-    Write-Host "3) Run tests"
+    Write-Host "3) Run tests (DevFull profile)"
     Write-Host "4) Compile validation"
-    Write-Host "5) Validate (tests + compile)"
-    Write-Host "6) All (validate + developer run trainer)"
+    Write-Host "5) Validate (DevFast profile)"
+    Write-Host "6) All (DevFast validate + developer run trainer)"
+    Write-Host "7) Validate AutoSafe profile"
+    Write-Host "8) Validate DevFull profile"
     Write-Host "Q) Quit"
     Write-Host ""
 
@@ -690,6 +811,8 @@ function Resolve-Action {
         "4" { return "Compile" }
         "5" { return "Validate" }
         "6" { return "All" }
+        "7" { return "AutoSafe" }
+        "8" { return "DevFull" }
         "Q" { return "Quit" }
         default { throw "Unknown selection: $choice" }
     }
@@ -739,11 +862,10 @@ switch ($ResolvedAction) {
         }
         $bootMutex = New-Object Threading.Mutex($true, $BootMutexName)
         try {
-            Log "Launching ordinary non-interactive path (validate + run, corpus skip)."
+            Log "Launching ordinary non-interactive path (AutoSafe validate + run, corpus skip)."
             Update-StartupSplash -Splash $splash -Stage "Validating runtime"
-            Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
-            Invoke-TestSuite -VenvPython $venv.VenvPython
-            Invoke-CompileValidation -VenvPython $venv.VenvPython
+            Write-SessionLogLine -Tag "validation" -Message "Validation profile selected: AutoSafe | timeout protection armed: ${AutoSafeValidationTimeoutSeconds}s"
+            Invoke-ValidationProfile -ProfileName "AutoSafe" -VenvPython $venv.VenvPython
             Update-StartupSplash -Splash $splash -Stage "Launching trainer"
             $child = Invoke-PythonEntrypointDetached -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $null
             Update-StartupSplash -Splash $splash -Stage "Opening GUI" -Detail "Waiting for trainer readiness..."
@@ -773,6 +895,13 @@ switch ($ResolvedAction) {
                 Close-StartupSplash -Splash $splash
             }
         }
+        catch {
+            Write-SessionLogLine -Tag "validation" -Message "VALIDATION_PROFILE_AUTOSAFE_FAIL reason=$($_.Exception.Message)"
+            Update-StartupSplash -Splash $splash -Stage "Validation failed" -Detail "AutoSafe validation failed or timed out.`nSee session log:`n$SessionLogPath"
+            Start-Sleep -Seconds 7
+            Close-StartupSplash -Splash $splash
+            throw
+        }
         finally {
             if ($bootMutex -ne $null) {
                 $bootMutex.ReleaseMutex() | Out-Null
@@ -792,8 +921,7 @@ switch ($ResolvedAction) {
     }
 
     "Test" {
-        Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
-        Invoke-TestSuite -VenvPython $venv.VenvPython
+        Invoke-ValidationProfile -ProfileName "DevFull" -VenvPython $venv.VenvPython
     }
 
     "Compile" {
@@ -801,17 +929,25 @@ switch ($ResolvedAction) {
     }
 
     "Validate" {
-        Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
-        Invoke-TestSuite -VenvPython $venv.VenvPython
-        Invoke-CompileValidation -VenvPython $venv.VenvPython
+        Invoke-ValidationProfile -ProfileName "DevFast" -VenvPython $venv.VenvPython
     }
 
     "All" {
-        Ensure-Pytest -VenvPython $venv.VenvPython -VenvPip $venv.VenvPip
-        Invoke-TestSuite -VenvPython $venv.VenvPython
-        Invoke-CompileValidation -VenvPython $venv.VenvPython
+        Invoke-ValidationProfile -ProfileName "DevFast" -VenvPython $venv.VenvPython
         $selectedBundle = Select-CorpusBundleDirectory
         Invoke-PythonEntrypoint -RepoRoot $RepoRoot -VenvPython $venv.VenvPython -CorpusBundleDir $selectedBundle -MirrorConsole $true
+    }
+
+    "AutoSafe" {
+        Invoke-ValidationProfile -ProfileName "AutoSafe" -VenvPython $venv.VenvPython
+    }
+
+    "DevFast" {
+        Invoke-ValidationProfile -ProfileName "DevFast" -VenvPython $venv.VenvPython
+    }
+
+    "DevFull" {
+        Invoke-ValidationProfile -ProfileName "DevFull" -VenvPython $venv.VenvPython
     }
 
     "Quit" {
