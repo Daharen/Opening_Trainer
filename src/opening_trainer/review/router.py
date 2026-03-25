@@ -18,6 +18,7 @@ CATEGORY_TO_ROUTING = {
     'B': RoutingSource.BOOSTED_REVIEW.value,
     'E': RoutingSource.EXTREME.value,
 }
+ORDINARY_DUE_STARVATION_THRESHOLD = 8
 
 
 @dataclass(frozen=True)
@@ -222,6 +223,7 @@ class ReviewRouter:
         shares = self._compute_shares(d, b, e)
         n = self._deck_size(d + b + e)
         counts = self._allocate_counts(shares, n, d, b, e)
+        counts = self._enforce_minimum_tier_representation(counts, d, b, e)
         deck = self._build_deck(counts, n)
         deck = self._choose_rotation(deck)
         first_review_category = next((token for token in deck if token in ('D', 'B', 'E')), None)
@@ -234,6 +236,54 @@ class ReviewRouter:
         self.addition_counters = {'D': 0, 'B': 0}
         self.removal_counters = {'D': 0, 'B': 0}
 
+    def _enforce_minimum_tier_representation(self, counts: dict[str, int], d: int, b: int, e: int) -> dict[str, int]:
+        adjusted = counts.copy()
+        non_empty = {'D': d > 0, 'B': b > 0, 'E': e > 0}
+        tiers = [tier for tier, ok in non_empty.items() if ok]
+        review_total = adjusted['D'] + adjusted['B'] + adjusted['E']
+        if review_total < len(tiers):
+            return adjusted
+        forced = False
+        while True:
+            zero_tiers = [tier for tier in tiers if adjusted[tier] == 0]
+            if not zero_tiers:
+                break
+            donor = self._choose_min_representation_donor(adjusted)
+            if donor is None:
+                break
+            receiver = zero_tiers[0]
+            adjusted[donor] -= 1
+            adjusted[receiver] += 1
+            forced = True
+        if forced:
+            self.pending_rebuild_trigger = 'MIN_TIER_REPRESENTATION_FORCED'
+        return adjusted
+
+    @staticmethod
+    def _choose_min_representation_donor(counts: dict[str, int]) -> str | None:
+        donors = [tier for tier in ('E', 'B', 'D') if counts[tier] > 1]
+        if not donors:
+            return None
+        max_count = max(counts[tier] for tier in donors)
+        for tier in ('E', 'B', 'D'):
+            if tier in donors and counts[tier] == max_count:
+                return tier
+        return None
+
+    @staticmethod
+    def _ordinary_due_starved_items(items: list) -> list:
+        return [item for item in items if item.skipped_review_slots >= ORDINARY_DUE_STARVATION_THRESHOLD]
+
+    @staticmethod
+    def _starved_sort_key(item) -> tuple[int, str, str, str]:
+        return (-item.skipped_review_slots, item.due_at_utc, item.last_seen_at_utc, item.review_item_id)
+
+    def _increment_due_skipped_slots(self, due_items: list, selected_item_id: str | None) -> None:
+        for item in due_items:
+            if item.review_item_id == selected_item_id:
+                continue
+            item.skipped_review_slots += 1
+
     def _update_boundary(self, category: str, item_id: str | None) -> None:
         if self.last_emitted_category == category:
             self.trailing_run_length += 1
@@ -243,7 +293,7 @@ class ReviewRouter:
         self.last_emitted_exact_item_id = item_id if category in ('D', 'B', 'E') else None
 
     def select(self, profile_id: str, items: list) -> RoutingDecision:
-        due_items = [item for item in items if due_state(item.due_at_utc) == 'due']
+        due_items = [item for item in items if due_state(item.due_at_utc) == 'due' and not item.frequency_retired_for_current_due_cycle]
         tier_items = {
             'D': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.ORDINARY.value], key=self._queue_sort_key),
             'B': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.BOOSTED.value], key=self._queue_sort_key),
@@ -280,10 +330,27 @@ class ReviewRouter:
         if selected_category in ('D', 'B', 'E'):
             queue = self.tier_queues[selected_category]
             queue_before = 0
-            item_id = queue.popleft()
+            if selected_category == 'D':
+                starved = self._ordinary_due_starved_items(tier_items['D'])
+                if starved:
+                    chosen = sorted(starved, key=self._starved_sort_key)[0]
+                    item_id = chosen.review_item_id
+                    try:
+                        queue.remove(item_id)
+                    except ValueError:
+                        pass
+                    rebuild_trigger = rebuild_trigger or 'ORDINARY_DUE_STARVATION_BUMP'
+                else:
+                    item_id = queue.popleft()
+            else:
+                item_id = queue.popleft()
             queue.append(item_id)
             queue_after = len(queue) - 1
             selected_item = next(item for item in tier_items[selected_category] if item.review_item_id == item_id)
+            if selected_category == 'D':
+                selected_item.skipped_review_slots = 0
+            if token in ('D', 'B', 'E'):
+                self._increment_due_skipped_slots(tier_items['D'], selected_item.review_item_id if selected_category == 'D' else None)
             routing_source = CATEGORY_TO_ROUTING[selected_category]
             plan = ReviewPlan(
                 root_fen='startpos',
@@ -348,4 +415,16 @@ class ReviewRouter:
             'Retrying the just-failed review item immediately.',
             profile_id,
             review_plan=ReviewPlan('startpos', item.review_item_id, item.position_key, item.position_fen_normalized, tuple(item.predecessor_path), RoutingSource.IMMEDIATE_RETRY.value),
+        )
+
+    def stubborn_extreme_repeat(self, profile_id: str, item) -> RoutingDecision:
+        return RoutingDecision(
+            RoutingSource.STUBBORN_EXTREME_REPEAT.value,
+            item.review_item_id,
+            item.urgency_tier,
+            'immediate',
+            bool(item.predecessor_path),
+            'Forced bounded stubborn-extreme repeat outside ordinary deck flow.',
+            profile_id,
+            review_plan=ReviewPlan('startpos', item.review_item_id, item.position_key, item.position_fen_normalized, tuple(item.predecessor_path), RoutingSource.STUBBORN_EXTREME_REPEAT.value),
         )

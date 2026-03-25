@@ -5,7 +5,20 @@ from tkinter import messagebox, ttk
 
 
 class ReviewInspector(ttk.Frame):
-    columns = ('position', 'side', 'urgency', 'due', 'fails', 'successes', 'last_seen', 'next_due', 'routing', 'preview')
+    columns = (
+        'position',
+        'side',
+        'urgency',
+        'due',
+        'fails',
+        'success_streak',
+        'freq_retired',
+        'stubborn_state',
+        'skipped_slots',
+        'last_seen',
+        'next_due',
+        'routing',
+    )
 
     def __init__(self, master, session, refresh_callback):
         super().__init__(master)
@@ -42,7 +55,25 @@ class ReviewInspector(ttk.Frame):
         tier_rank = {'extreme_urgency': 0, 'boosted_review': 1, 'ordinary_review': 2}
         items.sort(key=lambda item: (tier_rank.get(item.urgency_tier, 3), item.due_at_utc, -item.consecutive_failures, item.last_seen_at_utc, item.review_item_id))
         for item in items:
-            self.tree.insert('', 'end', iid=item.review_item_id, values=(item.position_key[:24], item.side_to_move, item.urgency_tier, 'due' if item.due_at_utc <= item.updated_at_utc else 'scheduled', item.consecutive_failures, item.consecutive_successes, item.last_seen_at_utc or '—', item.due_at_utc, item.last_routing_reason, item.line_preview_san[:36]))
+            self.tree.insert(
+                '',
+                'end',
+                iid=item.review_item_id,
+                values=(
+                    item.position_key[:24],
+                    item.side_to_move,
+                    item.urgency_tier,
+                    'due' if item.due_at_utc <= item.updated_at_utc else 'scheduled',
+                    item.consecutive_failures,
+                    item.success_streak,
+                    item.frequency_retired_for_current_due_cycle,
+                    item.stubborn_extreme_state,
+                    item.skipped_review_slots,
+                    item.last_seen_at_utc or '—',
+                    item.due_at_utc,
+                    item.last_routing_reason,
+                ),
+            )
 
     def _delete_item(self):
         item_id = self.tree.focus()
@@ -63,9 +94,14 @@ class ReviewInspector(ttk.Frame):
                 if item.review_item_id == item_id:
                     item.consecutive_failures = 0
                     item.consecutive_successes = 0
+                    item.success_streak = 0
                     item.mastery_score = 0.0
                     item.stability_score = 0.0
                     item.urgency_tier = 'ordinary_review'
+                    item.frequency_retired_for_current_due_cycle = False
+                    item.stubborn_extreme_state = 'none'
+                    item.stubborn_extra_repeat_consumed_until_success = False
+                    item.skipped_review_slots = 0
                     item.last_routing_reason = 'manual_reset'
             self.session.review_storage.save_items(self.session.active_profile_id, items)
             self.refresh_callback()

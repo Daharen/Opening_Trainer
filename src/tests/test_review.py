@@ -11,6 +11,7 @@ from opening_trainer.review.models import ReviewItem, ReviewPathMove
 from opening_trainer.review.profile_service import ProfileService
 from opening_trainer.review.router import ReviewRouter
 from opening_trainer.review.scheduler import apply_failure, apply_success
+from opening_trainer.review.scheduler import sync_due_cycle_transition
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.settings import TrainerSettingsStore
 from opening_trainer.session import TrainingSession
@@ -87,8 +88,10 @@ def test_due_scheduling_updates_on_fail_and_pass():
     first_due = item.due_at_utc
     apply_success(item, 'scheduled_review')
     assert item.due_at_utc > first_due
+    assert item.success_streak == 1
     apply_failure(item, 'fail', 'e2e4', item.predecessor_path, item.line_preview_san, 'scheduled_review')
     assert item.due_at_utc <= item.updated_at_utc
+    assert item.success_streak == 0
 
 
 def test_reentry_path_capture_and_deterministic_replay_plan_reconstruction():
@@ -230,3 +233,52 @@ def test_settings_persist_good_toggle_and_training_depth(tmp_path):
     assert saved.active_training_ply_depth == 3
     assert reloaded.good_moves_acceptable is False
     assert reloaded.active_training_ply_depth == 3
+
+
+def test_rehabilitation_thresholds_are_exact_and_cumulative():
+    item = ReviewItem.create('default', 'k', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
+    item.urgency_tier = 'extreme_urgency'
+    item.consecutive_failures = 6
+    apply_success(item, 'extreme_urgency_review')
+    assert item.urgency_tier == 'extreme_urgency'
+    apply_success(item, 'extreme_urgency_review')
+    assert item.urgency_tier == 'boosted_review'
+    for _ in range(3):
+        apply_success(item, 'boosted_review')
+    assert item.success_streak == 5
+    assert item.urgency_tier == 'ordinary_review'
+    for _ in range(5):
+        apply_success(item, 'scheduled_review')
+    assert item.success_streak == 10
+    assert item.frequency_retired_for_current_due_cycle is True
+
+
+def test_stubborn_extreme_arms_then_forces_one_repeat_then_clears_on_success():
+    item = ReviewItem.create('default', 'k2', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
+    item.urgency_tier = 'extreme_urgency'
+    item.consecutive_failures = 4
+    apply_failure(item, 'fail', 'e2e4', item.predecessor_path, item.line_preview_san, 'extreme_urgency_review')
+    assert item.stubborn_extreme_state == 'armed_after_fifth_failure'
+    apply_failure(item, 'fail', 'e2e4', item.predecessor_path, item.line_preview_san, 'extreme_urgency_review')
+    assert item.pending_forced_stubborn_repeat is True
+    assert item.stubborn_extreme_state == 'cooldown_until_success'
+    item.pending_forced_stubborn_repeat = False
+    apply_failure(item, 'fail', 'e2e4', item.predecessor_path, item.line_preview_san, 'extreme_urgency_review')
+    assert item.pending_forced_stubborn_repeat is False
+    apply_success(item, 'extreme_urgency_review')
+    assert item.stubborn_extreme_state == 'none'
+
+
+def test_frequency_retirement_reactivates_only_after_due_cycle_transition():
+    item = ReviewItem.create('default', 'k3', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
+    item.urgency_tier = 'ordinary_review'
+    item.success_streak = 9
+    apply_success(item, 'scheduled_review')
+    assert item.frequency_retired_for_current_due_cycle is True
+    item.due_at_utc = '2099-01-01T00:00:00+00:00'
+    sync_due_cycle_transition(item)
+    assert item.frequency_retired_for_current_due_cycle is True
+    item.due_at_utc = '2000-01-01T00:00:00+00:00'
+    sync_due_cycle_transition(item)
+    assert item.frequency_retired_for_current_due_cycle is False
+    assert item.success_streak == 0
