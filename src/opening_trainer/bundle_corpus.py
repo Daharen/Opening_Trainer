@@ -330,22 +330,49 @@ class CompactSQLiteAggregateCorpusProvider:
             move_columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({moves_table})").fetchall()}
             position_key_col = _pick_column(position_columns, ("position_key", "fen_normalized", "fen", "board_fen"))
             position_id_col = _pick_column(position_columns, ("position_id", "id"))
-            move_position_id_col = _pick_column(move_columns, ("position_id", "parent_position_id", "pos_id"))
             move_key_col = _pick_column(move_columns, ("uci", "move_uci", "move_key"))
-            raw_count_col = _pick_column(move_columns, ("raw_count", "observed_count", "count"))
-            if not all((position_key_col, position_id_col, move_position_id_col, move_key_col, raw_count_col)):
+            if not all((position_key_col, position_id_col, move_key_col)):
                 raise ValueError("compact SQLite payload is missing one or more required columns")
+            move_position_id_col = _pick_column(move_columns, ("position_id", "parent_position_id", "pos_id"))
+            raw_count_col = _pick_column(move_columns, ("raw_count", "observed_count", "count"))
+            move_id_col = _pick_column(move_columns, ("move_id", "id"))
+
+            assoc_table = None
+            assoc_columns: set[str] = set()
+            if move_position_id_col is None or raw_count_col is None:
+                for table_name in table_names:
+                    if table_name in {positions_table, moves_table}:
+                        continue
+                    candidate_columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
+                    assoc_position_id_col = _pick_column(candidate_columns, ("position_id", "parent_position_id", "pos_id"))
+                    assoc_move_id_col = _pick_column(candidate_columns, ("move_id", "parent_move_id", "mv_id"))
+                    assoc_raw_count_col = _pick_column(candidate_columns, ("raw_count", "observed_count", "count"))
+                    if assoc_position_id_col and assoc_move_id_col and assoc_raw_count_col:
+                        assoc_table = table_name
+                        assoc_columns = candidate_columns
+                        break
+                if assoc_table is None:
+                    raise ValueError("compact SQLite payload is missing one or more required columns")
+                if move_id_col is None:
+                    raise ValueError("compact SQLite payload normalized schema requires move identifier column in moves table")
+
             return {
                 "positions_table": positions_table,
                 "moves_table": moves_table,
+                "query_mode": "simplified" if move_position_id_col and raw_count_col else "normalized",
                 "position_key_col": position_key_col,
                 "position_id_col": position_id_col,
                 "position_total_col": _pick_column(position_columns, ("total_observed_count", "total_observations", "observed_total", "total_count")),
                 "position_candidate_count_col": _pick_column(position_columns, ("candidate_row_count", "candidate_move_count", "candidate_count", "move_count")),
                 "move_position_id_col": move_position_id_col,
+                "move_id_col": move_id_col,
                 "move_key_col": move_key_col,
                 "move_format_col": _pick_column(move_columns, ("move_key_format", "uci_format")),
                 "move_raw_count_col": raw_count_col,
+                "assoc_table": assoc_table,
+                "assoc_position_id_col": _pick_column(assoc_columns, ("position_id", "parent_position_id", "pos_id")) if assoc_table else None,
+                "assoc_move_id_col": _pick_column(assoc_columns, ("move_id", "parent_move_id", "mv_id")) if assoc_table else None,
+                "assoc_raw_count_col": _pick_column(assoc_columns, ("raw_count", "observed_count", "count")) if assoc_table else None,
             }
         finally:
             connection.close()
@@ -374,16 +401,34 @@ class CompactSQLiteAggregateCorpusProvider:
         if row is None:
             return self._remember(position_key, None)
 
-        move_select_parts = [
-            f"{schema['move_key_col']} AS move_key",
-            f"{schema['move_raw_count_col']} AS raw_count",
-        ]
-        if schema["move_format_col"]:
-            move_select_parts.append(f"{schema['move_format_col']} AS move_key_format")
-        move_rows = connection.cursor().execute(
-            f"SELECT {', '.join(move_select_parts)} FROM {schema['moves_table']} WHERE {schema['move_position_id_col']} = ? ORDER BY {schema['move_raw_count_col']} DESC, {schema['move_key_col']} ASC",
-            (row["position_id"],),
-        ).fetchall()
+        if schema["query_mode"] == "simplified":
+            move_select_parts = [
+                f"{schema['move_key_col']} AS move_key",
+                f"{schema['move_raw_count_col']} AS raw_count",
+            ]
+            if schema["move_format_col"]:
+                move_select_parts.append(f"{schema['move_format_col']} AS move_key_format")
+            move_rows = connection.cursor().execute(
+                f"SELECT {', '.join(move_select_parts)} FROM {schema['moves_table']} WHERE {schema['move_position_id_col']} = ? ORDER BY {schema['move_raw_count_col']} DESC, {schema['move_key_col']} ASC",
+                (row["position_id"],),
+            ).fetchall()
+        else:
+            move_select_parts = [
+                f"m.{schema['move_key_col']} AS move_key",
+                f"pm.{schema['assoc_raw_count_col']} AS raw_count",
+            ]
+            if schema["move_format_col"]:
+                move_select_parts.append(f"m.{schema['move_format_col']} AS move_key_format")
+            move_rows = connection.cursor().execute(
+                (
+                    f"SELECT {', '.join(move_select_parts)} "
+                    f"FROM {schema['assoc_table']} AS pm "
+                    f"JOIN {schema['moves_table']} AS m ON m.{schema['move_id_col']} = pm.{schema['assoc_move_id_col']} "
+                    f"WHERE pm.{schema['assoc_position_id_col']} = ? "
+                    f"ORDER BY pm.{schema['assoc_raw_count_col']} DESC, m.{schema['move_key_col']} ASC"
+                ),
+                (row["position_id"],),
+            ).fetchall()
 
         candidates: list[BuilderAggregateCandidate] = []
         unsupported_count = 0

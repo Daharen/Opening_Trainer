@@ -70,6 +70,36 @@ def _write_compact_exact_sqlite_v2(db_path: Path) -> None:
         conn.close()
 
 
+def _write_compact_exact_sqlite_v2_normalized(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE positions (id INTEGER PRIMARY KEY, fen_normalized TEXT NOT NULL, total_observed_count INTEGER NOT NULL, candidate_count INTEGER NOT NULL)"
+        )
+        conn.execute("CREATE TABLE moves (id INTEGER PRIMARY KEY, uci TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE position_moves (position_id INTEGER NOT NULL, move_id INTEGER NOT NULL, raw_count INTEGER NOT NULL, "
+            "FOREIGN KEY(position_id) REFERENCES positions(id), FOREIGN KEY(move_id) REFERENCES moves(id))"
+        )
+        cursor = conn.execute(
+            "INSERT INTO positions(fen_normalized, total_observed_count, candidate_count) VALUES (?, ?, ?)",
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", 100, 3),
+        )
+        pid = int(cursor.lastrowid)
+        conn.execute("INSERT INTO moves(uci) VALUES (?)", ("e2e4",))
+        move_e2e4 = int(conn.execute("SELECT id FROM moves WHERE uci = ?", ("e2e4",)).fetchone()[0])
+        conn.execute("INSERT INTO moves(uci) VALUES (?)", ("d2d4",))
+        move_d2d4 = int(conn.execute("SELECT id FROM moves WHERE uci = ?", ("d2d4",)).fetchone()[0])
+        conn.execute("INSERT INTO moves(uci) VALUES (?)", ("g1f3",))
+        move_g1f3 = int(conn.execute("SELECT id FROM moves WHERE uci = ?", ("g1f3",)).fetchone()[0])
+        conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, ?)", (pid, move_e2e4, 70))
+        conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, ?)", (pid, move_d2d4, 20))
+        conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, ?)", (pid, move_g1f3, 10))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _write_behavioral_profile_set(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
@@ -100,6 +130,7 @@ def _write_timing_bundle(
     canonical_exact_payload_file: str | None = None,
     compatibility_exact_payload_file: str | None = None,
     compact_v2_exact_payload: bool = False,
+    compact_v2_normalized_schema: bool = False,
 ) -> Path:
     data_dir = bundle_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -174,7 +205,9 @@ def _write_timing_bundle(
     }
 
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    if compact_v2_exact_payload:
+    if compact_v2_exact_payload and compact_v2_normalized_schema:
+        _write_compact_exact_sqlite_v2_normalized(data_dir / exact_name)
+    elif compact_v2_exact_payload:
         _write_compact_exact_sqlite_v2(data_dir / exact_name)
     else:
         _write_exact_sqlite(data_dir / exact_name)
@@ -281,6 +314,103 @@ def test_live_session_path_uses_compact_v2_bundle_for_black_opponent_first_turn(
     assert session.last_opponent_choice is not None
     assert session.last_opponent_choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
     assert session.board.board.move_stack
+
+
+def test_live_session_path_uses_normalized_compact_v2_bundle_for_black_opponent_first_turn(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        payload_format="sqlite_compact_v2",
+        payload_version="2",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+        compact_v2_exact_payload=True,
+        compact_v2_normalized_schema=True,
+    )
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["increment_seconds"] = 0
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_black_start_normalized"))
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+
+    pending = session.prepare_pending_opponent_action()
+    assert pending is not None
+    assert pending.choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
+    assert pending.choice.bundle_kind == "timing_conditioned"
+    assert pending.choice.timing_overlay_source in {"json_file", "behavioral_profile_set_sqlite"}
+    assert pending.choice.exact_payload_path is not None
+
+    committed = session.commit_pending_opponent_action()
+    assert committed is True
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
+    assert session.board.board.move_stack
+
+
+def test_normalized_compact_v2_bundle_supports_ordinary_initial_position_selection_without_stockfish(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        payload_format="sqlite_compact_v2",
+        payload_version="2",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+        compact_v2_exact_payload=True,
+        compact_v2_normalized_schema=True,
+    )
+    provider = BuilderAggregateOpponentProvider(bundle_dir, rng=random.Random(5))
+    choice = provider.choose_move(chess.Board())
+
+    assert choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
+    assert choice.corpus_lookup_reason_code == "corpus_hit"
+    assert choice.bundle_kind == "timing_conditioned"
+    assert choice.timing_overlay_source in {"json_file", "behavioral_profile_set_sqlite"}
+    assert choice.exact_payload_path is not None
+    assert choice.move.uci() in {"e2e4", "d2d4", "g1f3"}
+    assert choice.selected_via != "stockfish_fallback"
+
+
+def test_normalized_compact_v2_live_path_keeps_bundle_aware_timing_diagnostics(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        payload_format="sqlite_compact_v2",
+        payload_version="2",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+        compact_v2_exact_payload=True,
+        compact_v2_normalized_schema=True,
+    )
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["increment_seconds"] = 0
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_diag_normalized"))
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+
+    pending = session.prepare_pending_opponent_action()
+    assert pending is not None
+    committed = session.commit_pending_opponent_action()
+    assert committed is True
+
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
+    assert session.last_opponent_choice.bundle_kind == "timing_conditioned"
+    assert session.timing_diagnostics.overlay_source in {"json_file", "behavioral_profile_set_sqlite"}
+    assert session.last_opponent_choice.exact_payload_path is not None
 
 
 def test_final_canonical_compact_v2_bundle_loader_failure_raises_loudly(tmp_path):
