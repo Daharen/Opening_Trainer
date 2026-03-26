@@ -538,6 +538,7 @@ def test_force_ordinary_corpus_play_bypasses_review_predecessor_path(tmp_path):
     session.player_color = chess.BLACK
     session.state = SessionState.OPPONENT_TURN
     session.timed_state = session._build_timed_state_from_bundle()
+    session.last_opponent_choice = None
 
     session._handle_opponent_turn()
 
@@ -620,3 +621,42 @@ def test_timing_summary_and_diagnostics_use_same_context_key(tmp_path):
     summary = session._timing_summary_text()
     assert f"Overlay source: {session.timing_diagnostics.overlay_source}" in summary
     assert f"Context: {session.timing_diagnostics.matched_context_key or session.timing_diagnostics.effective_context_key or 'n/a'}" in summary
+
+
+def test_gui_mode_prepares_pending_opponent_action_without_blocking_sleep(tmp_path, monkeypatch):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, mode="gui", review_storage=ReviewStorage(tmp_path / "profiles_gui_nonblocking"))
+    session.start_new_game()
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("opening_trainer.session.time.sleep", lambda seconds: sleep_calls.append(seconds))
+
+    pending = session.prepare_pending_opponent_action()
+
+    assert pending is not None
+    assert session.pending_opponent_action is not None
+    assert session.last_opponent_choice is None
+    assert sleep_calls == []
+
+
+def test_pending_opponent_action_commits_move_and_diagnostics(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, mode="gui", review_storage=ReviewStorage(tmp_path / "profiles_gui_commit"))
+    session.start_new_game()
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+    stack_before = len(session.board.board.move_stack)
+
+    pending = session.prepare_pending_opponent_action()
+    committed = session.commit_pending_opponent_action()
+
+    assert pending is not None
+    assert committed is True
+    assert len(session.board.board.move_stack) == stack_before + 1
+    assert session.last_opponent_choice is not None
+    assert session.timing_diagnostics.visible_delay_reason in {"applied", "no_overlay_match", "sampled_think_time_missing", "review_predecessor_path"}

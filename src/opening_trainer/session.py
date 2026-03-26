@@ -54,6 +54,18 @@ class TimedSessionState:
     previous_opponent_think_seconds: float | None = None
 
 
+@dataclass
+class PendingOpponentAction:
+    board_before: chess.Board
+    choice: object
+    native_components: dict[str, object] | None
+    adjusted_components: dict[str, object] | None
+    effective_key: str | None
+    fallback_keys_attempted: tuple[str, ...]
+    review_predecessor_bypassed: bool
+    visible_delay_seconds: float
+
+
 class TrainingSession:
     restart_delay_ms = 900
     opponent_visible_delay_min_seconds = 0.15
@@ -99,6 +111,7 @@ class TrainingSession:
         self._apply_settings(self.settings)
         self.timed_state: TimedSessionState | None = None
         self._player_turn_started_at: float | None = None
+        self.pending_opponent_action: PendingOpponentAction | None = None
 
     @property
     def timing_diagnostics(self) -> LiveTimingDebugState:
@@ -177,6 +190,7 @@ class TrainingSession:
         self.review_storage.save_items(self.active_profile_id, items)
 
     def start_new_game(self) -> SessionView:
+        self.cancel_pending_opponent_action()
         self.state = SessionState.STARTING_GAME
         self.board.reset()
         self.player_color = random.choice([chess.WHITE, chess.BLACK])
@@ -392,7 +406,8 @@ class TrainingSession:
             self._resolve_success()
             return self.get_view()
         self.state = SessionState.OPPONENT_TURN
-        self.advance_until_user_turn()
+        if self.mode != 'gui':
+            self.advance_until_user_turn()
         return self.get_view()
 
 
@@ -467,6 +482,18 @@ class TrainingSession:
         return f'Review item improved; next due at {item.due_at_utc}.', next_decision.routing_source
 
     def _handle_opponent_turn(self) -> None:
+        pending = self.prepare_pending_opponent_action()
+        if pending is None:
+            return
+        if pending.visible_delay_seconds > 0:
+            time.sleep(pending.visible_delay_seconds)
+        self.commit_pending_opponent_action()
+
+    def prepare_pending_opponent_action(self) -> PendingOpponentAction | None:
+        if self.state != SessionState.OPPONENT_TURN:
+            return None
+        if self.pending_opponent_action is not None:
+            return self.pending_opponent_action
         board_before = self.board.board.copy(stack=True)
         scripted = self._planned_opponent_move(board_before)
         review_predecessor_bypassed = False
@@ -483,38 +510,54 @@ class TrainingSession:
         else:
             choice = self.opponent.choose_move_with_runtime_context(self.board.board, timing_context=timing_context)
         visible_delay_seconds, visible_delay_reason = self._visible_opponent_delay_seconds(choice.sampled_think_time_seconds, choice=choice)
-        if visible_delay_seconds > 0:
-            time.sleep(visible_delay_seconds)
-        self._consume_opponent_think_time(choice.sampled_think_time_seconds)
         choice = replace(
             choice,
             visible_delay_applied=visible_delay_seconds > 0,
             visible_delay_seconds=visible_delay_seconds if visible_delay_seconds > 0 else None,
             visible_delay_reason=visible_delay_reason,
         )
-        move = choice.move
-        self.last_opponent_choice = choice
-        san = self.board.board.san(move)
-        self.board.board.push(move)
-        self._record_path_move(board_before, move)
-        self._update_timing_diagnostics(
-            choice,
+        self.pending_opponent_action = PendingOpponentAction(
+            board_before=board_before,
+            choice=choice,
             native_components=native_components,
             adjusted_components=adjusted_components,
             effective_key=effective_key,
             fallback_keys_attempted=fallback_keys_attempted,
             review_predecessor_bypassed=review_predecessor_bypassed,
+            visible_delay_seconds=visible_delay_seconds,
+        )
+        return self.pending_opponent_action
+
+    def commit_pending_opponent_action(self) -> bool:
+        pending = self.pending_opponent_action
+        if pending is None:
+            return False
+        self.pending_opponent_action = None
+        choice = pending.choice
+        self._consume_opponent_think_time(choice.sampled_think_time_seconds)
+        move = choice.move
+        self.last_opponent_choice = choice
+        san = self.board.board.san(move)
+        self.board.board.push(move)
+        self._record_path_move(pending.board_before, move)
+        self._update_timing_diagnostics(
+            choice,
+            native_components=pending.native_components,
+            adjusted_components=pending.adjusted_components,
+            effective_key=pending.effective_key,
+            fallback_keys_attempted=pending.fallback_keys_attempted,
+            review_predecessor_bypassed=pending.review_predecessor_bypassed,
         )
         log_line(
             "timing_debug: "
             f"override_enabled={self.developer_timing_overrides.enabled}; "
-            f"raw_native={native_components}; "
-            f"override_adjusted={adjusted_components}; "
+            f"raw_native={pending.native_components}; "
+            f"override_adjusted={pending.adjusted_components}; "
             f"lookup_mode={choice.timing_lookup_mode}; "
             f"bundle_invariant_time_control={choice.timing_bundle_invariant_time_control_id or 'n/a'}; "
             f"bundle_invariant_rating_band={choice.timing_bundle_invariant_rating_band or 'n/a'}; "
-            f"effective_context={effective_key or 'n/a'}; "
-            f"fallback_keys={list(choice.timing_fallback_keys_attempted) or list(fallback_keys_attempted)}; "
+            f"effective_context={pending.effective_key or 'n/a'}; "
+            f"fallback_keys={list(choice.timing_fallback_keys_attempted) or list(pending.fallback_keys_attempted)}; "
             f"overlay_matched={choice.timing_overlay_active}; "
             f"invariants_ignored_for_match={choice.timing_invariants_ignored_for_match}; "
             f"move_profile={choice.move_pressure_profile_id or 'n/a'}; "
@@ -522,15 +565,19 @@ class TrainingSession:
             f"sampled_think={choice.sampled_think_time_seconds if choice.sampled_think_time_seconds is not None else 'n/a'}; "
             f"visible_delay={choice.visible_delay_seconds if choice.visible_delay_seconds is not None else 'none'}; "
             f"visible_delay_reason={choice.visible_delay_reason or 'none'}; "
-            f"review_predecessor_bypassed={review_predecessor_bypassed}",
+            f"review_predecessor_bypassed={pending.review_predecessor_bypassed}",
             tag="corpus",
         )
         log_line(f'Opponent plays: {san}{self._format_opponent_choice_detail(choice)}', tag='corpus')
         if self._resolve_terminal_board_state():
-            return
+            return True
         self.state = SessionState.PLAYER_TURN if self.board.turn() == self.player_color else SessionState.OPPONENT_TURN
         if self.state == SessionState.PLAYER_TURN:
             self._player_turn_started_at = time.monotonic()
+        return True
+
+    def cancel_pending_opponent_action(self) -> None:
+        self.pending_opponent_action = None
 
     def _planned_opponent_move(self, board: chess.Board):
         if not self.active_review_plan:
@@ -853,5 +900,6 @@ class TrainingSession:
             log_line(line, tag='evaluation')
 
     def close(self) -> None:
+        self.cancel_pending_opponent_action()
         self.opponent.close()
         self.evaluator.engine_authority.close()

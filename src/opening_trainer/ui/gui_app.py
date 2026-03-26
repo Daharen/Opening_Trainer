@@ -64,6 +64,7 @@ class OpeningTrainerGUI:
         self._shutdown_started = False
         self._is_shutting_down = False
         self._after_handles: set[str] = set()
+        self._pending_opponent_after_handle: str | None = None
         self._child_windows: list[tk.Toplevel] = []
 
         self.root.columnconfigure(0, weight=1)
@@ -324,6 +325,7 @@ class OpeningTrainerGUI:
         return {'session': session, 'bundle_path': str(compatibility.bundle_dir)}
 
     def _apply_loaded_bundle(self, payload: dict[str, object]) -> None:
+        self._cancel_pending_opponent_callback()
         self.session = payload['session']
         self.panel_visible = self._load_panel_visibility_preference()
         self.move_list_visible = self._load_move_list_visibility_preference()
@@ -358,6 +360,7 @@ class OpeningTrainerGUI:
         ProfileDialog(self.root, self.session, self._refresh_supporting_surfaces).open()
 
     def _start_game(self, loading_message: str | None = None):
+        self._cancel_pending_opponent_callback()
         if loading_message is None:
             self.session.start_new_game()
             self.selected_square = None
@@ -564,6 +567,7 @@ class OpeningTrainerGUI:
         return OutcomeModal(self.root, contract, self._acknowledge_outcome)
 
     def _acknowledge_outcome(self):
+        self._cancel_pending_opponent_callback()
         self.pending_restart = False
         self.selected_square = None
         self.session.start_new_game()
@@ -629,8 +633,10 @@ class OpeningTrainerGUI:
         if move is None:
             self._refresh_view('Illegal move selection.')
             return
+        self.board_view.cancel_drag()
         self.session.submit_user_move_uci(move.uci())
         self._refresh_view()
+        self._schedule_pending_opponent_commit()
 
     def _build_move(self, from_square: chess.Square, to_square: chess.Square, board: chess.Board) -> chess.Move | None:
         candidate = chess.Move(from_square, to_square)
@@ -693,10 +699,54 @@ class OpeningTrainerGUI:
         root = getattr(self, 'root', None)
         if root is None:
             return
-        handle = root.after(delay_ms, callback)
+        def wrapped_callback():
+            self._after_handles.discard(handle)
+            callback()
+
+        handle = root.after(delay_ms, wrapped_callback)
         if not hasattr(self, '_after_handles'):
             self._after_handles = set()
         self._after_handles.add(handle)
+        return handle
+
+    def _schedule_pending_opponent_commit(self) -> None:
+        if self.session.state != SessionState.OPPONENT_TURN:
+            return
+        pending = self.session.prepare_pending_opponent_action()
+        if pending is None:
+            return
+        self._cancel_pending_opponent_callback()
+        delay_ms = max(0, int(round(pending.visible_delay_seconds * 1000)))
+        if delay_ms == 0:
+            self._commit_scheduled_opponent_action()
+            return
+        self._pending_opponent_after_handle = self._schedule_after(delay_ms, self._commit_scheduled_opponent_action)
+
+    def _commit_scheduled_opponent_action(self) -> None:
+        self._pending_opponent_after_handle = None
+        if getattr(self, '_is_shutting_down', False):
+            return
+        if self.session.pending_opponent_action is None:
+            return
+        self.session.commit_pending_opponent_action()
+        self._refresh_view()
+        if self.session.state == SessionState.OPPONENT_TURN:
+            self._schedule_pending_opponent_commit()
+
+    def _cancel_pending_opponent_callback(self) -> None:
+        handle = getattr(self, '_pending_opponent_after_handle', None)
+        self._pending_opponent_after_handle = None
+        if handle is not None:
+            root = getattr(self, 'root', None)
+            try:
+                if root is not None:
+                    root.after_cancel(handle)
+            except Exception:
+                pass
+            self._after_handles.discard(handle)
+        session = getattr(self, 'session', None)
+        if session is not None:
+            session.cancel_pending_opponent_action()
 
     def _cancel_after_handles(self) -> None:
         handles = list(getattr(self, '_after_handles', set()))
@@ -721,6 +771,7 @@ class OpeningTrainerGUI:
         self._shutdown_started = True
         self._is_shutting_down = True
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
+        self._cancel_pending_opponent_callback()
         self._cancel_after_handles()
         log_line('APP_SHUTDOWN_CANCEL_TIMERS_DONE', tag='startup')
         self._close_optional_component('dev_console')

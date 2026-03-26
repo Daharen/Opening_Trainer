@@ -89,6 +89,9 @@ class FakeSession:
     def corpus_summary_text(self):
         return 'Corpus: 1000-1200 | Retained depth: 10'
 
+    def cancel_pending_opponent_action(self):
+        return None
+
 
 class RecordingModal:
     def __init__(self, master, contract, on_continue):
@@ -473,10 +476,16 @@ def test_initialize_app_shell_recovers_when_remembered_bundle_missing(tmp_path):
 class FakeRoot:
     def __init__(self):
         self.after_calls = []
+        self.cancelled = []
         self.updated = 0
 
     def after(self, delay, callback):
-        self.after_calls.append((delay, callback))
+        handle = f'h{len(self.after_calls)}'
+        self.after_calls.append((delay, callback, handle))
+        return handle
+
+    def after_cancel(self, handle):
+        self.cancelled.append(handle)
 
     def update_idletasks(self):
         self.updated += 1
@@ -586,12 +595,52 @@ def test_start_loading_job_shows_loading_and_polls_without_touching_widgets_from
     assert gui.start_button.state == 'disabled'
     assert gui.root.after_calls
 
-    _delay, callback = gui.root.after_calls.pop(0)
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
     callback()
 
     assert observed['success'] == 'ready'
     assert gui.loading_progress.stopped is True
     assert gui.start_button.state == 'normal'
+
+
+def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._pending_opponent_after_handle = None
+    committed = {'count': 0}
+    gui._refresh_view = lambda: None
+    gui.session = type('Session', (), {
+        'state': SessionState.OPPONENT_TURN,
+        'pending_opponent_action': object(),
+        'prepare_pending_opponent_action': lambda self=None: type('Pending', (), {'visible_delay_seconds': 0.2})(),
+        'commit_pending_opponent_action': lambda self=None: committed.__setitem__('count', committed['count'] + 1),
+        'cancel_pending_opponent_action': lambda self=None: None,
+    })()
+
+    OpeningTrainerGUI._schedule_pending_opponent_commit(gui)
+
+    assert len(gui.root.after_calls) == 1
+    assert committed['count'] == 0
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+    assert committed['count'] == 1
+
+
+def test_cancel_pending_opponent_callback_cancels_after_handle():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = {'h5'}
+    gui._pending_opponent_after_handle = 'h5'
+    cancelled = {'count': 0}
+    gui.session = type('Session', (), {'cancel_pending_opponent_action': lambda self=None: cancelled.__setitem__('count', cancelled['count'] + 1)})()
+
+    OpeningTrainerGUI._cancel_pending_opponent_callback(gui)
+
+    assert gui.root.cancelled == ['h5']
+    assert gui._pending_opponent_after_handle is None
+    assert cancelled['count'] == 1
 
 
 def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):
