@@ -60,6 +60,10 @@ class OpponentMoveChoice:
     timing_attempted_context_key: str | None = None
     timing_fallback_keys_attempted: tuple[str, ...] = ()
     visible_delay_reason: str | None = None
+    timing_lookup_mode: str = "full_key"
+    timing_bundle_invariant_time_control_id: str | None = None
+    timing_bundle_invariant_rating_band: str | None = None
+    timing_invariants_ignored_for_match: bool = False
 
 
 class OpponentMoveProvider(Protocol):
@@ -257,6 +261,10 @@ class BuilderAggregateOpponentProvider:
         modulation_summary: dict[str, object] | None = None
         attempted_context_key: str | None = None
         fallback_keys_attempted: tuple[str, ...] = ()
+        timing_lookup_mode = self.bundle.timing_lookup_mode
+        timing_bundle_invariant_time_control_id = self.bundle.bundle_invariant_time_control_id
+        timing_bundle_invariant_rating_band = self.bundle.bundle_invariant_rating_band
+        timing_invariants_ignored_for_match = False
         if timing_context and self.bundle.timing_overlay_available:
             clock_pressure_bucket = str(timing_context.get("clock_pressure_bucket_override")) if timing_context.get("clock_pressure_bucket_override") else bucket_clock_pressure(float(timing_context.get("remaining_ratio", 1.0)))
             prev_opp_think_bucket = str(timing_context.get("prev_opp_think_bucket_override")) if timing_context.get("prev_opp_think_bucket_override") else bucket_prev_opp_think(timing_context.get("prev_opp_think_seconds"))
@@ -279,7 +287,10 @@ class BuilderAggregateOpponentProvider:
                 timing_overlay_active = True
                 timing_fallback_used = overlay.fallback_used
                 timing_context_key = overlay.matched_key
+                attempted_context_key = overlay.attempted_key
                 fallback_keys_attempted = overlay.fallback_keys
+                timing_lookup_mode = overlay.lookup_mode
+                timing_invariants_ignored_for_match = overlay.invariants_ignored
                 move_pressure_profile_id = overlay.move_pressure_profile.profile_id
                 think_time_profile_id = overlay.think_time_profile.profile_id
                 sampled_think_time_seconds = sample_think_time_seconds(
@@ -333,6 +344,10 @@ class BuilderAggregateOpponentProvider:
             exact_payload_path=str(self.bundle.exact_payload_path) if self.bundle.exact_payload_path is not None else None,
             timing_attempted_context_key=attempted_context_key,
             timing_fallback_keys_attempted=fallback_keys_attempted,
+            timing_lookup_mode=timing_lookup_mode,
+            timing_bundle_invariant_time_control_id=timing_bundle_invariant_time_control_id,
+            timing_bundle_invariant_rating_band=timing_bundle_invariant_rating_band,
+            timing_invariants_ignored_for_match=timing_invariants_ignored_for_match,
         )
 
 
