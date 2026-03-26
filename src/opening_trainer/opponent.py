@@ -17,6 +17,7 @@ from .evaluation import EvaluatorConfig
 from .evaluation.engine_process import launch_engine, shutdown_engine
 from .runtime import corpus_status_detail
 from .timing import (
+    DynamicTimingContext,
     TimingConditionedCorpusBundleLoader,
     TimingContext,
     apply_move_pressure_modulation,
@@ -24,6 +25,7 @@ from .timing import (
     bucket_opening_ply_band,
     bucket_prev_opp_think,
     fallback_keys_for_context,
+    fallback_keys_for_dynamic_context,
     sample_think_time_seconds,
 )
 
@@ -277,8 +279,17 @@ class BuilderAggregateOpponentProvider:
                 opening_ply_band=opening_ply_band,
             )
             timing_context_key = context.key()
-            attempted_context_key = context.key()
-            fallback_keys_attempted = tuple(fallback_keys_for_context(context))
+            if timing_lookup_mode == "reduced_dynamic":
+                dynamic_context = DynamicTimingContext(
+                    clock_pressure_bucket=context.clock_pressure_bucket,
+                    prev_opp_think_bucket=context.prev_opp_think_bucket,
+                    opening_ply_band=context.opening_ply_band,
+                )
+                attempted_context_key = dynamic_context.key()
+                fallback_keys_attempted = tuple(fallback_keys_for_dynamic_context(dynamic_context))
+            else:
+                attempted_context_key = context.key()
+                fallback_keys_attempted = tuple(fallback_keys_for_context(context))
             overlay = self.bundle.resolve_overlay(context)
             if overlay is not None:
                 adjusted_weights, summary = apply_move_pressure_modulation(base_weights, overlay.move_pressure_profile, context.clock_pressure_bucket)

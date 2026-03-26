@@ -756,6 +756,11 @@ class TrainingSession:
             "stockfish_fallback": "stockfish fallback",
             "random_legal_move": "random fallback",
         }
+        bundle = getattr(getattr(self.opponent, "bundle_provider", None), "bundle", None)
+        inferred_lookup_mode = getattr(bundle, "timing_lookup_mode", "full_key")
+        runtime_lookup_mode = choice.timing_lookup_mode
+        if not choice.timing_attempted_context_key and not choice.timing_fallback_keys_attempted:
+            runtime_lookup_mode = inferred_lookup_mode
         self.live_timing_debug_state = LiveTimingDebugState(
             bundle_path=str(self.runtime_context.config.corpus_bundle_dir) if self.runtime_context.config.corpus_bundle_dir else None,
             overlay_source=self._normalize_overlay_source(choice.timing_overlay_source),
@@ -764,7 +769,7 @@ class TrainingSession:
             effective_context_key=choice.timing_attempted_context_key or effective_key,
             fallback_keys_attempted=tuple(choice.timing_fallback_keys_attempted) if choice.timing_fallback_keys_attempted else tuple(fallback_keys_attempted),
             matched_context_key=choice.timing_context_key if choice.timing_overlay_active else None,
-            lookup_mode=choice.timing_lookup_mode,
+            lookup_mode=runtime_lookup_mode,
             bundle_invariant_time_control_id=choice.timing_bundle_invariant_time_control_id,
             bundle_invariant_rating_band=choice.timing_bundle_invariant_rating_band,
             invariants_ignored_for_match=choice.timing_invariants_ignored_for_match,

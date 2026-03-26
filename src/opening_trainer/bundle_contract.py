@@ -176,9 +176,6 @@ def is_supported_timing_conditioned_bundle(manifest: dict[str, object], bundle_d
 
 
 def classify_bundle_contract(manifest: dict[str, object]) -> str:
-    if manifest.get("build_status") == "aggregation_complete":
-        return "legacy_aggregate"
-
     timing_keys = (
         "timing_overlay",
         "timing_overlay_file",
@@ -194,4 +191,6 @@ def classify_bundle_contract(manifest: dict[str, object]) -> str:
     )
     if any(key in manifest for key in timing_keys):
         return "timing_conditioned"
+    if manifest.get("build_status") == "aggregation_complete":
+        return "legacy_aggregate"
     return "unknown"

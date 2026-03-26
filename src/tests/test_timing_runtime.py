@@ -191,6 +191,10 @@ def test_timing_bundle_loader_and_fallback_resolution(tmp_path):
     bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=False, use_json_overlay=True)
     handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
 
+    assert handle.bundle_kind == "timing_conditioned"
+    assert handle.timing_lookup_mode == "reduced_dynamic"
+    assert handle.bundle_invariant_time_control_id == "rapid_300_0"
+    assert handle.bundle_invariant_rating_band == "1200-1399"
     assert handle.timing_overlay_available is True
     context = TimingContext("rapid_300_0", "1200-1399", "medium", "short", "01-10")
     direct = handle.resolve_overlay(context)
@@ -201,6 +205,31 @@ def test_timing_bundle_loader_and_fallback_resolution(tmp_path):
     fallback = handle.resolve_overlay(fallback_context)
     assert fallback is not None
     assert fallback.fallback_used is True
+
+
+def test_legacy_aggregate_bundle_still_classifies_without_timing_markers(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "build_status": "aggregation_complete",
+        "position_key_format": "fen_normalized",
+        "move_key_format": "uci",
+        "payload_status": "counts_preserved",
+        "sqlite_corpus_file": "data/exact_corpus.sqlite",
+    }
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _write_exact_sqlite(data_dir / "exact_corpus.sqlite")
+    row = {
+        "position_key": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+        "total_observations": 100,
+        "candidate_moves": [{"uci": "e2e4", "raw_count": 70}],
+    }
+    (data_dir / "aggregated_position_move_counts.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    assert handle.bundle_kind == "legacy_aggregate"
+    assert handle.timing_lookup_mode == "full_key"
 
 
 
@@ -297,6 +326,63 @@ def test_full_key_lookup_mode_still_supported_when_multi_scope_is_explicit(tmp_p
 
     unmatched = handle.resolve_overlay(TimingContext("blitz_180_0", "1600-1799", "medium", "none", "01-10"))
     assert unmatched is None
+
+
+
+def test_unmatched_reduced_dynamic_lookup_reports_reduced_attempted_keys(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    provider = BuilderAggregateOpponentProvider(bundle_dir, rng=random.Random(3))
+
+    choice = provider.choose_move(
+        chess.Board(),
+        timing_context={
+            "time_control_id": "rapid_300_0",
+            "mover_elo_band": "1200-1399",
+            "remaining_ratio": 0.40,
+            "remaining_seconds": 120.0,
+            "prev_opp_think_bucket_override": "long",
+            "opening_ply_band_override": "31+",
+        },
+    )
+
+    assert choice.timing_lookup_mode == "reduced_dynamic"
+    assert choice.timing_overlay_active is False
+    assert choice.timing_attempted_context_key == "medium|long|31+"
+    assert choice.timing_fallback_keys_attempted == ("medium|long|31+", "medium|none|31+", "medium|31+", "medium")
+
+
+
+def test_unmatched_full_key_lookup_reports_full_attempted_keys(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        timing_overlay_scope="multi_scope",
+    )
+    provider = BuilderAggregateOpponentProvider(bundle_dir, rng=random.Random(3))
+
+    choice = provider.choose_move(
+        chess.Board(),
+        timing_context={
+            "time_control_id": "rapid_300_0",
+            "mover_elo_band": "1200-1399",
+            "remaining_ratio": 0.40,
+            "remaining_seconds": 120.0,
+            "prev_opp_think_bucket_override": "long",
+            "opening_ply_band_override": "31+",
+        },
+    )
+
+    assert choice.timing_lookup_mode == "full_key"
+    assert choice.timing_overlay_active is False
+    assert choice.timing_attempted_context_key == "rapid_300_0|1200-1399|medium|long|31+"
+    assert choice.timing_fallback_keys_attempted == (
+        "rapid_300_0|1200-1399|medium|long|31+",
+        "rapid_300_0|1200-1399|medium|none|31+",
+        "rapid_300_0|1200-1399|medium|31+",
+        "rapid_300_0|1200-1399|medium",
+        "rapid_300_0|1200-1399",
+    )
 
 
 
