@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 import sqlite3
 from pathlib import Path
@@ -48,16 +49,29 @@ def _write_exact_sqlite(db_path: Path) -> None:
         conn.close()
 
 
-def _write_behavioral_profile_set(db_path: Path) -> None:
+def _write_behavioral_profile_set(
+    db_path: Path,
+    *,
+    context_rows: list[tuple[str, str, str, int]] | None = None,
+) -> None:
+    if db_path.exists():
+        db_path.unlink()
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("CREATE TABLE move_pressure_profiles (profile_id TEXT PRIMARY KEY, pressure_sensitivity REAL, decisiveness REAL, move_diversity REAL)")
         conn.execute("CREATE TABLE think_time_profiles (profile_id TEXT PRIMARY KEY, base_time_scale REAL, spread REAL, short_mass REAL, deep_think_tail_mass REAL, timeout_tail_mass REAL)")
-        conn.execute("CREATE TABLE context_profile_map (context_key TEXT PRIMARY KEY, move_pressure_profile_id TEXT, think_time_profile_id TEXT)")
+        conn.execute(
+            "CREATE TABLE context_profile_map (context_key TEXT PRIMARY KEY, move_pressure_profile_id TEXT, think_time_profile_id TEXT, support_count INTEGER)"
+        )
         conn.execute("INSERT INTO move_pressure_profiles VALUES ('mp_fast', 0.04, 0.7, 0.08)")
+        conn.execute("INSERT INTO move_pressure_profiles VALUES ('mp_slow', 0.02, 0.2, 0.25)")
         conn.execute("INSERT INTO think_time_profiles VALUES ('tt_fast', 2.0, 1.0, 0.3, 0.2, 0.1)")
-        conn.execute("INSERT INTO context_profile_map VALUES ('rapid_300_0|1200-1399|medium|short|01-10', 'mp_fast', 'tt_fast')")
-        conn.execute("INSERT INTO context_profile_map VALUES ('rapid_300_0|1200-1399|medium|none|01-10', 'mp_fast', 'tt_fast')")
+        conn.execute("INSERT INTO think_time_profiles VALUES ('tt_slow', 3.0, 1.2, 0.2, 0.3, 0.05)")
+        rows = context_rows or [
+            ("rapid_300_0|1200-1399|medium|short|01-10", "mp_fast", "tt_fast", 10),
+            ("rapid_300_0|1200-1399|medium|none|01-10", "mp_fast", "tt_fast", 8),
+        ]
+        conn.executemany("INSERT INTO context_profile_map VALUES (?, ?, ?, ?)", rows)
         conn.commit()
     finally:
         conn.close()
@@ -168,6 +182,77 @@ def test_timing_bundle_loader_reads_overlay_from_behavioral_profile_set_sqlite(t
     direct = handle.resolve_overlay(context)
     assert direct is not None
     assert direct.fallback_used is False
+
+
+def test_overlay_sqlite_loader_exports_runtime_vocabulary_and_alias_keys(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=False)
+    manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["target_rating_band"] = "1000-1200"
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _write_behavioral_profile_set(
+        bundle_dir / "data" / "behavioral_profile_set.sqlite",
+        context_rows=[
+            ("rapid_300_0|1000-1199|comfortable|none|01-10", "mp_fast", "tt_fast", 7),
+            ("rapid_300_0|1200-1399|comfortable|none|01-10", "mp_fast", "tt_fast", 9),
+        ],
+    )
+
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    assert handle.overlay is not None
+    assert handle.overlay.timing_runtime_elo_band_vocabulary == ("1000-1199", "1200-1399")
+    assert handle.overlay.timing_display_elo_band == "1000-1200"
+    assert handle.overlay.timing_display_to_runtime_elo_band_aliases == {"1000-1200": ("1000-1199", "1200-1399")}
+    assert "rapid_300_0|1000-1199|comfortable|none|01-10" in handle.overlay.context_profile_map
+    assert "rapid_300_0|1200-1399|comfortable|none|01-10" in handle.overlay.context_profile_map
+    assert "rapid_300_0|1000-1200|comfortable|none|01-10" in handle.overlay.context_profile_map
+
+
+def test_overlay_alias_collision_uses_support_count_then_deterministic_tiebreak(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=False)
+    manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["target_rating_band"] = "400-600"
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _write_behavioral_profile_set(
+        bundle_dir / "data" / "behavioral_profile_set.sqlite",
+        context_rows=[
+            ("rapid_300_0|400-599|comfortable|none|01-10", "mp_slow", "tt_slow", 3),
+            ("rapid_300_0|600-799|comfortable|none|01-10", "mp_fast", "tt_fast", 11),
+        ],
+    )
+
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    assert handle.overlay is not None
+    alias_key = "rapid_300_0|400-600|comfortable|none|01-10"
+    assert handle.overlay.context_profile_map[alias_key] == {
+        "move_pressure_profile_id": "mp_fast",
+        "think_time_profile_id": "tt_fast",
+    }
+    assert handle.overlay.timing_overlay_alias_conflicts
+    assert handle.overlay.timing_overlay_alias_conflicts[0]["chosen_canonical_key"] == "rapid_300_0|600-799|comfortable|none|01-10"
+
+
+def test_overlay_alias_generation_is_deterministic_and_sqlite_file_is_unchanged(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=False)
+    manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["target_rating_band"] = "400-600"
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    db_path = bundle_dir / "data" / "behavioral_profile_set.sqlite"
+    _write_behavioral_profile_set(
+        db_path,
+        context_rows=[
+            ("rapid_300_0|400-599|comfortable|none|01-10", "mp_fast", "tt_fast", 5),
+            ("rapid_300_0|600-799|comfortable|none|01-10", "mp_fast", "tt_fast", 5),
+        ],
+    )
+    before = hashlib.sha256(db_path.read_bytes()).hexdigest()
+    first = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    second = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    after = hashlib.sha256(db_path.read_bytes()).hexdigest()
+
+    assert first.overlay is not None and second.overlay is not None
+    assert first.overlay.context_profile_map == second.overlay.context_profile_map
+    assert first.overlay.timing_display_to_runtime_elo_band_aliases == second.overlay.timing_display_to_runtime_elo_band_aliases
+    assert before == after
 
 
 

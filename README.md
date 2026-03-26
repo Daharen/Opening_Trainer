@@ -218,6 +218,20 @@ The runtime provider keeps enough metadata to explain later:
 - whether fallback/backoff was applied
 - what alternatives existed
 
+### Timing overlay ELO band semantics
+
+Timing-conditioned bundles can now carry two parallel ELO-band contracts for timing overlay lookups:
+
+1. **Display/filter band**: the human-facing corpus selection interval (for example `400-600` or `1000-1200`).
+2. **Canonical runtime bucket band**: the derived timing vocabulary used by `context_profile_map` (for example `400-599`, `600-799`, `1000-1199`, `1200-1399`).
+
+When loading timing overlays from `behavioral_profile_set.sqlite`, the runtime keeps canonical context keys intact, discovers the canonical mover-band vocabulary, and exports compatibility alias keys for display/filter bands that overlap canonical buckets at interval boundaries (for example exact `600` or exact `1200`).
+
+This preserves canonical behavioral profile semantics while allowing both lookup styles to resolve during transition:
+
+- canonical key style: `600+0|400-599|comfortable|none|01-10`
+- display/filter key style: `600+0|400-600|comfortable|none|01-10`
+
 ## Supported Run Modes
 
 The repository can currently be started in the following ways:

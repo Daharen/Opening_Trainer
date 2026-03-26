@@ -73,6 +73,12 @@ class TimingOverlayPayload:
     think_time_profiles: dict[str, ThinkTimeProfile]
     context_contract_version: str | None
     timing_overlay_policy_version: str | None
+    timing_runtime_elo_band_policy_version: str | None = None
+    timing_runtime_elo_band_vocabulary: tuple[str, ...] = ()
+    timing_display_elo_band: str | None = None
+    timing_display_to_runtime_elo_band_aliases: dict[str, tuple[str, ...]] | None = None
+    timing_overlay_alias_mode: str | None = None
+    timing_overlay_alias_conflicts: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -220,6 +226,7 @@ def _parse_overlay_sqlite_connection(connection: sqlite3.Connection, manifest: d
             timeout_tail_mass=float(row["timeout_tail_mass"] or 0.0),
         )
     context_rows = connection.execute("SELECT * FROM context_profile_map ORDER BY context_key ASC").fetchall()
+    canonical_entries: list[_CanonicalContextEntry] = []
     for row in context_rows:
         context_key = row["context_key"] if "context_key" in row.keys() else None
         if not context_key:
@@ -232,17 +239,161 @@ def _parse_overlay_sqlite_connection(connection: sqlite3.Connection, manifest: d
                     str(row["opening_ply_band"]),
                 ]
             )
-        context_profile_map[str(context_key)] = {
-            "move_pressure_profile_id": str(row["move_pressure_profile_id"]),
-            "think_time_profile_id": str(row["think_time_profile_id"]),
+        context_key_str = str(context_key)
+        move_profile_id = str(row["move_pressure_profile_id"])
+        think_profile_id = str(row["think_time_profile_id"])
+        context_profile_map[context_key_str] = {
+            "move_pressure_profile_id": move_profile_id,
+            "think_time_profile_id": think_profile_id,
         }
+        support_count = _coerce_int(row["support_count"]) if "support_count" in row.keys() else 0
+        canonical_entries.append(
+            _CanonicalContextEntry(
+                canonical_key=context_key_str,
+                move_pressure_profile_id=move_profile_id,
+                think_time_profile_id=think_profile_id,
+                support_count=support_count,
+            )
+        )
+    runtime_vocabulary = tuple(sorted({_extract_mover_elo_band(entry.canonical_key) for entry in canonical_entries if _extract_mover_elo_band(entry.canonical_key)}))
+    display_band = _extract_display_elo_band_from_manifest(manifest)
+    alias_map: dict[str, tuple[str, ...]] = {}
+    alias_conflicts: tuple[dict[str, object], ...] = ()
+    if display_band:
+        overlapping = tuple(runtime_band for runtime_band in runtime_vocabulary if _bands_overlap(display_band, runtime_band))
+        if overlapping:
+            alias_map[display_band] = overlapping
+            alias_conflicts = _apply_overlay_alias_keys(context_profile_map, canonical_entries, display_band, overlapping)
     return TimingOverlayPayload(
         context_profile_map=context_profile_map,
         move_pressure_profiles=move_profiles,
         think_time_profiles=think_profiles,
         context_contract_version=str(manifest.get("context_contract_version")) if manifest.get("context_contract_version") is not None else None,
         timing_overlay_policy_version=str(manifest.get("timing_overlay_policy_version")) if manifest.get("timing_overlay_policy_version") is not None else None,
+        timing_runtime_elo_band_policy_version="derived_200_point_bucket_v1",
+        timing_runtime_elo_band_vocabulary=runtime_vocabulary,
+        timing_display_elo_band=display_band,
+        timing_display_to_runtime_elo_band_aliases=alias_map or None,
+        timing_overlay_alias_mode="context_profile_map_alias_export_v1" if alias_map else None,
+        timing_overlay_alias_conflicts=alias_conflicts,
     )
+
+
+@dataclass(frozen=True)
+class _CanonicalContextEntry:
+    canonical_key: str
+    move_pressure_profile_id: str
+    think_time_profile_id: str
+    support_count: int
+
+
+def _coerce_int(value: object) -> int:
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_display_elo_band_from_manifest(manifest: dict[str, object]) -> str | None:
+    band = manifest.get("timing_display_elo_band")
+    if isinstance(band, str) and _parse_closed_interval(band) is not None:
+        return band
+    target = manifest.get("target_rating_band")
+    if isinstance(target, str) and _parse_closed_interval(target) is not None:
+        return target
+    if isinstance(target, dict):
+        minimum = _coerce_int(target.get("minimum")) if "minimum" in target else None
+        maximum = _coerce_int(target.get("maximum")) if "maximum" in target else None
+        if minimum is not None and maximum is not None and minimum <= maximum:
+            return f"{minimum}-{maximum}"
+    return None
+
+
+def _extract_mover_elo_band(context_key: str) -> str | None:
+    tokens = context_key.split("|")
+    if len(tokens) < 2:
+        return None
+    band = tokens[1].strip()
+    return band if _parse_closed_interval(band) is not None else None
+
+
+def _parse_closed_interval(value: str) -> tuple[int, int] | None:
+    if "-" not in value:
+        return None
+    parts = value.split("-", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        low = int(parts[0])
+        high = int(parts[1])
+    except ValueError:
+        return None
+    if low > high:
+        return None
+    return low, high
+
+
+def _bands_overlap(left: str, right: str) -> bool:
+    left_interval = _parse_closed_interval(left)
+    right_interval = _parse_closed_interval(right)
+    if left_interval is None or right_interval is None:
+        return False
+    left_low, left_high = left_interval
+    right_low, right_high = right_interval
+    return not (left_high < right_low or right_high < left_low)
+
+
+def _apply_overlay_alias_keys(
+    context_profile_map: dict[str, dict[str, str]],
+    canonical_entries: list[_CanonicalContextEntry],
+    display_band: str,
+    runtime_bands: tuple[str, ...],
+) -> tuple[dict[str, object], ...]:
+    runtime_band_set = set(runtime_bands)
+    alias_candidates: dict[str, list[_CanonicalContextEntry]] = {}
+    for entry in canonical_entries:
+        band = _extract_mover_elo_band(entry.canonical_key)
+        if band not in runtime_band_set:
+            continue
+        alias_key = _replace_mover_elo_band(entry.canonical_key, display_band)
+        if alias_key is None:
+            continue
+        alias_candidates.setdefault(alias_key, []).append(entry)
+    conflicts: list[dict[str, object]] = []
+    for alias_key in sorted(alias_candidates):
+        candidates = alias_candidates[alias_key]
+        selected = sorted(
+            candidates,
+            key=lambda item: (
+                -item.support_count,
+                item.move_pressure_profile_id,
+                item.think_time_profile_id,
+                item.canonical_key,
+            ),
+        )[0]
+        context_profile_map[alias_key] = {
+            "move_pressure_profile_id": selected.move_pressure_profile_id,
+            "think_time_profile_id": selected.think_time_profile_id,
+        }
+        unique_profile_pairs = {(item.move_pressure_profile_id, item.think_time_profile_id) for item in candidates}
+        if len(unique_profile_pairs) > 1:
+            conflicts.append(
+                {
+                    "alias_context_key": alias_key,
+                    "chosen_canonical_key": selected.canonical_key,
+                    "chosen_support_count": selected.support_count,
+                    "candidate_canonical_keys": [item.canonical_key for item in sorted(candidates, key=lambda i: i.canonical_key)],
+                }
+            )
+    return tuple(conflicts)
+
+
+def _replace_mover_elo_band(context_key: str, replacement: str) -> str | None:
+    tokens = context_key.split("|")
+    if len(tokens) < 2:
+        return None
+    tokens[1] = replacement
+    return "|".join(tokens)
 
 
 def _parse_overlay_payload(payload: dict[str, object]) -> TimingOverlayPayload:
@@ -280,6 +431,20 @@ def _parse_overlay_payload(payload: dict[str, object]) -> TimingOverlayPayload:
         think_time_profiles=parsed_think_profiles,
         context_contract_version=str(payload.get("context_contract_version")) if payload.get("context_contract_version") is not None else None,
         timing_overlay_policy_version=str(payload.get("timing_overlay_policy_version")) if payload.get("timing_overlay_policy_version") is not None else None,
+        timing_runtime_elo_band_policy_version=str(payload.get("timing_runtime_elo_band_policy_version"))
+        if payload.get("timing_runtime_elo_band_policy_version") is not None
+        else None,
+        timing_runtime_elo_band_vocabulary=tuple(str(item) for item in payload.get("timing_runtime_elo_band_vocabulary", []) if isinstance(item, str)),
+        timing_display_elo_band=str(payload.get("timing_display_elo_band")) if payload.get("timing_display_elo_band") is not None else None,
+        timing_display_to_runtime_elo_band_aliases={
+            str(key): tuple(str(item) for item in value if isinstance(item, str))
+            for key, value in (payload.get("timing_display_to_runtime_elo_band_aliases") or {}).items()
+            if isinstance(key, str) and isinstance(value, list)
+        }
+        if isinstance(payload.get("timing_display_to_runtime_elo_band_aliases"), dict)
+        else None,
+        timing_overlay_alias_mode=str(payload.get("timing_overlay_alias_mode")) if payload.get("timing_overlay_alias_mode") is not None else None,
+        timing_overlay_alias_conflicts=tuple(item for item in payload.get("timing_overlay_alias_conflicts", []) if isinstance(item, dict)),
     )
 
 
