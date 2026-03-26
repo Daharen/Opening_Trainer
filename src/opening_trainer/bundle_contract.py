@@ -11,6 +11,7 @@ BUNDLE_AGGREGATE_RELATIVE_PATH = Path("data/aggregated_position_move_counts.json
 BUNDLE_SQLITE_RELATIVE_PATH = Path("data/corpus.sqlite")
 SUPPORTED_BUNDLE_PAYLOAD_FORMATS = {"jsonl", "sqlite"}
 BUNDLE_EXACT_SQLITE_DEFAULT_RELATIVE_PATH = Path("data/exact_corpus.sqlite")
+BUNDLE_EXACT_COMPACT_V2_DEFAULT_RELATIVE_PATH = Path("data/exact_compact_corpus.sqlite")
 BUNDLE_BEHAVIORAL_PROFILE_SET_DEFAULT_RELATIVE_PATH = Path("data/behavioral_profile_set.sqlite")
 
 
@@ -18,6 +19,23 @@ BUNDLE_BEHAVIORAL_PROFILE_SET_DEFAULT_RELATIVE_PATH = Path("data/behavioral_prof
 class BundlePayloadResolution:
     payload_format: str
     payload_path: Path
+    payload_version: str | None = None
+    payload_role: str | None = None
+
+
+@dataclass(frozen=True)
+class CorpusMetadataContract:
+    retained_ply_depth: int | None
+    max_supported_player_moves: int | None
+    time_control_id: str | None
+    initial_time_seconds: float | None
+    increment_seconds: float | None
+    time_format_label: str | None
+    target_rating_band: str | None
+    rating_policy: str | None
+    payload_version: str | None
+    payload_role: str | None
+    is_canonical_contract: bool
 
 
 def manifest_declared_aggregate_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
@@ -28,7 +46,7 @@ def manifest_declared_aggregate_path(manifest: dict[str, object], bundle_dir: Pa
 
 
 def manifest_declared_sqlite_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
-    for key in ("sqlite_corpus_file", "corpus_sqlite_file", "payload_file"):
+    for key in ("sqlite_corpus_file", "corpus_sqlite_file", "payload_file", "exact_corpus_file", "exact_payload_file"):
         declared_path = manifest.get(key)
         if not isinstance(declared_path, str) or not declared_path.strip():
             continue
@@ -51,6 +69,71 @@ def manifest_declared_exact_sqlite_path(manifest: dict[str, object], bundle_dir:
             continue
         return bundle_dir / Path(declared_path)
     return None
+
+
+def _coerce_non_empty_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def _coerce_int(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_rating_band(value: object) -> str | None:
+    if isinstance(value, dict):
+        minimum = value.get("minimum")
+        maximum = value.get("maximum")
+        if minimum is not None and maximum is not None:
+            return f"{minimum}-{maximum}"
+    return _coerce_non_empty_string(value)
+
+
+def read_corpus_metadata_contract(manifest: dict[str, object]) -> CorpusMetadataContract:
+    retained_ply_depth = _coerce_int(
+        manifest.get("retained_ply_depth")
+        or manifest.get("retained_opening_ply_depth")
+        or manifest.get("opening_retained_ply_depth")
+        or manifest.get("max_retained_ply_depth")
+    )
+    max_supported_player_moves = _coerce_int(
+        manifest.get("max_supported_player_moves")
+        or manifest.get("max_supported_training_depth")
+    )
+    time_control_id = _coerce_non_empty_string(manifest.get("time_control_id"))
+    initial_time_seconds = _coerce_float(manifest.get("initial_time_seconds") or manifest.get("initial_seconds"))
+    increment_seconds = _coerce_float(manifest.get("increment_seconds"))
+    time_format_label = _coerce_non_empty_string(manifest.get("time_format_label"))
+    target_rating_band = _format_rating_band(manifest.get("target_rating_band") or manifest.get("rating_band") or manifest.get("elo_band"))
+    rating_policy = _coerce_non_empty_string(manifest.get("rating_policy"))
+    payload_version = _coerce_non_empty_string(manifest.get("payload_version") or manifest.get("exact_payload_version"))
+    payload_role = _coerce_non_empty_string(manifest.get("payload_role") or manifest.get("exact_payload_role"))
+    is_canonical_contract = payload_version == "exact_compact_v2" or payload_role == "canonical"
+    return CorpusMetadataContract(
+        retained_ply_depth=retained_ply_depth,
+        max_supported_player_moves=max_supported_player_moves,
+        time_control_id=time_control_id,
+        initial_time_seconds=initial_time_seconds,
+        increment_seconds=increment_seconds,
+        time_format_label=time_format_label,
+        target_rating_band=target_rating_band,
+        rating_policy=rating_policy,
+        payload_version=payload_version,
+        payload_role=payload_role,
+        is_canonical_contract=is_canonical_contract,
+    )
 
 
 def manifest_declared_behavioral_profile_set_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
@@ -149,12 +232,52 @@ def is_supported_builder_aggregate_bundle(manifest: dict[str, object], bundle_di
 
 
 def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle_dir: Path) -> tuple[BundlePayloadResolution | None, str | None]:
+    exact_payloads = manifest.get("exact_payloads")
+    if isinstance(exact_payloads, list):
+        ranked: list[tuple[int, BundlePayloadResolution]] = []
+        for entry in exact_payloads:
+            if not isinstance(entry, dict):
+                continue
+            payload_file = entry.get("payload_file") or entry.get("path") or entry.get("exact_corpus_file")
+            if not isinstance(payload_file, str) or not payload_file.strip():
+                continue
+            payload_format = str(entry.get("payload_format", "sqlite")).strip().lower()
+            if payload_format != "sqlite":
+                continue
+            payload_path = bundle_dir / Path(payload_file)
+            if not payload_path.exists():
+                continue
+            if not payload_path.is_file():
+                return None, f"exact corpus payload path {payload_path} is not a file"
+            payload_version = _coerce_non_empty_string(entry.get("payload_version"))
+            payload_role = _coerce_non_empty_string(entry.get("payload_role"))
+            score = 0
+            if payload_role == "canonical":
+                score += 10
+            if payload_version == "exact_compact_v2":
+                score += 5
+            ranked.append(
+                (
+                    score,
+                    BundlePayloadResolution(
+                        payload_format="sqlite",
+                        payload_path=payload_path,
+                        payload_version=payload_version,
+                        payload_role=payload_role,
+                    ),
+                )
+            )
+        if ranked:
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            return ranked[0][1], None
+
     declared_sqlite = manifest_declared_exact_sqlite_path(manifest, bundle_dir)
     candidate_paths: list[Path] = []
     if declared_sqlite is not None:
         candidate_paths.append(declared_sqlite)
     candidate_paths.extend(
         [
+            bundle_dir / BUNDLE_EXACT_COMPACT_V2_DEFAULT_RELATIVE_PATH,
             bundle_dir / BUNDLE_EXACT_SQLITE_DEFAULT_RELATIVE_PATH,
             bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH,
         ]
@@ -164,7 +287,13 @@ def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle
             continue
         if not candidate.is_file():
             return None, f"exact corpus payload path {candidate} is not a file"
-        return BundlePayloadResolution(payload_format="sqlite", payload_path=candidate), None
+        contract = read_corpus_metadata_contract(manifest)
+        return BundlePayloadResolution(
+            payload_format="sqlite",
+            payload_path=candidate,
+            payload_version=contract.payload_version,
+            payload_role=contract.payload_role,
+        ), None
     return None, "timing-conditioned bundle did not expose a supported exact SQLite payload"
 
 
@@ -176,6 +305,9 @@ def is_supported_timing_conditioned_bundle(manifest: dict[str, object], bundle_d
 
 
 def classify_bundle_contract(manifest: dict[str, object]) -> str:
+    contract = read_corpus_metadata_contract(manifest)
+    if contract.payload_version == "exact_compact_v2":
+        return "timing_conditioned_compact_v2"
     timing_keys = (
         "timing_overlay",
         "timing_overlay_file",

@@ -401,6 +401,14 @@ class OpponentProvider:
     def choose_move_with_runtime_context(self, board: chess.Board, timing_context: dict[str, object] | None = None) -> OpponentMoveChoice:
         failures: list[str] = []
         normalized_position_key = normalize_builder_position_key(board)
+        bundle = getattr(self.bundle_provider, "bundle", None)
+        bundle_overlay_available = bool(getattr(bundle, "timing_overlay_available", False))
+        bundle_overlay_source = getattr(bundle, "overlay_source", None)
+        bundle_kind = getattr(bundle, "bundle_kind", None)
+        bundle_exact_payload = str(getattr(bundle, "exact_payload_path", None)) if getattr(bundle, "exact_payload_path", None) is not None else None
+        bundle_lookup_mode = str(getattr(bundle, "timing_lookup_mode", "full_key"))
+        bundle_time_control = getattr(bundle, "bundle_invariant_time_control_id", None)
+        bundle_rating_band = getattr(bundle, "bundle_invariant_rating_band", None)
         if self.bundle_provider is not None:
             try:
                 choice = self.bundle_provider.choose_move(board, timing_context=timing_context)
@@ -437,6 +445,13 @@ class OpponentProvider:
                 sparse_reason="; ".join(failures) if failures else choice.sparse_reason,
                 fallback_applied=choice.fallback_applied,
                 candidate_summaries=choice.candidate_summaries,
+                timing_overlay_available=bundle_overlay_available,
+                timing_overlay_source=bundle_overlay_source,
+                bundle_kind=bundle_kind,
+                exact_payload_path=bundle_exact_payload,
+                timing_lookup_mode=bundle_lookup_mode,
+                timing_bundle_invariant_time_control_id=bundle_time_control,
+                timing_bundle_invariant_rating_band=bundle_rating_band,
             )
             self.last_choice = choice
             return choice
@@ -459,6 +474,13 @@ class OpponentProvider:
                 sparse_reason="; ".join(failures),
                 fallback_applied=True,
                 candidate_summaries=choice.candidate_summaries,
+                timing_overlay_available=bundle_overlay_available,
+                timing_overlay_source=bundle_overlay_source,
+                bundle_kind=bundle_kind,
+                exact_payload_path=bundle_exact_payload,
+                timing_lookup_mode=bundle_lookup_mode,
+                timing_bundle_invariant_time_control_id=bundle_time_control,
+                timing_bundle_invariant_rating_band=bundle_rating_band,
             )
         self.last_choice = choice
         return choice

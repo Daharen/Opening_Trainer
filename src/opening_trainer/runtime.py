@@ -12,6 +12,7 @@ from .bundle_contract import (
     BUNDLE_AGGREGATE_RELATIVE_PATH,
     BUNDLE_MANIFEST_NAME,
     BUNDLE_SQLITE_RELATIVE_PATH,
+    read_corpus_metadata_contract,
     classify_bundle_contract,
     is_supported_builder_aggregate_bundle,
     is_supported_timing_conditioned_bundle,
@@ -329,6 +330,10 @@ class BundleCompatibility:
 
 def bundle_retained_ply_depth_from_metadata(bundle_dir: Path, manifest: dict[str, object] | None = None) -> tuple[int | None, str | None]:
     metadata = manifest if isinstance(manifest, dict) else None
+    if metadata is not None:
+        contract = read_corpus_metadata_contract(metadata)
+        if contract.retained_ply_depth is not None:
+            return contract.retained_ply_depth, "manifest:retained_ply_depth"
     candidate_keys = (
         "retained_ply_depth",
         "retained_opening_ply_depth",
@@ -420,6 +425,7 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         )
 
     payload_path = declared_payload_path or payload_path
+    contract = read_corpus_metadata_contract(manifest)
     payload_format = manifest.get("payload_format")
     if not isinstance(payload_format, str) or not payload_format.strip():
         if payload_path.resolve() == (resolved_dir / BUNDLE_SQLITE_RELATIVE_PATH).resolve():
@@ -437,8 +443,12 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         (
             f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, payload ok, "
             f"bundle_kind={bundle_kind}, build_status={manifest.get('build_status')}, payload_format={payload_format!r}, payload_path={str(payload_path)!r}, "
+            f"payload_version={contract.payload_version!r}, payload_role={contract.payload_role!r}, "
             f"position_key_format={position_key_format}, move_key_format={move_key_format}, builder_payload_status={payload_status!r}, "
-            f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r})"
+            f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r}, "
+            f"max_supported_player_moves={contract.max_supported_player_moves!r}, "
+            f"time_control_id={contract.time_control_id!r}, initial_time_seconds={contract.initial_time_seconds!r}, increment_seconds={contract.increment_seconds!r}, "
+            f"target_rating_band={contract.target_rating_band!r}, rating_policy={contract.rating_policy!r})"
         ),
         retained_ply_depth=retained_ply_depth,
         retained_ply_source=retained_source,
