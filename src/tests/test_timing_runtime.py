@@ -74,24 +74,34 @@ def _write_compact_exact_sqlite_v2_normalized(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
-            "CREATE TABLE positions (id INTEGER PRIMARY KEY, fen_normalized TEXT NOT NULL, total_observed_count INTEGER NOT NULL, candidate_count INTEGER NOT NULL)"
+            "CREATE TABLE positions ("
+            "position_id INTEGER PRIMARY KEY, "
+            "position_key_inspect TEXT NOT NULL, "
+            "position_key_compact TEXT NOT NULL, "
+            "total_observed_count INTEGER NOT NULL, "
+            "candidate_count INTEGER NOT NULL)"
         )
-        conn.execute("CREATE TABLE moves (id INTEGER PRIMARY KEY, uci TEXT NOT NULL)")
+        conn.execute("CREATE TABLE moves (move_id INTEGER PRIMARY KEY, uci_text TEXT NOT NULL)")
         conn.execute(
             "CREATE TABLE position_moves (position_id INTEGER NOT NULL, move_id INTEGER NOT NULL, raw_count INTEGER NOT NULL, "
-            "FOREIGN KEY(position_id) REFERENCES positions(id), FOREIGN KEY(move_id) REFERENCES moves(id))"
+            "FOREIGN KEY(position_id) REFERENCES positions(position_id), FOREIGN KEY(move_id) REFERENCES moves(move_id))"
         )
         cursor = conn.execute(
-            "INSERT INTO positions(fen_normalized, total_observed_count, candidate_count) VALUES (?, ?, ?)",
-            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", 100, 3),
+            "INSERT INTO positions(position_key_inspect, position_key_compact, total_observed_count, candidate_count) VALUES (?, ?, ?, ?)",
+            (
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+                100,
+                3,
+            ),
         )
         pid = int(cursor.lastrowid)
-        conn.execute("INSERT INTO moves(uci) VALUES (?)", ("e2e4",))
-        move_e2e4 = int(conn.execute("SELECT id FROM moves WHERE uci = ?", ("e2e4",)).fetchone()[0])
-        conn.execute("INSERT INTO moves(uci) VALUES (?)", ("d2d4",))
-        move_d2d4 = int(conn.execute("SELECT id FROM moves WHERE uci = ?", ("d2d4",)).fetchone()[0])
-        conn.execute("INSERT INTO moves(uci) VALUES (?)", ("g1f3",))
-        move_g1f3 = int(conn.execute("SELECT id FROM moves WHERE uci = ?", ("g1f3",)).fetchone()[0])
+        conn.execute("INSERT INTO moves(uci_text) VALUES (?)", ("e2e4",))
+        move_e2e4 = int(conn.execute("SELECT move_id FROM moves WHERE uci_text = ?", ("e2e4",)).fetchone()[0])
+        conn.execute("INSERT INTO moves(uci_text) VALUES (?)", ("d2d4",))
+        move_d2d4 = int(conn.execute("SELECT move_id FROM moves WHERE uci_text = ?", ("d2d4",)).fetchone()[0])
+        conn.execute("INSERT INTO moves(uci_text) VALUES (?)", ("g1f3",))
+        move_g1f3 = int(conn.execute("SELECT move_id FROM moves WHERE uci_text = ?", ("g1f3",)).fetchone()[0])
         conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, ?)", (pid, move_e2e4, 70))
         conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, ?)", (pid, move_d2d4, 20))
         conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, ?)", (pid, move_g1f3, 10))
@@ -351,6 +361,28 @@ def test_live_session_path_uses_normalized_compact_v2_bundle_for_black_opponent_
     assert session.last_opponent_choice is not None
     assert session.last_opponent_choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
     assert session.board.board.move_stack
+
+
+def test_training_session_binds_real_name_normalized_compact_v2_canonical_bundle(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        payload_format="sqlite_compact_v2",
+        payload_version="2",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+        compact_v2_exact_payload=True,
+        compact_v2_normalized_schema=True,
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_bind_real_names"))
+    provider = session.opponent.bundle_provider
+
+    assert provider is not None
+    assert provider.bundle.exact_corpus is not None
+    assert provider.bundle.exact_corpus.metadata.provider_label == "corpus_exact_bundle_sqlite_compact_v2"
 
 
 def test_normalized_compact_v2_bundle_supports_ordinary_initial_position_selection_without_stockfish(tmp_path):

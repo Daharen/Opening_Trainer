@@ -328,9 +328,19 @@ class CompactSQLiteAggregateCorpusProvider:
                 raise ValueError("compact SQLite payload requires positions and moves tables")
             position_columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({positions_table})").fetchall()}
             move_columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({moves_table})").fetchall()}
-            position_key_col = _pick_column(position_columns, ("position_key", "fen_normalized", "fen", "board_fen"))
+            position_key_col = _pick_column(
+                position_columns,
+                (
+                    "position_key_inspect",
+                    "position_key",
+                    "fen_normalized",
+                    "fen",
+                    "board_fen",
+                    "position_key_compact",
+                ),
+            )
             position_id_col = _pick_column(position_columns, ("position_id", "id"))
-            move_key_col = _pick_column(move_columns, ("uci", "move_uci", "move_key"))
+            move_key_col = _pick_column(move_columns, ("uci_text", "uci", "move_uci", "move_key"))
             if not all((position_key_col, position_id_col, move_key_col)):
                 raise ValueError("compact SQLite payload is missing one or more required columns")
             move_position_id_col = _pick_column(move_columns, ("position_id", "parent_position_id", "pos_id"))
