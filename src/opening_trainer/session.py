@@ -552,7 +552,18 @@ class TrainingSession:
         decision = self.router.stubborn_extreme_repeat(self.active_profile_id, item) if item.pending_forced_stubborn_repeat else self.router.immediate_retry(self.active_profile_id, item)
         item.pending_forced_stubborn_repeat = False
         self._save_items(items)
-        self.review_storage.append_history(self.active_profile_id, event_to_dict(build_event('failure', review_item_id=item.review_item_id, routing=decision.routing_source, reason=evaluation.reason_text)))
+        self.review_storage.append_history(
+            self.active_profile_id,
+            event_to_dict(
+                build_event(
+                    'failure',
+                    review_item_id=item.review_item_id,
+                    routing=decision.routing_source,
+                    reason=evaluation.reason_text,
+                    outcome_channel=self._outcome_channel(decision.routing_source),
+                )
+            ),
+        )
         return item, impact_summary, decision.routing_source
 
     def _capture_success_if_needed(self):
@@ -565,8 +576,27 @@ class TrainingSession:
         apply_success(item, self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')
         self._save_items(items)
         next_decision = self.router.select(self.active_profile_id, items)
-        self.review_storage.append_history(self.active_profile_id, event_to_dict(build_event('success', review_item_id=item.review_item_id, routing=self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')))
+        routed_by = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
+        self.review_storage.append_history(
+            self.active_profile_id,
+            event_to_dict(
+                build_event(
+                    'success',
+                    review_item_id=item.review_item_id,
+                    routing=routed_by,
+                    outcome_channel=self._outcome_channel(routed_by),
+                )
+            ),
+        )
         return f'Review item improved; next due at {item.due_at_utc}.', next_decision.routing_source
+
+    @staticmethod
+    def _outcome_channel(routing_reason: str) -> str:
+        if routing_reason == 'ordinary_corpus_play':
+            return 'ordinary_corpus_play'
+        if routing_reason == 'srs_due_review':
+            return 'spaced_repetition_review'
+        return 'review_or_practice'
 
     def _handle_opponent_turn(self) -> None:
         pending = self.prepare_pending_opponent_action()

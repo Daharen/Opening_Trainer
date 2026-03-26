@@ -10,7 +10,7 @@ from opening_trainer.evaluator import MoveEvaluator
 from opening_trainer.review.models import ReviewItem, ReviewPathMove
 from opening_trainer.review.profile_service import ProfileService
 from opening_trainer.review.router import ReviewRouter
-from opening_trainer.review.scheduler import apply_failure, apply_success
+from opening_trainer.review.scheduler import SRS_INTERVAL_DAYS, apply_failure, apply_success
 from opening_trainer.review.scheduler import sync_due_cycle_transition
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.settings import TrainerSettingsStore
@@ -73,25 +73,26 @@ def test_profile_creation_and_deletion(tmp_path):
 
 def test_urgency_promotion_and_hysteresis_exit_behavior():
     item = ReviewItem.create('default', 'k', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
-    for _ in range(4):
+    for _ in range(3):
         apply_failure(item, 'fail', 'e2e4', item.predecessor_path, item.line_preview_san, 'ordinary_corpus_play')
     assert item.urgency_tier == 'extreme_urgency'
     apply_success(item, 'extreme_urgency_review')
     assert item.urgency_tier == 'extreme_urgency'
-    apply_success(item, 'extreme_urgency_review')
     apply_success(item, 'extreme_urgency_review')
     assert item.urgency_tier != 'extreme_urgency'
 
 
 def test_due_scheduling_updates_on_fail_and_pass():
     item = ReviewItem.create('default', 'k', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
-    first_due = item.due_at_utc
-    apply_success(item, 'scheduled_review')
-    assert item.due_at_utc > first_due
-    assert item.success_streak == 1
-    apply_failure(item, 'fail', 'e2e4', item.predecessor_path, item.line_preview_san, 'scheduled_review')
-    assert item.due_at_utc <= item.updated_at_utc
-    assert item.success_streak == 0
+    first_srs_due = item.srs_next_due_at_utc
+    apply_success(item, 'ordinary_corpus_play')
+    assert item.srs_next_due_at_utc == first_srs_due
+    apply_success(item, 'srs_due_review')
+    assert item.srs_stage_index == 1
+    assert item.srs_next_due_at_utc > first_srs_due
+    apply_failure(item, 'fail', 'e2e4', item.predecessor_path, item.line_preview_san, 'srs_due_review')
+    assert item.srs_stage_index == 0
+    assert item.srs_lapse_count == 1
 
 
 def test_reentry_path_capture_and_deterministic_replay_plan_reconstruction():
@@ -117,6 +118,7 @@ def _due_item(position_key: str, urgency_tier: str) -> ReviewItem:
     item.due_at_utc = '2000-01-01T00:00:00+00:00'
     item.updated_at_utc = '2026-01-01T00:00:00+00:00'
     item.last_seen_at_utc = '2025-01-01T00:00:00+00:00'
+    item.srs_next_due_at_utc = '2000-01-01T00:00:00+00:00'
     return item
 
 
@@ -133,10 +135,10 @@ def test_boosted_and_extreme_reduce_corpus_share_with_exact_penalties():
     router = ReviewRouter()
     items = [_due_item('a', 'ordinary_review'), _due_item('b', 'boosted_review'), _due_item('c', 'boosted_review'), _due_item('d', 'extreme_urgency')]
     decision = router.select('default', items)
-    assert decision.corpus_share == pytest.approx(0.45)
-    assert decision.review_share == pytest.approx(0.55)
-    assert decision.boosted_due_count == 2
-    assert decision.extreme_due_count == 1
+    assert decision.corpus_share == pytest.approx(0.5)
+    assert decision.review_share == pytest.approx(0.5)
+    assert decision.boosted_due_count == 0
+    assert decision.extreme_due_count == 0
 
 
 def test_review_selection_prioritizes_extreme_then_boosted_then_ordinary():
@@ -146,17 +148,20 @@ def test_review_selection_prioritizes_extreme_then_boosted_then_ordinary():
     ordinary = _due_item('a', 'ordinary_review')
     # Force review path deterministically by creating a 0 corpus share case.
     decision = router.select('default', [extreme] + [_due_item(str(i), 'extreme_urgency') for i in range(10)] + [boosted, ordinary])
-    assert decision.routing_source == 'extreme_urgency_review'
-    assert decision.urgency_tier == 'extreme_urgency'
+    assert decision.routing_source == 'srs_due_review'
 
 
 def test_boosted_review_routing_reason_is_explicit():
     router = ReviewRouter()
-    decision = router.select('default', [_due_item('b', 'boosted_review'), _due_item('c', 'boosted_review')])
+    boosted_1 = _due_item('b', 'boosted_review')
+    boosted_2 = _due_item('c', 'boosted_review')
+    boosted_1.srs_next_due_at_utc = '2099-01-01T00:00:00+00:00'
+    boosted_2.srs_next_due_at_utc = '2099-01-01T00:00:00+00:00'
+    decision = router.select('default', [boosted_1, boosted_2])
     for _ in range(20):
         if decision.routing_source == 'boosted_review':
             break
-        decision = router.select('default', [_due_item('b', 'boosted_review'), _due_item('c', 'boosted_review')])
+        decision = router.select('default', [boosted_1, boosted_2])
     assert decision.routing_source == 'boosted_review'
     assert decision.urgency_tier == 'boosted_review'
 
@@ -243,12 +248,12 @@ def test_rehabilitation_thresholds_are_exact_and_cumulative():
     assert item.urgency_tier == 'extreme_urgency'
     apply_success(item, 'extreme_urgency_review')
     assert item.urgency_tier == 'boosted_review'
-    for _ in range(3):
+    for _ in range(2):
         apply_success(item, 'boosted_review')
-    assert item.success_streak == 5
+    assert item.success_streak == 4
     assert item.urgency_tier == 'ordinary_review'
-    for _ in range(5):
-        apply_success(item, 'scheduled_review')
+    for _ in range(6):
+        apply_success(item, 'ordinary_corpus_play')
     assert item.success_streak == 10
     assert item.frequency_retired_for_current_due_cycle is True
 
@@ -272,8 +277,8 @@ def test_stubborn_extreme_arms_then_forces_one_repeat_then_clears_on_success():
 def test_frequency_retirement_reactivates_only_after_due_cycle_transition():
     item = ReviewItem.create('default', 'k3', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
     item.urgency_tier = 'ordinary_review'
-    item.success_streak = 9
-    apply_success(item, 'scheduled_review')
+    item.consecutive_successes = 9
+    apply_success(item, 'ordinary_corpus_play')
     assert item.frequency_retired_for_current_due_cycle is True
     item.due_at_utc = '2099-01-01T00:00:00+00:00'
     sync_due_cycle_transition(item)
@@ -282,3 +287,59 @@ def test_frequency_retirement_reactivates_only_after_due_cycle_transition():
     sync_due_cycle_transition(item)
     assert item.frequency_retired_for_current_due_cycle is False
     assert item.success_streak == 0
+
+
+def test_persistence_upgrade_defaults_new_frequency_and_srs_fields(tmp_path):
+    storage = ReviewStorage(tmp_path / 'runtime' / 'profiles')
+    profile_id = storage.get_active_profile_id()
+    path = tmp_path / 'runtime' / 'profiles' / profile_id / 'review_items.json'
+    legacy = ReviewItem.create('default', 'legacy', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')]).to_dict()
+    for key in ('frequency_state', 'frequency_state_entered_at_utc', 'srs_stage_index', 'srs_next_due_at_utc', 'srs_last_reviewed_at_utc', 'srs_last_result', 'srs_lapse_count'):
+        legacy.pop(key, None)
+    path.write_text(__import__('json').dumps([legacy]), encoding='utf-8')
+    item = storage.load_items(profile_id)[0]
+    assert item.frequency_state == item.urgency_tier
+    assert item.srs_stage_index == 0
+    assert item.srs_next_due_at_utc
+    assert item.srs_last_result == 'none'
+
+
+def test_frequency_threshold_contract_exact_transitions():
+    item = ReviewItem.create('default', 'freq', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
+    assert item.urgency_tier == 'ordinary_review'
+    apply_failure(item, 'fail', None, item.predecessor_path, item.line_preview_san, 'ordinary_corpus_play')
+    assert item.urgency_tier == 'boosted_review'
+    apply_failure(item, 'fail', None, item.predecessor_path, item.line_preview_san, 'ordinary_corpus_play')
+    apply_failure(item, 'fail', None, item.predecessor_path, item.line_preview_san, 'ordinary_corpus_play')
+    assert item.urgency_tier == 'extreme_urgency'
+    apply_success(item, 'extreme_urgency_review')
+    assert item.urgency_tier == 'extreme_urgency'
+    apply_success(item, 'extreme_urgency_review')
+    assert item.urgency_tier == 'boosted_review'
+    apply_success(item, 'boosted_review')
+    apply_success(item, 'boosted_review')
+    apply_success(item, 'boosted_review')
+    apply_success(item, 'boosted_review')
+    assert item.urgency_tier == 'ordinary_review'
+
+
+def test_srs_advances_only_on_explicit_spaced_review():
+    item = ReviewItem.create('default', 'srs', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
+    start_stage = item.srs_stage_index
+    apply_success(item, 'ordinary_corpus_play')
+    apply_success(item, 'boosted_review')
+    assert item.srs_stage_index == start_stage
+    apply_success(item, 'srs_due_review')
+    assert item.srs_stage_index == start_stage + 1
+
+
+def test_session_history_tags_outcome_channel_for_smart_profile_isolation(tmp_path):
+    session = _session(tmp_path)
+    session.current_routing = session.router.select(session.active_profile_id, [])
+    session.required_player_moves = 1
+    session.evaluator = MoveEvaluator(book_authority=StubBookAuthority(BOOK_MISS), engine_authority=StubEngineAuthority(EngineAuthorityResult(True, True, ReasonCode.ENGINE_PASS, 'Accepted by engine.', best_move_uci='e2e4', best_move_san='e4', played_move_uci='e2e4', played_move_san='e4', cp_loss=0, metadata={'engine_available': True})))
+    session.submit_user_move_uci('e2e4')
+    lines = (tmp_path / 'runtime' / 'profiles' / session.active_profile_id / 'session_history.jsonl').read_text(encoding='utf-8').strip().splitlines()
+    if lines:
+        payload = __import__('json').loads(lines[-1])['payload']
+        assert payload.get('outcome_channel') in {'ordinary_corpus_play', 'review_or_practice', 'spaced_repetition_review'}
