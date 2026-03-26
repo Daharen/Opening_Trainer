@@ -64,7 +64,7 @@ class OpeningTrainerGUI:
         self._shutdown_started = False
         self._is_shutting_down = False
         self._after_handles: set[str] = set()
-        self._pending_opponent_after_handle: str | None = None
+        self._pending_opponent_after_handle = None
         self._child_windows: list[tk.Toplevel] = []
 
         self.root.columnconfigure(0, weight=1)
@@ -743,10 +743,12 @@ class OpeningTrainerGUI:
                     root.after_cancel(handle)
             except Exception:
                 pass
-            self._after_handles.discard(handle)
+            after_handles = getattr(self, '_after_handles', set())
+            after_handles.discard(handle)
         session = getattr(self, 'session', None)
-        if session is not None:
-            session.cancel_pending_opponent_action()
+        cancel_pending = getattr(session, 'cancel_pending_opponent_action', None) if session is not None else None
+        if callable(cancel_pending):
+            cancel_pending()
 
     def _cancel_after_handles(self) -> None:
         handles = list(getattr(self, '_after_handles', set()))
