@@ -247,6 +247,66 @@ def test_timing_bundle_loader_supports_compact_exact_payload_v2_sqlite(tmp_path)
 
 
 
+def test_live_session_path_uses_compact_v2_bundle_for_black_opponent_first_turn(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        payload_format="sqlite_compact_v2",
+        payload_version="2",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+        compact_v2_exact_payload=True,
+    )
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["increment_seconds"] = 0
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_black_start"))
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+
+    pending = session.prepare_pending_opponent_action()
+    assert pending is not None
+    assert pending.choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
+    assert pending.choice.bundle_kind == "timing_conditioned"
+    assert pending.choice.exact_payload_path is not None
+    assert "exact_corpus.sqlite" in pending.choice.exact_payload_path
+
+    committed = session.commit_pending_opponent_action()
+    assert committed is True
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
+    assert session.board.board.move_stack
+
+
+def test_final_canonical_compact_v2_bundle_loader_failure_raises_loudly(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        payload_format="sqlite_compact_v2",
+        payload_version="2",
+        canonical_exact_payload_file="data/missing_exact.sqlite",
+        compatibility_exact_payload_file="data/exact_corpus.sqlite",
+        compact_v2_exact_payload=True,
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    try:
+        TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_loud_fail"))
+    except RuntimeError as exc:
+        text = str(exc)
+        assert "Failed to bind final canonical exact corpus bundle" in text
+        assert "canonical_exact_payload" in text
+        assert "missing_exact.sqlite" in text
+    else:
+        assert False, "Expected TrainingSession to fail loudly when final canonical compact-v2 bundle cannot be bound."
+
+
 def test_timing_bundle_loader_reads_overlay_from_behavioral_profile_set_sqlite(tmp_path):
     bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=False)
     handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
