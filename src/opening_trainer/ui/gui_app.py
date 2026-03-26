@@ -429,19 +429,42 @@ class OpeningTrainerGUI:
         on_error(payload)
 
     def _build_counts_summary(self, due: int, boosted: int, extreme: int) -> str:
-        return f'Due: {due} | Boosted: {boosted} | Extreme: {extreme}'
+        if due == 0 and boosted == 0 and extreme == 0:
+            return 'Review queue: clear'
+        return f'Review queue: {due} due ({boosted} boosted, {extreme} urgent)'
 
     def _build_routing_summary(self, routing: str, explain: str) -> str:
-        return f'Routing: {routing} | {explain}'
+        del explain
+        labels = {
+            'not_started': 'Session route: preparing',
+            'ordinary_corpus_play': 'Session route: corpus training',
+            'scheduled_review': 'Session route: review training',
+            'boosted_review': 'Session route: boosted review',
+            'extreme_urgency_review': 'Session route: urgent review',
+            'immediate_retry': 'Session route: immediate retry',
+        }
+        return labels.get(routing, 'Session route: mixed training')
 
     def _build_compact_bundle_summary(self) -> str:
-        return f'Opponent: {self.session.opponent.status_message}'
+        status = self.session.corpus_summary_text()
+        if ' | Opponent timing:' in status:
+            status = status.split(' | Opponent timing:')[0]
+        return status
 
     def _training_depth_summary(self) -> str:
         retained_ply_depth = self.session.bundle_retained_ply_depth()
         cap = self.session.max_supported_training_depth()
-        retained_text = f' | Bundle retained depth: {retained_ply_depth} plies' if retained_ply_depth is not None else ''
-        return f'Training depth: {self.session.required_player_moves} player moves | Good accepted: {"yes" if self.session.settings.good_moves_acceptable else "no"} | Max supported: {cap} player moves{retained_text}'
+        retained_text = f' | Bundle max: {retained_ply_depth // 2} player moves' if retained_ply_depth is not None else ''
+        return f'Training depth: {self.session.required_player_moves} player moves | Good accepted: {"yes" if self.session.settings.good_moves_acceptable else "no"} | App max: {cap} player moves{retained_text}'
+
+    def _build_recent_status_text(self, routing_summary: str) -> str:
+        return '\n'.join(
+            [
+                self._training_depth_summary(),
+                routing_summary,
+                'Recent status: Ready for next move.',
+            ]
+        )
 
     def _refresh_supporting_surfaces(self):
         items = self.session.review_storage.load_items(self.session.active_profile_id)
@@ -450,26 +473,13 @@ class OpeningTrainerGUI:
         boosted = sum(1 for item in items if item.urgency_tier == 'boosted_review')
         extreme = sum(1 for item in items if item.urgency_tier == 'extreme_urgency')
         routing = self.session.current_routing.routing_source if self.session.current_routing else 'not_started'
-        explain = self.session.current_routing.selection_explanation if self.session.current_routing else 'No routing decision yet.'
-        if self.session.current_routing and self.session.current_routing.corpus_share is not None and self.session.current_routing.review_share is not None:
-            explain = (
-                f'corpus_share={self.session.current_routing.corpus_share:.2f}; '
-                f'review_share={self.session.current_routing.review_share:.2f}; '
-                f'due_count={self.session.current_routing.due_count}; '
-                f'boosted_due_count={self.session.current_routing.boosted_due_count}; '
-                f'extreme_due_count={self.session.current_routing.extreme_due_count}; '
-                f'deck_size={self.session.current_routing.deck_size}; '
-                f'{explain}'
-            )
         counts_summary = self._build_counts_summary(due, boosted, extreme)
-        routing_summary = self._build_routing_summary(routing, explain)
-        bundle_summary = f'Opponent source: {self.session.opponent.status_message}'
+        routing_summary = self._build_routing_summary(routing, '')
+        bundle_summary = self.session.corpus_summary_text()
         corpus_summary = self.session.corpus_summary_text()
         self.status_panel.update_status(profile_name=profile_name, bundle_summary=bundle_summary, corpus_summary=corpus_summary, routing_summary=routing_summary, counts_summary=counts_summary)
-        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), corpus_summary=corpus_summary, routing_summary=f'Route: {routing}', counts_summary=self._training_depth_summary())
-        history_path = self.session.review_storage.root / self.session.active_profile_id / 'session_history.jsonl'
-        recent = history_path.read_text(encoding='utf-8').strip().splitlines()[-4:] if history_path.exists() else []
-        self.recent_var.set(self._training_depth_summary() + '\n' + corpus_summary + '\n\nRecent events:\n' + ('\n'.join(recent) if recent else 'No recent events.'))
+        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), corpus_summary=self._training_depth_summary(), routing_summary=routing_summary, counts_summary=counts_summary)
+        self.recent_var.set(self._build_recent_status_text(routing_summary))
         self.inspector.refresh()
         view = self.session.get_view()
         self.move_list_panel.update_moves(view.move_history)

@@ -455,8 +455,8 @@ def test_visible_delay_clamp_and_summary_is_explicit(tmp_path):
     assert session._visible_opponent_delay_seconds(0.5) == 0.02
     assert session._visible_opponent_delay_seconds(0.001) == 0.01
     summary = session._timing_summary_text()
-    assert "active_direct_visible_delay" in summary
-    assert "Overlay source:" in summary
+    assert "Opponent timing: active" in summary
+    assert "Clocks W/B:" in summary
 
 
 
@@ -619,8 +619,11 @@ def test_timing_summary_and_diagnostics_use_same_context_key(tmp_path):
     session._handle_opponent_turn()
 
     summary = session._timing_summary_text()
-    assert f"Overlay source: {session.timing_diagnostics.overlay_source}" in summary
-    assert f"Context: {session.timing_diagnostics.matched_context_key or session.timing_diagnostics.effective_context_key or 'n/a'}" in summary
+    assert "Opponent timing:" in summary
+    assert "Overlay source:" not in summary
+    assert "Context:" not in summary
+    assert session.timing_diagnostics.overlay_source in {"json_file", "inline manifest", "behavioral_profile_set_sqlite"}
+    assert session.timing_diagnostics.effective_context_key is not None
 
 
 def test_gui_mode_prepares_pending_opponent_action_without_blocking_sleep(tmp_path, monkeypatch):
