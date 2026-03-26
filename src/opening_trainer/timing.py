@@ -57,6 +57,22 @@ class TimingContext:
 
 
 @dataclass(frozen=True)
+class DynamicTimingContext:
+    clock_pressure_bucket: str
+    prev_opp_think_bucket: str
+    opening_ply_band: str
+
+    def key(self) -> str:
+        return "|".join(
+            [
+                self.clock_pressure_bucket,
+                self.prev_opp_think_bucket,
+                self.opening_ply_band,
+            ]
+        )
+
+
+@dataclass(frozen=True)
 class OverlayResolution:
     move_pressure_profile: MovePressureProfile
     think_time_profile: ThinkTimeProfile
@@ -64,6 +80,8 @@ class OverlayResolution:
     fallback_used: bool
     attempted_key: str
     fallback_keys: tuple[str, ...]
+    lookup_mode: str
+    invariants_ignored: bool
 
 
 @dataclass(frozen=True)
@@ -84,6 +102,10 @@ class TimingConditionedCorpusBundleHandle:
     bundle_kind: str
     exact_payload_path: Path | None
     overlay_source: str
+    timing_lookup_mode: str
+    bundle_invariant_time_control_id: str | None
+    bundle_invariant_rating_band: str | None
+    reduced_context_profile_map: dict[str, dict[str, str]]
 
     @property
     def timing_overlay_available(self) -> bool:
@@ -94,6 +116,36 @@ class TimingConditionedCorpusBundleHandle:
 
     def resolve_overlay(self, context: TimingContext) -> OverlayResolution | None:
         if self.overlay is None:
+            return None
+        if self.timing_lookup_mode == "reduced_dynamic":
+            dynamic_context = DynamicTimingContext(
+                clock_pressure_bucket=context.clock_pressure_bucket,
+                prev_opp_think_bucket=context.prev_opp_think_bucket,
+                opening_ply_band=context.opening_ply_band,
+            )
+            fallback_keys = fallback_keys_for_dynamic_context(dynamic_context)
+            for index, key in enumerate(fallback_keys):
+                profile_ids = self.reduced_context_profile_map.get(key)
+                if not isinstance(profile_ids, dict):
+                    continue
+                move_profile_id = profile_ids.get("move_pressure_profile_id")
+                think_profile_id = profile_ids.get("think_time_profile_id")
+                if not move_profile_id or not think_profile_id:
+                    continue
+                move_profile = self.overlay.move_pressure_profiles.get(move_profile_id)
+                think_profile = self.overlay.think_time_profiles.get(think_profile_id)
+                if move_profile is None or think_profile is None:
+                    continue
+                return OverlayResolution(
+                    move_pressure_profile=move_profile,
+                    think_time_profile=think_profile,
+                    matched_key=key,
+                    fallback_used=index > 0,
+                    attempted_key=dynamic_context.key(),
+                    fallback_keys=tuple(fallback_keys),
+                    lookup_mode=self.timing_lookup_mode,
+                    invariants_ignored=True,
+                )
             return None
         fallback_keys = fallback_keys_for_context(context)
         for index, key in enumerate(fallback_keys):
@@ -115,6 +167,8 @@ class TimingConditionedCorpusBundleHandle:
                 fallback_used=index > 0,
                 attempted_key=context.key(),
                 fallback_keys=tuple(fallback_keys),
+                lookup_mode=self.timing_lookup_mode,
+                invariants_ignored=False,
             )
         return None
 
@@ -125,6 +179,8 @@ class TimingConditionedCorpusBundleLoader:
         manifest = json.loads((local_dir / BUNDLE_MANIFEST_NAME).read_text(encoding="utf-8"))
         exact, bundle_kind, exact_payload_path = _load_exact_corpus_provider(local_dir, manifest, rng=rng)
         overlay, overlay_source = _load_timing_overlay(local_dir, manifest)
+        timing_lookup_mode = _timing_lookup_mode(manifest, bundle_kind=bundle_kind)
+        reduced_context_profile_map = _build_reduced_context_profile_map(overlay.context_profile_map) if overlay is not None else {}
         return TimingConditionedCorpusBundleHandle(
             bundle_dir=local_dir,
             manifest=manifest,
@@ -133,6 +189,10 @@ class TimingConditionedCorpusBundleLoader:
             bundle_kind=bundle_kind,
             exact_payload_path=exact_payload_path,
             overlay_source=overlay_source,
+            timing_lookup_mode=timing_lookup_mode,
+            bundle_invariant_time_control_id=_manifest_time_control_id(manifest),
+            bundle_invariant_rating_band=_manifest_rating_band(manifest),
+            reduced_context_profile_map=reduced_context_profile_map,
         )
 
 
@@ -367,6 +427,83 @@ def fallback_keys_for_context(context: TimingContext) -> list[str]:
         "|".join([context.time_control_id, context.mover_elo_band, context.clock_pressure_bucket]),
         "|".join([context.time_control_id, context.mover_elo_band]),
     ]
+
+
+def fallback_keys_for_dynamic_context(context: DynamicTimingContext) -> list[str]:
+    return [
+        context.key(),
+        DynamicTimingContext(context.clock_pressure_bucket, "none", context.opening_ply_band).key(),
+        "|".join([context.clock_pressure_bucket, context.opening_ply_band]),
+        context.clock_pressure_bucket,
+    ]
+
+
+def _timing_lookup_mode(manifest: dict[str, object], *, bundle_kind: str) -> str:
+    if bundle_kind != "timing_conditioned":
+        return "full_key"
+    scope = str(manifest.get("timing_overlay_scope", "")).strip().lower()
+    if scope in {"multi_scope", "multi"}:
+        return "full_key"
+    return "reduced_dynamic"
+
+
+def _manifest_time_control_id(manifest: dict[str, object]) -> str | None:
+    value = manifest.get("time_control_id")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _manifest_rating_band(manifest: dict[str, object]) -> str | None:
+    candidate = manifest.get("target_rating_band")
+    if candidate is None:
+        candidate = manifest.get("rating_band")
+    if candidate is None:
+        candidate = manifest.get("elo_band")
+    if candidate is None:
+        return None
+    text = str(candidate).strip()
+    return text or None
+
+
+def _build_reduced_context_profile_map(context_profile_map: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    winners: dict[str, tuple[float, str, dict[str, str]]] = {}
+    for key, value in context_profile_map.items():
+        if not isinstance(value, dict):
+            continue
+        reduced_key = _reduced_dynamic_key_from_context_key(str(key))
+        if reduced_key is None:
+            continue
+        support = _support_score(value)
+        current = winners.get(reduced_key)
+        candidate = (support, str(key), value)
+        if current is None or candidate[0] > current[0] or (candidate[0] == current[0] and candidate[1] < current[1]):
+            winners[reduced_key] = candidate
+    return {reduced_key: data for reduced_key, (_support, _source, data) in winners.items()}
+
+
+def _reduced_dynamic_key_from_context_key(raw_key: str) -> str | None:
+    tokens = [token.strip() for token in raw_key.split("|") if token is not None]
+    if len(tokens) >= 5:
+        return "|".join([tokens[2], tokens[3], tokens[4]])
+    if len(tokens) == 3:
+        return "|".join(tokens)
+    if len(tokens) == 2:
+        return "|".join(tokens)
+    if len(tokens) == 1:
+        return tokens[0]
+    return None
+
+
+def _support_score(value: dict[str, str]) -> float:
+    support = value.get("support")
+    if support is None:
+        return 0.0
+    try:
+        return float(support)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:

@@ -63,17 +63,31 @@ def _write_behavioral_profile_set(db_path: Path) -> None:
         conn.close()
 
 
-def _write_timing_bundle(bundle_dir: Path, *, native: bool, use_json_overlay: bool, exact_name: str = "exact_corpus.sqlite") -> Path:
+def _write_timing_bundle(
+    bundle_dir: Path,
+    *,
+    native: bool,
+    use_json_overlay: bool,
+    exact_name: str = "exact_corpus.sqlite",
+    context_keys: list[str] | None = None,
+    include_time_control_id: bool = True,
+    include_target_rating_band: bool = True,
+    timing_overlay_scope: str | None = None,
+) -> Path:
     data_dir = bundle_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "retained_ply_depth": 20,
-        "time_control_id": "rapid_300_0",
         "initial_time_seconds": 300,
-        "target_rating_band": "1200-1399",
         "context_contract_version": "v1",
         "timing_overlay_policy_version": "v1",
     }
+    if include_time_control_id:
+        manifest["time_control_id"] = "rapid_300_0"
+    if include_target_rating_band:
+        manifest["target_rating_band"] = "1200-1399"
+    if timing_overlay_scope is not None:
+        manifest["timing_overlay_scope"] = timing_overlay_scope
     if native:
         manifest.update(
             {
@@ -95,6 +109,17 @@ def _write_timing_bundle(bundle_dir: Path, *, native: bool, use_json_overlay: bo
     if use_json_overlay:
         manifest["timing_overlay_file"] = "data/timing_overlay.json"
 
+    keys = context_keys or [
+        "rapid_300_0|1200-1399|medium|short|01-10",
+        "rapid_300_0|1200-1399|medium|none|01-10",
+    ]
+    context_profile_map = {
+        key: {
+            "move_pressure_profile_id": "mp_fast",
+            "think_time_profile_id": "tt_fast",
+        }
+        for key in keys
+    }
     overlay = {
         "context_contract_version": "v1",
         "timing_overlay_policy_version": "v1",
@@ -110,16 +135,7 @@ def _write_timing_bundle(bundle_dir: Path, *, native: bool, use_json_overlay: bo
                 "timeout_tail_mass": 0.1,
             }
         },
-        "context_profile_map": {
-            "rapid_300_0|1200-1399|medium|short|01-10": {
-                "move_pressure_profile_id": "mp_fast",
-                "think_time_profile_id": "tt_fast",
-            },
-            "rapid_300_0|1200-1399|medium|none|01-10": {
-                "move_pressure_profile_id": "mp_fast",
-                "think_time_profile_id": "tt_fast",
-            },
-        },
+        "context_profile_map": context_profile_map,
     }
 
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -185,6 +201,102 @@ def test_timing_bundle_loader_and_fallback_resolution(tmp_path):
     fallback = handle.resolve_overlay(fallback_context)
     assert fallback is not None
     assert fallback.fallback_used is True
+
+
+
+def test_single_scope_bundle_uses_reduced_dynamic_lookup_with_full_keys(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        context_keys=["rapid_300_0|400-599|medium|none|01-10"],
+    )
+    provider = BuilderAggregateOpponentProvider(bundle_dir, rng=random.Random(3))
+    board = chess.Board()
+
+    choice = provider.choose_move(
+        board,
+        timing_context={
+            "time_control_id": "mismatched_time_control",
+            "mover_elo_band": "400-600",
+            "remaining_ratio": 0.40,
+            "remaining_seconds": 120.0,
+            "prev_opp_think_seconds": None,
+            "opening_ply": 1,
+        },
+    )
+
+    assert choice.timing_overlay_active is True
+    assert choice.timing_lookup_mode == "reduced_dynamic"
+    assert choice.timing_invariants_ignored_for_match is True
+    assert choice.timing_attempted_context_key == "medium|none|01-10"
+    assert choice.timing_context_key == "medium|none|01-10"
+
+
+
+def test_missing_rating_band_metadata_does_not_disable_overlay_matching(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        include_target_rating_band=False,
+        context_keys=["rapid_300_0|1200-1399|medium|none|01-10"],
+    )
+    provider = BuilderAggregateOpponentProvider(bundle_dir, rng=random.Random(3))
+
+    choice = provider.choose_move(
+        chess.Board(),
+        timing_context={
+            "time_control_id": "rapid_300_0",
+            "mover_elo_band": "unknown",
+            "remaining_ratio": 0.40,
+            "remaining_seconds": 120.0,
+            "prev_opp_think_seconds": None,
+            "opening_ply": 1,
+        },
+    )
+    assert choice.timing_overlay_active is True
+
+
+
+def test_missing_time_control_metadata_does_not_disable_overlay_matching(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        include_time_control_id=False,
+        context_keys=["rapid_300_0|1200-1399|medium|none|01-10"],
+    )
+    provider = BuilderAggregateOpponentProvider(bundle_dir, rng=random.Random(3))
+
+    choice = provider.choose_move(
+        chess.Board(),
+        timing_context={
+            "time_control_id": "unknown",
+            "mover_elo_band": "unknown",
+            "remaining_ratio": 0.40,
+            "remaining_seconds": 120.0,
+            "prev_opp_think_seconds": None,
+            "opening_ply": 1,
+        },
+    )
+    assert choice.timing_overlay_active is True
+
+
+
+def test_full_key_lookup_mode_still_supported_when_multi_scope_is_explicit(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        timing_overlay_scope="multi_scope",
+        context_keys=["rapid_300_0|1200-1399|medium|none|01-10"],
+    )
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    assert handle.timing_lookup_mode == "full_key"
+
+    unmatched = handle.resolve_overlay(TimingContext("blitz_180_0", "1600-1799", "medium", "none", "01-10"))
+    assert unmatched is None
 
 
 
@@ -392,6 +504,7 @@ def test_visible_delay_diagnostics_update_correctly_when_overlay_unmatched(tmp_p
     session._handle_opponent_turn()
 
     assert session.timing_diagnostics.effective_context_key is not None
+    assert session.timing_diagnostics.lookup_mode == "reduced_dynamic"
     assert session.timing_diagnostics.fallback_keys_attempted
     assert session.timing_diagnostics.matched_context_key is None
     assert session.timing_diagnostics.visible_delay_reason in {"no_overlay_match", "sampled_think_time_missing"}

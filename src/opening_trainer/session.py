@@ -32,7 +32,15 @@ from .runtime import (
 from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
 from .session_logging import log_line
-from .timing import TimingContext, bucket_clock_pressure, bucket_opening_ply_band, bucket_prev_opp_think, fallback_keys_for_context
+from .timing import (
+    DynamicTimingContext,
+    TimingContext,
+    bucket_clock_pressure,
+    bucket_opening_ply_band,
+    bucket_prev_opp_think,
+    fallback_keys_for_context,
+    fallback_keys_for_dynamic_context,
+)
 
 
 @dataclass
@@ -103,6 +111,9 @@ class TrainingSession:
             bundle_path=str(self.runtime_context.config.corpus_bundle_dir) if self.runtime_context.config.corpus_bundle_dir else None,
             overlay_available=bool(getattr(bundle, "timing_overlay_available", False)),
             overlay_source=self._normalize_overlay_source(getattr(bundle, "overlay_source", "absent")),
+            lookup_mode=str(getattr(bundle, "timing_lookup_mode", "full_key")),
+            bundle_invariant_time_control_id=getattr(bundle, "bundle_invariant_time_control_id", None),
+            bundle_invariant_rating_band=getattr(bundle, "bundle_invariant_rating_band", None),
         )
 
     def max_supported_training_depth(self) -> int:
@@ -499,9 +510,13 @@ class TrainingSession:
             f"override_enabled={self.developer_timing_overrides.enabled}; "
             f"raw_native={native_components}; "
             f"override_adjusted={adjusted_components}; "
+            f"lookup_mode={choice.timing_lookup_mode}; "
+            f"bundle_invariant_time_control={choice.timing_bundle_invariant_time_control_id or 'n/a'}; "
+            f"bundle_invariant_rating_band={choice.timing_bundle_invariant_rating_band or 'n/a'}; "
             f"effective_context={effective_key or 'n/a'}; "
             f"fallback_keys={list(choice.timing_fallback_keys_attempted) or list(fallback_keys_attempted)}; "
             f"overlay_matched={choice.timing_overlay_active}; "
+            f"invariants_ignored_for_match={choice.timing_invariants_ignored_for_match}; "
             f"move_profile={choice.move_pressure_profile_id or 'n/a'}; "
             f"think_profile={choice.think_time_profile_id or 'n/a'}; "
             f"sampled_think={choice.sampled_think_time_seconds if choice.sampled_think_time_seconds is not None else 'n/a'}; "
@@ -536,12 +551,16 @@ class TrainingSession:
         if choice.timing_attempted_context_key:
             parts.append(f"timing_attempt={choice.timing_attempted_context_key}")
             parts.append(f"timing_fallback_keys={list(choice.timing_fallback_keys_attempted)}")
+            parts.append(f"timing_lookup_mode={choice.timing_lookup_mode}")
+            parts.append(f"timing_bundle_time_control={choice.timing_bundle_invariant_time_control_id or 'n/a'}")
+            parts.append(f"timing_bundle_rating_band={choice.timing_bundle_invariant_rating_band or 'n/a'}")
         if choice.timing_overlay_active:
             parts.extend(
                 [
                     f"timing_overlay=active",
                     f"context={choice.timing_context_key}",
                     f"fallback={choice.timing_fallback_used}",
+                    f"invariants_ignored={choice.timing_invariants_ignored_for_match}",
                     f"move_profile={choice.move_pressure_profile_id}",
                     f"think_profile={choice.think_time_profile_id}",
                     f"sampled_think={choice.sampled_think_time_seconds:.2f}s" if choice.sampled_think_time_seconds is not None else "sampled_think=n/a",
@@ -688,24 +707,42 @@ class TrainingSession:
     def _effective_timing_context_key(self, components: dict[str, object] | None) -> str | None:
         if components is None:
             return None
-        context = TimingContext(
-            time_control_id=str(components.get("time_control_id", "unknown")),
-            mover_elo_band=str(components.get("mover_elo_band", "unknown")),
+        bundle = getattr(getattr(self.opponent, "bundle_provider", None), "bundle", None)
+        lookup_mode = getattr(bundle, "timing_lookup_mode", "full_key")
+        dynamic_context = DynamicTimingContext(
             clock_pressure_bucket=str(components.get("clock_pressure_bucket_override") or bucket_clock_pressure(float(components.get("remaining_ratio", 1.0)))),
             prev_opp_think_bucket=str(components.get("prev_opp_think_bucket_override") or bucket_prev_opp_think(components.get("prev_opp_think_seconds"))),
             opening_ply_band=str(components.get("opening_ply_band_override") or bucket_opening_ply_band(int(components.get("opening_ply", 1)))),
+        )
+        if lookup_mode == "reduced_dynamic":
+            return dynamic_context.key()
+        context = TimingContext(
+            time_control_id=str(components.get("time_control_id", "unknown")),
+            mover_elo_band=str(components.get("mover_elo_band", "unknown")),
+            clock_pressure_bucket=dynamic_context.clock_pressure_bucket,
+            prev_opp_think_bucket=dynamic_context.prev_opp_think_bucket,
+            opening_ply_band=dynamic_context.opening_ply_band,
         )
         return context.key()
 
     def _fallback_keys_for_components(self, components: dict[str, object] | None) -> tuple[str, ...]:
         if components is None:
             return ()
-        context = TimingContext(
-            time_control_id=str(components.get("time_control_id", "unknown")),
-            mover_elo_band=str(components.get("mover_elo_band", "unknown")),
+        bundle = getattr(getattr(self.opponent, "bundle_provider", None), "bundle", None)
+        lookup_mode = getattr(bundle, "timing_lookup_mode", "full_key")
+        dynamic_context = DynamicTimingContext(
             clock_pressure_bucket=str(components.get("clock_pressure_bucket_override") or bucket_clock_pressure(float(components.get("remaining_ratio", 1.0)))),
             prev_opp_think_bucket=str(components.get("prev_opp_think_bucket_override") or bucket_prev_opp_think(components.get("prev_opp_think_seconds"))),
             opening_ply_band=str(components.get("opening_ply_band_override") or bucket_opening_ply_band(int(components.get("opening_ply", 1)))),
+        )
+        if lookup_mode == "reduced_dynamic":
+            return tuple(fallback_keys_for_dynamic_context(dynamic_context))
+        context = TimingContext(
+            time_control_id=str(components.get("time_control_id", "unknown")),
+            mover_elo_band=str(components.get("mover_elo_band", "unknown")),
+            clock_pressure_bucket=dynamic_context.clock_pressure_bucket,
+            prev_opp_think_bucket=dynamic_context.prev_opp_think_bucket,
+            opening_ply_band=dynamic_context.opening_ply_band,
         )
         return tuple(fallback_keys_for_context(context))
 
@@ -727,6 +764,10 @@ class TrainingSession:
             effective_context_key=choice.timing_attempted_context_key or effective_key,
             fallback_keys_attempted=tuple(choice.timing_fallback_keys_attempted) if choice.timing_fallback_keys_attempted else tuple(fallback_keys_attempted),
             matched_context_key=choice.timing_context_key if choice.timing_overlay_active else None,
+            lookup_mode=choice.timing_lookup_mode,
+            bundle_invariant_time_control_id=choice.timing_bundle_invariant_time_control_id,
+            bundle_invariant_rating_band=choice.timing_bundle_invariant_rating_band,
+            invariants_ignored_for_match=choice.timing_invariants_ignored_for_match,
             fallback_used=bool(choice.timing_fallback_used),
             move_pressure_profile_id=choice.move_pressure_profile_id,
             think_time_profile_id=choice.think_time_profile_id,

@@ -48,6 +48,10 @@ class LiveTimingDebugState:
     effective_context_key: str | None = None
     fallback_keys_attempted: tuple[str, ...] = ()
     matched_context_key: str | None = None
+    lookup_mode: str = "full_key"
+    bundle_invariant_time_control_id: str | None = None
+    bundle_invariant_rating_band: str | None = None
+    invariants_ignored_for_match: bool = False
     fallback_used: bool = False
     move_pressure_profile_id: str | None = None
     think_time_profile_id: str | None = None
@@ -105,6 +109,15 @@ def parse_overlay_key_dimensions(context_keys: list[str]) -> dict[str, list[str]
     for key in context_keys:
         tokens = [part.strip() for part in str(key).split("|")]
         if len(tokens) < 5:
+            if len(tokens) == 3:
+                dimensions["clock_pressure_bucket"].add(tokens[0])
+                dimensions["prev_opp_think_bucket"].add(tokens[1])
+                dimensions["opening_ply_band"].add(tokens[2])
+            elif len(tokens) == 2:
+                dimensions["clock_pressure_bucket"].add(tokens[0])
+                dimensions["opening_ply_band"].add(tokens[1])
+            elif len(tokens) == 1:
+                dimensions["clock_pressure_bucket"].add(tokens[0])
             continue
         dimensions["time_control_id"].add(tokens[0])
         dimensions["mover_elo_band"].add(tokens[1])
