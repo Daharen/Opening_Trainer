@@ -23,6 +23,7 @@ from .timing import (
     bucket_clock_pressure,
     bucket_opening_ply_band,
     bucket_prev_opp_think,
+    fallback_keys_for_context,
     sample_think_time_seconds,
 )
 
@@ -56,6 +57,9 @@ class OpponentMoveChoice:
     exact_payload_path: str | None = None
     visible_delay_applied: bool = False
     visible_delay_seconds: float | None = None
+    timing_attempted_context_key: str | None = None
+    timing_fallback_keys_attempted: tuple[str, ...] = ()
+    visible_delay_reason: str | None = None
 
 
 class OpponentMoveProvider(Protocol):
@@ -251,14 +255,22 @@ class BuilderAggregateOpponentProvider:
         think_time_profile_id = None
         sampled_think_time_seconds = None
         modulation_summary: dict[str, object] | None = None
+        attempted_context_key: str | None = None
+        fallback_keys_attempted: tuple[str, ...] = ()
         if timing_context and self.bundle.timing_overlay_available:
+            clock_pressure_bucket = str(timing_context.get("clock_pressure_bucket_override")) if timing_context.get("clock_pressure_bucket_override") else bucket_clock_pressure(float(timing_context.get("remaining_ratio", 1.0)))
+            prev_opp_think_bucket = str(timing_context.get("prev_opp_think_bucket_override")) if timing_context.get("prev_opp_think_bucket_override") else bucket_prev_opp_think(timing_context.get("prev_opp_think_seconds"))
+            opening_ply_band = str(timing_context.get("opening_ply_band_override")) if timing_context.get("opening_ply_band_override") else bucket_opening_ply_band(int(timing_context.get("opening_ply", 1)))
             context = TimingContext(
                 time_control_id=str(timing_context.get("time_control_id", "unknown")),
                 mover_elo_band=str(timing_context.get("mover_elo_band", "unknown")),
-                clock_pressure_bucket=bucket_clock_pressure(float(timing_context.get("remaining_ratio", 1.0))),
-                prev_opp_think_bucket=bucket_prev_opp_think(timing_context.get("prev_opp_think_seconds")),
-                opening_ply_band=bucket_opening_ply_band(int(timing_context.get("opening_ply", 1))),
+                clock_pressure_bucket=clock_pressure_bucket,
+                prev_opp_think_bucket=prev_opp_think_bucket,
+                opening_ply_band=opening_ply_band,
             )
+            timing_context_key = context.key()
+            attempted_context_key = context.key()
+            fallback_keys_attempted = tuple(fallback_keys_for_context(context))
             overlay = self.bundle.resolve_overlay(context)
             if overlay is not None:
                 adjusted_weights, summary = apply_move_pressure_modulation(base_weights, overlay.move_pressure_profile, context.clock_pressure_bucket)
@@ -267,6 +279,7 @@ class BuilderAggregateOpponentProvider:
                 timing_overlay_active = True
                 timing_fallback_used = overlay.fallback_used
                 timing_context_key = overlay.matched_key
+                fallback_keys_attempted = overlay.fallback_keys
                 move_pressure_profile_id = overlay.move_pressure_profile.profile_id
                 think_time_profile_id = overlay.think_time_profile.profile_id
                 sampled_think_time_seconds = sample_think_time_seconds(
@@ -318,6 +331,8 @@ class BuilderAggregateOpponentProvider:
             timing_overlay_source=self.bundle.overlay_source,
             bundle_kind=self.bundle.bundle_kind,
             exact_payload_path=str(self.bundle.exact_payload_path) if self.bundle.exact_payload_path is not None else None,
+            timing_attempted_context_key=attempted_context_key,
+            timing_fallback_keys_attempted=fallback_keys_attempted,
         )
 
 

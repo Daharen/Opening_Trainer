@@ -62,6 +62,8 @@ class OverlayResolution:
     think_time_profile: ThinkTimeProfile
     matched_key: str
     fallback_used: bool
+    attempted_key: str
+    fallback_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ class TimingConditionedCorpusBundleHandle:
     def resolve_overlay(self, context: TimingContext) -> OverlayResolution | None:
         if self.overlay is None:
             return None
-        fallback_keys = _fallback_keys(context)
+        fallback_keys = fallback_keys_for_context(context)
         for index, key in enumerate(fallback_keys):
             profile_ids = self.overlay.context_profile_map.get(key)
             if not isinstance(profile_ids, dict):
@@ -111,6 +113,8 @@ class TimingConditionedCorpusBundleHandle:
                 think_time_profile=think_profile,
                 matched_key=key,
                 fallback_used=index > 0,
+                attempted_key=context.key(),
+                fallback_keys=tuple(fallback_keys),
             )
         return None
 
@@ -355,7 +359,7 @@ def sample_think_time_seconds(profile: ThinkTimeProfile, remaining_time_seconds:
     return max(0.0, sample)
 
 
-def _fallback_keys(context: TimingContext) -> list[str]:
+def fallback_keys_for_context(context: TimingContext) -> list[str]:
     return [
         context.key(),
         TimingContext(context.time_control_id, context.mover_elo_band, context.clock_pressure_bucket, "none", context.opening_ply_band).key(),
