@@ -690,52 +690,104 @@ class OpeningTrainerGUI:
     def _schedule_after(self, delay_ms: int, callback) -> None:
         if getattr(self, '_is_shutting_down', False):
             return
-        handle = self.root.after(delay_ms, callback)
+        root = getattr(self, 'root', None)
+        if root is None:
+            return
+        handle = root.after(delay_ms, callback)
         if not hasattr(self, '_after_handles'):
             self._after_handles = set()
         self._after_handles.add(handle)
 
     def _cancel_after_handles(self) -> None:
-        for handle in list(self._after_handles):
+        handles = list(getattr(self, '_after_handles', set()))
+        if not hasattr(self, '_after_handles'):
+            self._after_handles = set()
+        root = getattr(self, 'root', None)
+        for handle in handles:
             try:
-                self.root.after_cancel(handle)
-            except Exception:
-                pass
-            self._after_handles.discard(handle)
+                if root is not None:
+                    root.after_cancel(handle)
+            except Exception as exc:  # noqa: BLE001
+                log_line(f'APP_SHUTDOWN_TIMER_CANCEL_FAILED: handle={handle}; error={exc}', tag='error')
+            finally:
+                self._after_handles.discard(handle)
 
     def _request_shutdown(self) -> None:
         self._shutdown_coordinator(reason='window_close')
 
     def _shutdown_coordinator(self, reason: str) -> None:
-        if self._shutdown_started:
+        if getattr(self, '_shutdown_started', False):
             return
         self._shutdown_started = True
         self._is_shutting_down = True
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
         self._cancel_after_handles()
-        self.dev_console.close()
-        self.timing_override_dialog.close()
+        log_line('APP_SHUTDOWN_CANCEL_TIMERS_DONE', tag='startup')
+        self._close_optional_component('dev_console')
+        self._close_optional_component('timing_override_dialog')
+        self._close_child_windows()
+        log_line('APP_SHUTDOWN_DIALOGS_DONE', tag='startup')
         log_line('ENGINE_SHUTDOWN_BEGIN', tag='startup')
         try:
-            self.session.close()
+            session = getattr(self, 'session', None)
+            if session is not None:
+                session.close()
         finally:
             log_line('ENGINE_SHUTDOWN_COMPLETE', tag='startup')
-        for window in list(self._child_windows):
-            try:
-                if window.winfo_exists():
-                    window.destroy()
-            except Exception:
-                continue
-        for child in list(self.root.winfo_children()):
-            if isinstance(child, tk.Toplevel):
-                try:
-                    child.destroy()
-                except Exception:
-                    continue
+        log_line('APP_SHUTDOWN_SESSION_DONE', tag='startup')
         remove_instance_diagnostics()
         release_single_instance_guard()
+        log_line('APP_SHUTDOWN_GUARD_RELEASED', tag='startup')
+        root = getattr(self, 'root', None)
+        if root is not None:
+            try:
+                root.destroy()
+                log_line('APP_SHUTDOWN_ROOT_DESTROYED', tag='startup')
+            except Exception as exc:  # noqa: BLE001
+                log_line(f'APP_SHUTDOWN_ROOT_DESTROY_FAILED: {exc}', tag='error')
         log_line('APP_SHUTDOWN_COMPLETE', tag='startup')
-        self.root.destroy()
+
+    def _close_optional_component(self, attr_name: str) -> None:
+        component = getattr(self, attr_name, None)
+        if component is None:
+            return
+        close = getattr(component, 'close', None)
+        if close is None:
+            return
+        try:
+            close()
+        except Exception as exc:  # noqa: BLE001
+            log_line(f'APP_SHUTDOWN_OPTIONAL_CLOSE_FAILED: component={attr_name}; error={exc}', tag='error')
+
+    def _close_child_windows(self) -> None:
+        child_windows = list(getattr(self, '_child_windows', []))
+        for window in child_windows:
+            self._destroy_window(window)
+        if hasattr(self, '_child_windows'):
+            self._child_windows.clear()
+        root = getattr(self, 'root', None)
+        if root is None:
+            return
+        winfo_children = getattr(root, 'winfo_children', None)
+        if winfo_children is None:
+            return
+        try:
+            children = list(winfo_children())
+        except Exception as exc:  # noqa: BLE001
+            log_line(f'APP_SHUTDOWN_CHILD_ENUM_FAILED: {exc}', tag='error')
+            return
+        for child in children:
+            if isinstance(child, tk.Toplevel):
+                self._destroy_window(child)
+
+    def _destroy_window(self, window) -> None:
+        try:
+            winfo_exists = getattr(window, 'winfo_exists', None)
+            if winfo_exists is not None and not winfo_exists():
+                return
+            window.destroy()
+        except Exception as exc:  # noqa: BLE001
+            log_line(f'APP_SHUTDOWN_WINDOW_DESTROY_FAILED: {exc}', tag='error')
 
 
 def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
