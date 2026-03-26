@@ -40,20 +40,22 @@ class DeveloperTimingOverrideState:
 
 
 @dataclass(frozen=True)
-class TimingOverlayDiagnostics:
+class LiveTimingDebugState:
     bundle_path: str | None = None
-    overlay_source: str = "absent"
     overlay_available: bool = False
-    last_attempted_context_key: str | None = None
-    last_fallback_keys_attempted: tuple[str, ...] = ()
-    last_matched_context_key: str | None = None
-    last_move_pressure_profile_id: str | None = None
-    last_think_time_profile_id: str | None = None
-    last_sampled_think_time_seconds: float | None = None
-    last_visible_delay_applied_seconds: float | None = None
-    last_visible_delay_reason: str = "none"
-    last_opponent_source_path: str | None = None
-    review_predecessor_bypassed_by_override: bool = False
+    overlay_source: str = "absent"
+    raw_runtime_context_components: dict[str, object] | None = None
+    effective_context_key: str | None = None
+    fallback_keys_attempted: tuple[str, ...] = ()
+    matched_context_key: str | None = None
+    fallback_used: bool = False
+    move_pressure_profile_id: str | None = None
+    think_time_profile_id: str | None = None
+    sampled_think_time_seconds: float | None = None
+    visible_delay_applied_seconds: float | None = None
+    visible_delay_reason: str = "none"
+    last_opponent_source: str | None = None
+    review_predecessor_bypassed: bool = False
 
 
 class DeveloperTimingOverrideStore:
