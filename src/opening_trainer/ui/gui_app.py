@@ -438,6 +438,7 @@ class OpeningTrainerGUI:
         labels = {
             'not_started': 'Session route: preparing',
             'ordinary_corpus_play': 'Session route: corpus training',
+            'srs_due_review': 'Session route: spaced review due',
             'scheduled_review': 'Session route: review training',
             'boosted_review': 'Session route: boosted review',
             'extreme_urgency_review': 'Session route: urgent review',
@@ -469,7 +470,7 @@ class OpeningTrainerGUI:
     def _refresh_supporting_surfaces(self):
         items = self.session.review_storage.load_items(self.session.active_profile_id)
         profile_name = self.session.review_storage.load_profile_meta(self.session.active_profile_id).display_name
-        due = sum(1 for item in items if item.due_at_utc <= item.updated_at_utc)
+        due = sum(1 for item in items if item.srs_next_due_at_utc <= item.updated_at_utc)
         boosted = sum(1 for item in items if item.urgency_tier == 'boosted_review')
         extreme = sum(1 for item in items if item.urgency_tier == 'extreme_urgency')
         routing = self.session.current_routing.routing_source if self.session.current_routing else 'not_started'

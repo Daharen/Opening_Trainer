@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from .models import ReviewItem, UrgencyTier, due_state, utc_now_iso
+from .models import ReviewItem, RoutingSource, UrgencyTier, due_state, utc_now_iso
 
-SUCCESS_LADDER_MINUTES = [5, 30, 240, 1440, 4320]
+SRS_INTERVAL_DAYS = [1, 3, 7, 14, 30, 60, 120]
 ORDINARY_DUE_RETIREMENT_THRESHOLD = 10
 
 
 def _urgency_for_failures(item: ReviewItem) -> str:
-    if item.consecutive_failures >= 5 and item.consecutive_successes < 3:
+    if item.consecutive_failures >= 4:
         return UrgencyTier.EXTREME.value
-    if item.consecutive_failures >= 3:
+    if item.consecutive_failures >= 2:
         return UrgencyTier.BOOSTED.value
     return UrgencyTier.ORDINARY.value
 
@@ -36,6 +36,8 @@ def apply_failure(item: ReviewItem, failure_reason: str, preferred_move_uci: str
     item.mastery_score = max(0.0, item.mastery_score - 0.2)
     item.stability_score = max(0.0, item.stability_score - 0.2)
     item.urgency_tier = _urgency_for_failures(item)
+    item.frequency_state = item.urgency_tier
+    item.frequency_state_entered_at_utc = now
     item.urgency_multiplier = 2.5 if item.urgency_tier == UrgencyTier.EXTREME.value else (1.5 if item.urgency_tier == UrgencyTier.BOOSTED.value else 1.0)
     item.due_at_utc = now
     item.failure_reason = failure_reason
@@ -52,6 +54,13 @@ def apply_failure(item: ReviewItem, failure_reason: str, preferred_move_uci: str
         item.stubborn_extra_repeat_consumed_until_success = True
         item.pending_forced_stubborn_repeat = True
         item.last_routing_reason = f'{routing_reason}|EXTREME_STUBBORN_EXTRA_REPEAT|EXTREME_STUBBORN_COOLDOWN'
+    if routing_reason == RoutingSource.SRS_DUE_REVIEW.value:
+        item.srs_stage_index = 0
+        item.srs_lapse_count += 1
+    if item.srs_stage_index == 0:
+        item.srs_next_due_at_utc = (datetime.now(timezone.utc) + timedelta(days=SRS_INTERVAL_DAYS[0])).replace(microsecond=0).isoformat()
+    item.srs_last_reviewed_at_utc = now
+    item.srs_last_result = 'failure'
     return item
 
 
@@ -63,27 +72,35 @@ def apply_success(item: ReviewItem, routing_reason: str) -> ReviewItem:
     item.times_seen += 1
     item.times_passed += 1
     item.consecutive_successes += 1
-    item.success_streak += 1
+    item.success_streak = item.consecutive_successes
     item.consecutive_failures = 0
     item.mastery_score = min(1.0, item.mastery_score + 0.15)
     item.stability_score = min(1.0, item.stability_score + 0.2)
     old_tier = item.urgency_tier
     demotion_marker = None
-    if item.urgency_tier == UrgencyTier.EXTREME.value and item.success_streak >= 2:
+    if item.urgency_tier == UrgencyTier.EXTREME.value and item.consecutive_successes >= 2:
         item.urgency_tier = UrgencyTier.BOOSTED.value
+        item.frequency_state = item.urgency_tier
+        item.frequency_state_entered_at_utc = now
         item.skipped_review_slots = 0
         demotion_marker = 'TIER_DEMOTION extreme_to_boosted'
-    elif item.urgency_tier == UrgencyTier.BOOSTED.value and item.success_streak >= 5:
+    elif item.urgency_tier == UrgencyTier.BOOSTED.value and item.consecutive_successes >= 4:
         item.urgency_tier = UrgencyTier.ORDINARY.value
+        item.frequency_state = item.urgency_tier
+        item.frequency_state_entered_at_utc = now
         item.skipped_review_slots = 0
         demotion_marker = 'TIER_DEMOTION boosted_to_due'
-    elif item.urgency_tier == UrgencyTier.ORDINARY.value and item.success_streak >= ORDINARY_DUE_RETIREMENT_THRESHOLD:
+    elif item.urgency_tier == UrgencyTier.ORDINARY.value and item.consecutive_successes >= ORDINARY_DUE_RETIREMENT_THRESHOLD:
         item.frequency_retired_for_current_due_cycle = True
         item.skipped_review_slots = 0
         demotion_marker = 'FREQUENCY_RETIRE_DUE_CYCLE'
-    ladder_index = min(item.consecutive_successes - 1, len(SUCCESS_LADDER_MINUTES) - 1)
-    interval = timedelta(minutes=SUCCESS_LADDER_MINUTES[max(ladder_index, 0)])
-    item.due_at_utc = (datetime.now(timezone.utc) + interval).replace(microsecond=0).isoformat()
+    if routing_reason == RoutingSource.SRS_DUE_REVIEW.value:
+        item.srs_stage_index = min(item.srs_stage_index + 1, len(SRS_INTERVAL_DAYS) - 1)
+        interval_days = SRS_INTERVAL_DAYS[item.srs_stage_index]
+        item.srs_next_due_at_utc = (datetime.now(timezone.utc) + timedelta(days=interval_days)).replace(microsecond=0).isoformat()
+        item.srs_last_reviewed_at_utc = now
+        item.srs_last_result = 'success'
+    item.due_at_utc = now if item.urgency_tier != UrgencyTier.ORDINARY.value else item.due_at_utc
     item.last_routing_reason = f'{routing_reason}|{demotion_marker}' if demotion_marker else routing_reason
     item.urgency_multiplier = 2.5 if item.urgency_tier == UrgencyTier.EXTREME.value else (1.5 if item.urgency_tier == UrgencyTier.BOOSTED.value else 1.0)
     item.pending_forced_stubborn_repeat = False

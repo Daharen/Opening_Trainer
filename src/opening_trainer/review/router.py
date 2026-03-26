@@ -11,7 +11,7 @@ CATEGORY_PRIORITY = ('E', 'B', 'H80', 'H60', 'H40', 'H20', 'D', 'C')
 REVIEW_CATEGORIES = ('D', 'H80', 'H60', 'H40', 'H20', 'B', 'E')
 H_CATEGORIES = ('H80', 'H60', 'H40', 'H20')
 CATEGORY_TO_ROUTING = {
-    'D': RoutingSource.SCHEDULED_REVIEW.value,
+    'D': RoutingSource.SRS_DUE_REVIEW.value,
     'B': RoutingSource.BOOSTED_REVIEW.value,
     'E': RoutingSource.EXTREME.value,
     'H80': RoutingSource.HIJACK_REENTRY.value,
@@ -66,7 +66,7 @@ class ReviewRouter:
 
     @staticmethod
     def _queue_sort_key(item) -> tuple[str, str, str]:
-        return (item.due_at_utc, item.last_seen_at_utc, item.review_item_id)
+        return (item.srs_next_due_at_utc, item.last_seen_at_utc, item.review_item_id)
 
     @staticmethod
     def _deck_size(total_due: int) -> int:
@@ -401,21 +401,23 @@ class ReviewRouter:
         self.pending_rebuild_trigger = 'HIJACK_REVIVED'
 
     def select(self, profile_id: str, items: list) -> RoutingDecision:
-        due_items = [item for item in items if due_state(item.due_at_utc) == 'due' and not item.frequency_retired_for_current_due_cycle]
+        srs_due_items = [item for item in items if due_state(item.srs_next_due_at_utc) == 'due' and not item.frequency_retired_for_current_due_cycle]
+        srs_due_ids = {item.review_item_id for item in srs_due_items}
+        pressure_items = [item for item in items if item.review_item_id not in srs_due_ids and not item.frequency_retired_for_current_due_cycle]
         tier_items = {
-            'D': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.NONE.value and not i.dormant], key=self._queue_sort_key),
-            'H80': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H80.value and not i.dormant], key=self._queue_sort_key),
-            'H60': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H60.value and not i.dormant], key=self._queue_sort_key),
-            'H40': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H40.value and not i.dormant], key=self._queue_sort_key),
-            'H20': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H20.value and not i.dormant], key=self._queue_sort_key),
-            'B': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.BOOSTED.value], key=self._queue_sort_key),
-            'E': sorted([i for i in due_items if i.urgency_tier == UrgencyTier.EXTREME.value], key=self._queue_sort_key),
+            'D': sorted(srs_due_items, key=self._queue_sort_key),
+            'H80': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H80.value and not i.dormant], key=self._queue_sort_key),
+            'H60': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H60.value and not i.dormant], key=self._queue_sort_key),
+            'H40': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H40.value and not i.dormant], key=self._queue_sort_key),
+            'H20': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H20.value and not i.dormant], key=self._queue_sort_key),
+            'B': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.BOOSTED.value], key=self._queue_sort_key),
+            'E': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.EXTREME.value], key=self._queue_sort_key),
         }
         ids_by_tier = {category: {item.review_item_id for item in bucket} for category, bucket in tier_items.items()}
         self._sync_queues(tier_items, ids_by_tier)
         self._track_state_changes(ids_by_tier)
         counts_by_category = {category: len(tier_items[category]) for category in REVIEW_CATEGORIES}
-        due_count = counts_by_category['D'] + counts_by_category['H80'] + counts_by_category['H60'] + counts_by_category['H40'] + counts_by_category['H20']
+        due_count = counts_by_category['D']
         boosted_count, extreme_count = counts_by_category['B'], counts_by_category['E']
         total_due = due_count + boosted_count + extreme_count
 
@@ -428,7 +430,14 @@ class ReviewRouter:
             rebuild_trigger = 'deck_exhausted'
             self._rebuild_deck(counts_by_category)
 
-        token = self.deck.next_token() if self.deck.tokens else 'C'
+        forced_category: str | None = None
+        if self.tier_queues['D']:
+            forced_category = 'D'
+        elif self.tier_queues['E']:
+            forced_category = 'E'
+        elif self.tier_queues['B']:
+            forced_category = 'B'
+        token = forced_category or (self.deck.next_token() if self.deck.tokens else 'C')
         selected_item = None
         selected_category = token
         queue_before = None

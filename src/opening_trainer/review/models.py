@@ -20,6 +20,7 @@ class UrgencyTier(str, Enum):
 class RoutingSource(str, Enum):
     CORPUS = 'ordinary_corpus_play'
     IMMEDIATE_RETRY = 'immediate_retry'
+    SRS_DUE_REVIEW = 'srs_due_review'
     SCHEDULED_REVIEW = 'scheduled_review'
     BOOSTED_REVIEW = 'boosted_review'
     EXTREME = 'extreme_urgency_review'
@@ -92,6 +93,13 @@ class ReviewItem:
     avoidance_count: int = 0
     last_hijack_routing_source: str = ''
     last_anchor_seen_at: str | None = None
+    frequency_state: str = UrgencyTier.ORDINARY.value
+    frequency_state_entered_at_utc: str = ''
+    srs_stage_index: int = 0
+    srs_next_due_at_utc: str = ''
+    srs_last_reviewed_at_utc: str | None = None
+    srs_last_result: str = 'none'
+    srs_lapse_count: int = 0
 
     @classmethod
     def create(
@@ -139,6 +147,13 @@ class ReviewItem:
             canonical_predecessor_path_id='legacy_default',
             canonical_predecessor_path_metadata={'path_count': 1, 'selection_rule': 'legacy_single_path'},
             canonical_anchor_positions=[move.fen_before for move in predecessor_path[-2:]] if predecessor_path else [],
+            frequency_state=UrgencyTier.ORDINARY.value,
+            frequency_state_entered_at_utc=now,
+            srs_stage_index=0,
+            srs_next_due_at_utc=(datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).isoformat(),
+            srs_last_reviewed_at_utc=now,
+            srs_last_result='failure',
+            srs_lapse_count=0,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +178,14 @@ class ReviewItem:
         payload.setdefault('avoidance_count', 0)
         payload.setdefault('last_hijack_routing_source', '')
         payload.setdefault('last_anchor_seen_at', None)
+        legacy_tier = payload.get('urgency_tier', UrgencyTier.ORDINARY.value)
+        payload.setdefault('frequency_state', legacy_tier)
+        payload.setdefault('frequency_state_entered_at_utc', payload.get('updated_at_utc', utc_now_iso()))
+        payload.setdefault('srs_stage_index', 0)
+        payload.setdefault('srs_next_due_at_utc', payload.get('due_at_utc', utc_now_iso()))
+        payload.setdefault('srs_last_reviewed_at_utc', payload.get('last_seen_at_utc'))
+        payload.setdefault('srs_last_result', 'none')
+        payload.setdefault('srs_lapse_count', 0)
         return cls(**payload)
 
 
