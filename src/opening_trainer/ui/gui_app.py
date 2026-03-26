@@ -32,6 +32,7 @@ from .outcome_modal import OutcomeModal
 from .profile_dialog import ProfileDialog
 from .review_inspector import ReviewInspector
 from .status_panel import StatusPanel
+from .timing_override_dialog import TimingOverrideDialog
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
 DEFAULT_BUNDLE_SEARCH_ROOTS = (Path('artifacts'),)
@@ -59,6 +60,7 @@ class OpeningTrainerGUI:
         self._loading_job_active = False
         self.session_logger = get_session_logger()
         self.dev_console = DevConsoleWindow(self.root, self.session_logger)
+        self.timing_override_dialog = TimingOverrideDialog(self.root, self.session)
         self._shutdown_started = False
         self._is_shutting_down = False
         self._after_handles: set[str] = set()
@@ -650,6 +652,7 @@ class OpeningTrainerGUI:
         menubar.add_cascade(label='File', menu=file_menu)
         dev_menu = tk.Menu(menubar, tearoff=0)
         dev_menu.add_command(label='Open Dev Console', command=self._open_dev_console)
+        dev_menu.add_command(label='Timing Override...', command=self._open_timing_override_dialog)
         dev_menu.add_command(label='Open Logs Folder', command=self._open_logs_folder)
         dev_menu.add_command(label='Copy Current Session Log Path', command=self._copy_session_log_path)
         dev_menu.add_command(label='Clear Visible Buffer', command=self._clear_visible_log_buffer)
@@ -658,6 +661,9 @@ class OpeningTrainerGUI:
 
     def _open_dev_console(self) -> None:
         self.dev_console.open()
+
+    def _open_timing_override_dialog(self) -> None:
+        self.timing_override_dialog.open()
 
     def _open_logs_folder(self) -> None:
         logs_folder = str(self.session_logger.log_path.parent.resolve())
@@ -708,6 +714,7 @@ class OpeningTrainerGUI:
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
         self._cancel_after_handles()
         self.dev_console.close()
+        self.timing_override_dialog.close()
         log_line('ENGINE_SHUTDOWN_BEGIN', tag='startup')
         try:
             self.session.close()

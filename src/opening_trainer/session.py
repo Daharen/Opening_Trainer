@@ -11,6 +11,7 @@ import chess
 from .board import GameBoard
 from .bundle_corpus import normalize_builder_position_key
 from .corpus import load_artifact
+from .developer_timing import DeveloperTimingOverrideState, DeveloperTimingOverrideStore, TimingOverlayDiagnostics, parse_overlay_key_dimensions
 from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, MoveHistoryEntry, SessionOutcome, SessionState, SessionView
@@ -72,6 +73,7 @@ class TrainingSession:
         self.router = ReviewRouter()
         self.active_profile_id = self.profile_service.get_active_profile_id()
         self.settings_store = TrainerSettingsStore(self.review_storage.root)
+        self.developer_timing_store = DeveloperTimingOverrideStore(self.review_storage.root)
         self.player_color = chess.WHITE
         self.player_move_count = 0
         self.state = SessionState.IDLE
@@ -83,6 +85,8 @@ class TrainingSession:
         self.active_review_plan = None
         self.run_path: list[ReviewPathMove] = []
         self.settings = self.settings_store.load(maximum_depth=self.max_supported_training_depth())
+        self.developer_timing_overrides = self.developer_timing_store.load()
+        self.timing_diagnostics = TimingOverlayDiagnostics(bundle_path=self.runtime_context.config.corpus_bundle_dir)
         self._apply_settings(self.settings)
         self.timed_state: TimedSessionState | None = None
         self._player_turn_started_at: float | None = None
@@ -440,6 +444,10 @@ class TrainingSession:
     def _handle_opponent_turn(self) -> None:
         board_before = self.board.board.copy(stack=True)
         scripted = self._planned_opponent_move(board_before)
+        review_predecessor_bypassed = False
+        if scripted is not None and self.developer_timing_overrides.enabled and self.developer_timing_overrides.force_ordinary_corpus_play:
+            scripted = None
+            review_predecessor_bypassed = True
         timing_context = self._build_opponent_timing_context()
         if scripted is not None:
             choice = scripted
@@ -447,7 +455,7 @@ class TrainingSession:
             choice = self.opponent.choose_move_with_context(self.board.board)
         else:
             choice = self.opponent.choose_move_with_runtime_context(self.board.board, timing_context=timing_context)
-        visible_delay_seconds = self._visible_opponent_delay_seconds(choice.sampled_think_time_seconds)
+        visible_delay_seconds, visible_delay_reason = self._visible_opponent_delay_seconds(choice.sampled_think_time_seconds, choice=choice)
         if visible_delay_seconds > 0:
             time.sleep(visible_delay_seconds)
         self._consume_opponent_think_time(choice.sampled_think_time_seconds)
@@ -455,12 +463,27 @@ class TrainingSession:
             choice,
             visible_delay_applied=visible_delay_seconds > 0,
             visible_delay_seconds=visible_delay_seconds if visible_delay_seconds > 0 else None,
+            visible_delay_reason=visible_delay_reason,
         )
         move = choice.move
         self.last_opponent_choice = choice
         san = self.board.board.san(move)
         self.board.board.push(move)
         self._record_path_move(board_before, move)
+        self._update_timing_diagnostics(choice, review_predecessor_bypassed=review_predecessor_bypassed)
+        log_line(
+            "timing_debug: "
+            f"override_enabled={self.developer_timing_overrides.enabled}; "
+            f"effective_context={choice.timing_attempted_context_key or 'n/a'}; "
+            f"fallback_keys={list(choice.timing_fallback_keys_attempted)}; "
+            f"overlay_matched={choice.timing_overlay_active}; "
+            f"move_profile={choice.move_pressure_profile_id or 'n/a'}; "
+            f"think_profile={choice.think_time_profile_id or 'n/a'}; "
+            f"sampled_think={choice.sampled_think_time_seconds if choice.sampled_think_time_seconds is not None else 'n/a'}; "
+            f"visible_delay={choice.visible_delay_seconds if choice.visible_delay_seconds is not None else 'none'}; "
+            f"review_predecessor_bypassed={review_predecessor_bypassed}",
+            tag="corpus",
+        )
         log_line(f'Opponent plays: {san}{self._format_opponent_choice_detail(choice)}', tag='corpus')
         if self._resolve_terminal_board_state():
             return
@@ -484,6 +507,9 @@ class TrainingSession:
 
     def _format_opponent_choice_detail(self, choice) -> str:
         parts = [f'via {choice.selected_via}', f'reason={choice.corpus_lookup_reason_code}', f'position={choice.normalized_position_key}', f'candidate_rows={choice.candidate_row_count}', f'legal_candidates={choice.legal_candidate_count}']
+        if choice.timing_attempted_context_key:
+            parts.append(f"timing_attempt={choice.timing_attempted_context_key}")
+            parts.append(f"timing_fallback_keys={list(choice.timing_fallback_keys_attempted)}")
         if choice.timing_overlay_active:
             parts.extend(
                 [
@@ -503,15 +529,35 @@ class TrainingSession:
                 f"bundle_kind={choice.bundle_kind or 'unknown'}",
                 f"exact_payload={choice.exact_payload_path or 'n/a'}",
                 f"visible_delay={choice.visible_delay_seconds:.2f}s" if choice.visible_delay_applied and choice.visible_delay_seconds is not None else "visible_delay=none",
+                f"visible_delay_reason={choice.visible_delay_reason or 'none'}",
             ]
         )
         return ' [' + ' | '.join(parts) + ']'
 
-    def _visible_opponent_delay_seconds(self, sampled_seconds: float | None) -> float:
+    def _visible_opponent_delay_seconds(self, sampled_seconds: float | None, *, choice=None):
         if sampled_seconds is None:
-            return 0.0
-        scaled = max(0.0, sampled_seconds) * max(0.0, self.opponent_visible_delay_speed_multiplier)
-        return max(self.opponent_visible_delay_min_seconds, min(self.opponent_visible_delay_max_seconds, scaled))
+            return (0.0, "sampled_think_time_missing") if choice is not None else 0.0
+        if choice is not None and not getattr(choice, "timing_overlay_active", False):
+            if getattr(choice, "selected_via", None) == "review_predecessor_path":
+                return 0.0, "review_predecessor_path"
+            return 0.0, "no_overlay_match"
+        scale = self.opponent_visible_delay_speed_multiplier
+        min_seconds = self.opponent_visible_delay_min_seconds
+        max_seconds = self.opponent_visible_delay_max_seconds
+        overrides = self.developer_timing_overrides
+        if overrides.enabled:
+            scale *= overrides.visible_delay_scale
+            if overrides.visible_delay_min_seconds is not None:
+                min_seconds = overrides.visible_delay_min_seconds
+            if overrides.visible_delay_max_seconds is not None:
+                max_seconds = overrides.visible_delay_max_seconds
+        scaled = max(0.0, sampled_seconds) * max(0.0, scale)
+        if max_seconds <= 0:
+            return 0.0, "delay_suppressed_by_dev_setting"
+        result = max(min_seconds, min(max_seconds, scaled))
+        if choice is None:
+            return result
+        return result, "applied"
 
     def _build_timed_state_from_bundle(self) -> TimedSessionState | None:
         provider = getattr(self.opponent, "bundle_provider", None)
@@ -565,7 +611,7 @@ class TrainingSession:
             return None
         opponent_remaining_ms = self.timed_state.white_remaining_ms if self.player_color == chess.BLACK else self.timed_state.black_remaining_ms
         remaining_seconds = opponent_remaining_ms / 1000.0
-        return {
+        native_context = {
             "time_control_id": self.timed_state.time_control_id,
             "mover_elo_band": self._format_rating_band(getattr(getattr(self.opponent.bundle_provider, 'bundle', None), 'manifest', {}).get("target_rating_band")) or "unknown",
             "remaining_ratio": remaining_seconds / max(1.0, self.timed_state.initial_seconds),
@@ -573,6 +619,58 @@ class TrainingSession:
             "prev_opp_think_seconds": self.timed_state.previous_opponent_think_seconds,
             "opening_ply": len(self.board.board.move_stack) + 1,
         }
+        overrides = self.developer_timing_overrides
+        if not overrides.enabled:
+            return native_context
+        context = dict(native_context)
+        if overrides.force_time_control_id != "Auto":
+            context["time_control_id"] = overrides.force_time_control_id
+        if overrides.force_mover_elo_band != "Auto":
+            context["mover_elo_band"] = overrides.force_mover_elo_band
+        if overrides.force_clock_pressure_bucket != "Auto":
+            context["clock_pressure_bucket_override"] = overrides.force_clock_pressure_bucket
+        if overrides.force_prev_opp_think_bucket != "Auto":
+            context["prev_opp_think_bucket_override"] = overrides.force_prev_opp_think_bucket
+        if overrides.force_opening_ply_band != "Auto":
+            context["opening_ply_band_override"] = overrides.force_opening_ply_band
+        return context
+
+    def overlay_key_dimensions(self) -> dict[str, list[str]]:
+        provider = getattr(self.opponent, "bundle_provider", None)
+        overlay = getattr(getattr(provider, "bundle", None), "overlay", None)
+        context_map = getattr(overlay, "context_profile_map", {})
+        if not isinstance(context_map, dict):
+            return parse_overlay_key_dimensions([])
+        return parse_overlay_key_dimensions(list(context_map.keys()))
+
+    def update_developer_timing_overrides(self, settings: DeveloperTimingOverrideState) -> DeveloperTimingOverrideState:
+        self.developer_timing_overrides = self.developer_timing_store.save(settings)
+        return self.developer_timing_overrides
+
+    def reset_developer_timing_overrides(self) -> DeveloperTimingOverrideState:
+        return self.update_developer_timing_overrides(DeveloperTimingOverrideState.disabled_defaults())
+
+    def _update_timing_diagnostics(self, choice, *, review_predecessor_bypassed: bool) -> None:
+        source_map = {
+            "review_predecessor_path": "review predecessor path",
+            "stockfish_fallback": "stockfish fallback",
+            "random_legal_move": "random fallback",
+        }
+        self.timing_diagnostics = TimingOverlayDiagnostics(
+            bundle_path=self.runtime_context.config.corpus_bundle_dir,
+            overlay_source=choice.timing_overlay_source or "absent",
+            overlay_available=bool(choice.timing_overlay_available),
+            last_attempted_context_key=choice.timing_attempted_context_key,
+            last_fallback_keys_attempted=tuple(choice.timing_fallback_keys_attempted),
+            last_matched_context_key=choice.timing_context_key if choice.timing_overlay_active else None,
+            last_move_pressure_profile_id=choice.move_pressure_profile_id,
+            last_think_time_profile_id=choice.think_time_profile_id,
+            last_sampled_think_time_seconds=choice.sampled_think_time_seconds,
+            last_visible_delay_applied_seconds=choice.visible_delay_seconds if choice.visible_delay_applied else None,
+            last_visible_delay_reason=choice.visible_delay_reason or "none",
+            last_opponent_source_path=source_map.get(choice.selected_via, "ordinary corpus"),
+            review_predecessor_bypassed_by_override=review_predecessor_bypassed,
+        )
 
     def _timing_summary_text(self) -> str:
         if self.timed_state is None:

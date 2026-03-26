@@ -141,6 +141,16 @@ def test_request_shutdown_routes_to_authoritative_coordinator():
     assert calls == ['window_close']
 
 
+def test_timing_override_dialog_entrypoint_opens_from_developer_menu():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    called = {"count": 0}
+    gui.timing_override_dialog = type("Dialog", (), {"open": lambda self: called.__setitem__("count", called["count"] + 1)})()
+
+    gui._open_timing_override_dialog()
+
+    assert called["count"] == 1
+
+
 def test_outcome_modal_contract_shape_includes_required_acknowledgement_default():
     contract = OutcomeModalContract('FAIL', 'summary', 'reason', 'e4', 'route', 'next', 'impact')
 

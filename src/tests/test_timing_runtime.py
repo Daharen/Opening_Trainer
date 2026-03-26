@@ -11,6 +11,9 @@ from opening_trainer.opponent import BuilderAggregateOpponentProvider
 from opening_trainer.runtime import inspect_corpus_bundle
 from opening_trainer.runtime import RuntimeOverrides, load_runtime_config
 from opening_trainer.session import TrainingSession
+from opening_trainer.models import SessionState
+from opening_trainer.developer_timing import DeveloperTimingOverrideState, DeveloperTimingOverrideStore, parse_overlay_key_dimensions
+from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.timing import (
     TimingConditionedCorpusBundleLoader,
     TimingContext,
@@ -269,3 +272,126 @@ def test_runtime_bundle_inspection_accepts_native_timing_bundle(tmp_path):
     assert compatibility.available is True
     assert compatibility.bundle_kind == "timing_conditioned"
     assert "bundle_kind=timing_conditioned" in compatibility.detail
+
+
+def test_developer_timing_override_state_persists_and_reloads(tmp_path):
+    store = DeveloperTimingOverrideStore(tmp_path)
+    saved = store.save(
+        DeveloperTimingOverrideState(
+            enabled=True,
+            force_time_control_id="rapid_300_0",
+            force_mover_elo_band="1200-1399",
+            force_clock_pressure_bucket="low",
+            force_prev_opp_think_bucket="short",
+            force_opening_ply_band="11-20",
+            force_ordinary_corpus_play=True,
+            visible_delay_scale=0.5,
+            visible_delay_min_seconds=0.1,
+            visible_delay_max_seconds=0.9,
+        )
+    )
+    loaded = store.load()
+
+    assert saved == loaded
+    assert loaded.enabled is True
+    assert loaded.force_ordinary_corpus_play is True
+
+
+def test_forced_context_values_override_native_runtime_context(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_forced"))
+    session.timed_state = session._build_timed_state_from_bundle()
+    session.update_developer_timing_overrides(
+        DeveloperTimingOverrideState(
+            enabled=True,
+            force_time_control_id="blitz_180_0",
+            force_mover_elo_band="1600-1799",
+            force_clock_pressure_bucket="critical",
+            force_prev_opp_think_bucket="long",
+            force_opening_ply_band="31+",
+        )
+    )
+    context = session._build_opponent_timing_context()
+
+    assert context is not None
+    assert context["time_control_id"] == "blitz_180_0"
+    assert context["mover_elo_band"] == "1600-1799"
+    assert context["clock_pressure_bucket_override"] == "critical"
+    assert context["prev_opp_think_bucket_override"] == "long"
+    assert context["opening_ply_band_override"] == "31+"
+
+
+def test_auto_mode_preserves_native_runtime_behavior(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_auto"))
+    session.timed_state = session._build_timed_state_from_bundle()
+    native = session._build_opponent_timing_context()
+    session.update_developer_timing_overrides(DeveloperTimingOverrideState(enabled=True))
+    overridden = session._build_opponent_timing_context()
+
+    assert overridden == native
+
+
+def test_force_ordinary_corpus_play_bypasses_review_predecessor_path(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_bypass"))
+    session.update_developer_timing_overrides(DeveloperTimingOverrideState(enabled=True, force_ordinary_corpus_play=True))
+    session.active_review_plan = type("Plan", (), {"predecessor_path": [{"side_to_move": "white", "move_uci": "e2e4", "fen_before": session.board.board.fen()}]})()
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+
+    session._handle_opponent_turn()
+
+    assert session.last_opponent_choice is not None
+    assert session.last_opponent_choice.selected_via != "review_predecessor_path"
+    assert session.timing_diagnostics.review_predecessor_bypassed_by_override is True
+
+
+def test_discovered_overlay_key_dropdown_values_populate_from_context_profile_map():
+    dimensions = parse_overlay_key_dimensions(
+        [
+            "rapid_300_0|1200-1399|medium|short|01-10",
+            "rapid_600_5|1400-1599|low|instant|11-20",
+        ]
+    )
+
+    assert dimensions["time_control_id"] == ["rapid_300_0", "rapid_600_5"]
+    assert dimensions["mover_elo_band"] == ["1200-1399", "1400-1599"]
+    assert "low" in dimensions["clock_pressure_bucket"]
+
+
+def test_debug_diagnostics_update_after_move_selection(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_diag"))
+    session.start_new_game()
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+
+    session._handle_opponent_turn()
+
+    assert session.timing_diagnostics.overlay_source in {"json_file", "absent", "behavioral_profile_set_sqlite"}
+    assert session.timing_diagnostics.last_opponent_source_path is not None
+
+
+def test_visible_delay_diagnostics_update_correctly_when_overlay_unmatched(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_unmatched"))
+    session.start_new_game()
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+    session.update_developer_timing_overrides(
+        DeveloperTimingOverrideState(enabled=True, force_prev_opp_think_bucket="long", force_opening_ply_band="31+")
+    )
+
+    session._handle_opponent_turn()
+
+    assert session.timing_diagnostics.last_matched_context_key is None
+    assert session.timing_diagnostics.last_visible_delay_reason in {"no_overlay_match", "sampled_think_time_missing"}
