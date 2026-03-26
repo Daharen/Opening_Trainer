@@ -13,6 +13,7 @@ from opening_trainer.runtime import RuntimeOverrides, load_runtime_config
 from opening_trainer.session import TrainingSession
 from opening_trainer.models import SessionState
 from opening_trainer.developer_timing import DeveloperTimingOverrideState, DeveloperTimingOverrideStore, parse_overlay_key_dimensions
+from opening_trainer.developer_timing import LiveTimingDebugState
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.timing import (
     TimingConditionedCorpusBundleLoader,
@@ -241,19 +242,15 @@ def test_visible_delay_clamp_and_summary_is_explicit(tmp_path):
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime)
     session.timed_state = session._build_timed_state_from_bundle()
-    session.last_opponent_choice = type(
-        "Choice",
-        (),
-        {
-            "timing_overlay_available": True,
-            "timing_overlay_active": True,
-            "timing_fallback_used": False,
-            "visible_delay_applied": True,
-            "timing_overlay_source": "json_file",
-            "timing_context_key": "rapid_300_0|1200-1399|medium|none|01-10",
-            "sampled_think_time_seconds": 1.25,
-        },
-    )()
+    session.live_timing_debug_state = LiveTimingDebugState(
+        bundle_path=str(bundle_dir),
+        overlay_available=True,
+        overlay_source="json_file",
+        effective_context_key="rapid_300_0|1200-1399|medium|none|01-10",
+        matched_context_key="rapid_300_0|1200-1399|medium|none|01-10",
+        sampled_think_time_seconds=1.25,
+        visible_delay_applied_seconds=0.2,
+    )
     session.opponent_visible_delay_min_seconds = 0.01
     session.opponent_visible_delay_max_seconds = 0.02
 
@@ -312,7 +309,7 @@ def test_forced_context_values_override_native_runtime_context(tmp_path):
             force_opening_ply_band="31+",
         )
     )
-    context = session._build_opponent_timing_context()
+    context, _native, _adjusted = session._build_opponent_timing_context()
 
     assert context is not None
     assert context["time_control_id"] == "blitz_180_0"
@@ -327,9 +324,9 @@ def test_auto_mode_preserves_native_runtime_behavior(tmp_path):
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_auto"))
     session.timed_state = session._build_timed_state_from_bundle()
-    native = session._build_opponent_timing_context()
+    native, _native_raw, _native_adjusted = session._build_opponent_timing_context()
     session.update_developer_timing_overrides(DeveloperTimingOverrideState(enabled=True))
-    overridden = session._build_opponent_timing_context()
+    overridden, _overridden_raw, _overridden_adjusted = session._build_opponent_timing_context()
 
     assert overridden == native
 
@@ -348,7 +345,7 @@ def test_force_ordinary_corpus_play_bypasses_review_predecessor_path(tmp_path):
 
     assert session.last_opponent_choice is not None
     assert session.last_opponent_choice.selected_via != "review_predecessor_path"
-    assert session.timing_diagnostics.review_predecessor_bypassed_by_override is True
+    assert session.timing_diagnostics.review_predecessor_bypassed is True
 
 
 def test_discovered_overlay_key_dropdown_values_populate_from_context_profile_map():
@@ -376,7 +373,8 @@ def test_debug_diagnostics_update_after_move_selection(tmp_path):
     session._handle_opponent_turn()
 
     assert session.timing_diagnostics.overlay_source in {"json_file", "absent", "behavioral_profile_set_sqlite"}
-    assert session.timing_diagnostics.last_opponent_source_path is not None
+    assert session.timing_diagnostics.last_opponent_source is not None
+    assert session.timing_diagnostics.bundle_path == str(bundle_dir)
 
 
 def test_visible_delay_diagnostics_update_correctly_when_overlay_unmatched(tmp_path):
@@ -393,5 +391,33 @@ def test_visible_delay_diagnostics_update_correctly_when_overlay_unmatched(tmp_p
 
     session._handle_opponent_turn()
 
-    assert session.timing_diagnostics.last_matched_context_key is None
-    assert session.timing_diagnostics.last_visible_delay_reason in {"no_overlay_match", "sampled_think_time_missing"}
+    assert session.timing_diagnostics.effective_context_key is not None
+    assert session.timing_diagnostics.fallback_keys_attempted
+    assert session.timing_diagnostics.matched_context_key is None
+    assert session.timing_diagnostics.visible_delay_reason in {"no_overlay_match", "sampled_think_time_missing"}
+
+
+def test_live_timing_debug_state_initializes_from_loaded_bundle(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_initial_state"))
+
+    assert session.timing_diagnostics.bundle_path == str(bundle_dir)
+    assert session.timing_diagnostics.overlay_available is True
+    assert session.timing_diagnostics.overlay_source == "json_file"
+
+
+def test_timing_summary_and_diagnostics_use_same_context_key(tmp_path):
+    bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True)
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_consistent_summary"))
+    session.start_new_game()
+    session.player_color = chess.BLACK
+    session.state = SessionState.OPPONENT_TURN
+    session.timed_state = session._build_timed_state_from_bundle()
+
+    session._handle_opponent_turn()
+
+    summary = session._timing_summary_text()
+    assert f"Overlay source: {session.timing_diagnostics.overlay_source}" in summary
+    assert f"Context: {session.timing_diagnostics.matched_context_key or session.timing_diagnostics.effective_context_key or 'n/a'}" in summary
