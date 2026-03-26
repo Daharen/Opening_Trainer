@@ -292,6 +292,152 @@ class SQLiteAggregateCorpusProvider:
         return position
 
 
+class CompactSQLiteAggregateCorpusProvider:
+    def __init__(self, bundle_dir: Path, manifest: dict[str, object], payload_path: Path, cache_size: int = 512):
+        self.bundle_dir = bundle_dir
+        self.payload_path = payload_path
+        self.cache_size = max(0, cache_size)
+        self._position_cache: OrderedDict[str, BuilderAggregatePosition | None] = OrderedDict()
+        self._cache_lock = threading.Lock()
+        self._thread_local = threading.local()
+        self._schema = self._inspect_schema()
+        self.metadata = self._build_metadata(manifest)
+
+    def _build_metadata(self, manifest: dict[str, object]) -> BuilderAggregateBundleMetadata:
+        return BuilderAggregateBundleMetadata(
+            bundle_dir=self.bundle_dir.resolve(),
+            manifest_path=(self.bundle_dir / BUNDLE_MANIFEST_NAME).resolve(),
+            aggregate_path=self.payload_path.resolve(),
+            manifest=manifest,
+            position_key_format=str(manifest.get("position_key_format", SUPPORTED_BUNDLE_POSITION_KEY_FORMAT)),
+            move_key_format=str(manifest.get("move_key_format", SUPPORTED_BUNDLE_MOVE_KEY_FORMAT)),
+            payload_status=manifest.get("payload_status"),
+            payload_format="sqlite_compact_v2",
+            provider_label="corpus_exact_bundle_sqlite_compact_v2",
+        )
+
+    def _inspect_schema(self) -> dict[str, str]:
+        connection = sqlite3.connect(f"file:{self.payload_path}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            table_rows = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            table_names = {str(row["name"]) for row in table_rows}
+            positions_table = "positions" if "positions" in table_names else None
+            moves_table = "moves" if "moves" in table_names else None
+            if positions_table is None or moves_table is None:
+                raise ValueError("compact SQLite payload requires positions and moves tables")
+            position_columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({positions_table})").fetchall()}
+            move_columns = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({moves_table})").fetchall()}
+            position_key_col = _pick_column(position_columns, ("position_key", "fen_normalized", "fen", "board_fen"))
+            position_id_col = _pick_column(position_columns, ("position_id", "id"))
+            move_position_id_col = _pick_column(move_columns, ("position_id", "parent_position_id", "pos_id"))
+            move_key_col = _pick_column(move_columns, ("uci", "move_uci", "move_key"))
+            raw_count_col = _pick_column(move_columns, ("raw_count", "observed_count", "count"))
+            if not all((position_key_col, position_id_col, move_position_id_col, move_key_col, raw_count_col)):
+                raise ValueError("compact SQLite payload is missing one or more required columns")
+            return {
+                "positions_table": positions_table,
+                "moves_table": moves_table,
+                "position_key_col": position_key_col,
+                "position_id_col": position_id_col,
+                "position_total_col": _pick_column(position_columns, ("total_observed_count", "total_observations", "observed_total", "total_count")),
+                "position_candidate_count_col": _pick_column(position_columns, ("candidate_row_count", "candidate_move_count", "candidate_count", "move_count")),
+                "move_position_id_col": move_position_id_col,
+                "move_key_col": move_key_col,
+                "move_format_col": _pick_column(move_columns, ("move_key_format", "uci_format")),
+                "move_raw_count_col": raw_count_col,
+            }
+        finally:
+            connection.close()
+
+    def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
+        with self._cache_lock:
+            cached = self._position_cache.get(position_key)
+            if cached is not None or position_key in self._position_cache:
+                return cached
+
+        connection = self._get_connection_for_current_thread()
+        schema = self._schema
+        position_select_parts = [
+            f"{schema['position_id_col']} AS position_id",
+            f"{schema['position_key_col']} AS position_key",
+        ]
+        if schema["position_total_col"]:
+            position_select_parts.append(f"{schema['position_total_col']} AS total_observed_count")
+        if schema["position_candidate_count_col"]:
+            position_select_parts.append(f"{schema['position_candidate_count_col']} AS candidate_row_count")
+        position_cursor = connection.cursor()
+        row = position_cursor.execute(
+            f"SELECT {', '.join(position_select_parts)} FROM {schema['positions_table']} WHERE {schema['position_key_col']} = ? LIMIT 1",
+            (position_key,),
+        ).fetchone()
+        if row is None:
+            return self._remember(position_key, None)
+
+        move_select_parts = [
+            f"{schema['move_key_col']} AS move_key",
+            f"{schema['move_raw_count_col']} AS raw_count",
+        ]
+        if schema["move_format_col"]:
+            move_select_parts.append(f"{schema['move_format_col']} AS move_key_format")
+        move_rows = connection.cursor().execute(
+            f"SELECT {', '.join(move_select_parts)} FROM {schema['moves_table']} WHERE {schema['move_position_id_col']} = ? ORDER BY {schema['move_raw_count_col']} DESC, {schema['move_key_col']} ASC",
+            (row["position_id"],),
+        ).fetchall()
+
+        candidates: list[BuilderAggregateCandidate] = []
+        unsupported_count = 0
+        for move_row in move_rows:
+            if schema["move_format_col"] and move_row["move_key_format"] not in (None, SUPPORTED_BUNDLE_MOVE_KEY_FORMAT):
+                unsupported_count += 1
+                continue
+            move_key = move_row["move_key"]
+            if move_key is None:
+                unsupported_count += 1
+                continue
+            candidates.append(BuilderAggregateCandidate(uci=str(move_key), raw_count=int(move_row["raw_count"] or 0)))
+
+        total_observed_count = int(row["total_observed_count"] or 0) if "total_observed_count" in row.keys() else 0
+        if total_observed_count <= 0:
+            total_observed_count = sum(candidate.raw_count for candidate in candidates)
+        candidate_row_count = int(row["candidate_row_count"] or 0) if "candidate_row_count" in row.keys() else 0
+        if candidate_row_count <= 0:
+            candidate_row_count = len(move_rows)
+        position = BuilderAggregatePosition(
+            position_key=str(row["position_key"]),
+            total_observed_count=total_observed_count,
+            candidates=tuple(candidates),
+            candidate_row_count=candidate_row_count,
+            unsupported_candidate_row_count=max(0, len(move_rows) - len(candidates)),
+        )
+        return self._remember(position_key, position)
+
+    def _get_connection_for_current_thread(self) -> sqlite3.Connection:
+        connection = getattr(self._thread_local, "connection", None)
+        if connection is None:
+            connection = sqlite3.connect(f"file:{self.payload_path}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            self._thread_local.connection = connection
+        return connection
+
+    def _remember(self, position_key: str, position: BuilderAggregatePosition | None) -> BuilderAggregatePosition | None:
+        if self.cache_size <= 0:
+            return position
+        with self._cache_lock:
+            self._position_cache[position_key] = position
+            self._position_cache.move_to_end(position_key)
+            while len(self._position_cache) > self.cache_size:
+                self._position_cache.popitem(last=False)
+        return position
+
+
+def _pick_column(columns: set[str], candidates: tuple[str, ...]) -> str | None:
+    for name in candidates:
+        if name in columns:
+            return name
+    return None
+
+
 class BuilderAggregateCorpusProvider:
     def __init__(self, bundle_dir: str | Path, rng=None):
         self.bundle_dir = Path(bundle_dir)
@@ -311,6 +457,14 @@ class BuilderAggregateCorpusProvider:
         payload_resolution, resolution_error = resolve_bundle_payload(manifest, self.bundle_dir)
         if payload_resolution is None:
             raise ValueError(resolution_error or f"Unsupported bundle payload at {self.bundle_dir}")
+
+        payload_format_hint = str(manifest.get("payload_format", "")).strip().lower()
+        payload_version_hint = str(manifest.get("payload_version", "")).strip().lower()
+        if payload_resolution.payload_format == "sqlite" and (
+            payload_format_hint in {"sqlite_compact_v2", "compact_exact_payload_v2", "compact_sqlite_v2"}
+            or payload_version_hint in {"2", "v2"}
+        ):
+            return CompactSQLiteAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path)
 
         if payload_resolution.payload_format == "sqlite":
             return SQLiteAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path)

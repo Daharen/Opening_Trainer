@@ -18,6 +18,7 @@ BUNDLE_BEHAVIORAL_PROFILE_SET_DEFAULT_RELATIVE_PATH = Path("data/behavioral_prof
 class BundlePayloadResolution:
     payload_format: str
     payload_path: Path
+    payload_version: str | None = None
 
 
 def manifest_declared_aggregate_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
@@ -50,6 +51,35 @@ def manifest_declared_exact_sqlite_path(manifest: dict[str, object], bundle_dir:
         if not isinstance(declared_path, str) or not declared_path.strip():
             continue
         return bundle_dir / Path(declared_path)
+    return None
+
+
+def manifest_declared_canonical_exact_payload_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
+    for key in ("canonical_exact_payload_file", "canonical_exact_corpus_file"):
+        declared_path = manifest.get(key)
+        if not isinstance(declared_path, str) or not declared_path.strip():
+            continue
+        return bundle_dir / Path(declared_path)
+    return None
+
+
+def manifest_declared_compatibility_exact_payload_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
+    for key in ("compatibility_exact_payload_file", "compatibility_exact_corpus_file"):
+        declared_path = manifest.get(key)
+        if not isinstance(declared_path, str) or not declared_path.strip():
+            continue
+        return bundle_dir / Path(declared_path)
+    return None
+
+
+def manifest_payload_version(manifest: dict[str, object]) -> str | None:
+    for key in ("payload_version", "exact_payload_version", "compact_payload_version"):
+        value = manifest.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
     return None
 
 
@@ -94,17 +124,17 @@ def resolve_bundle_payload(manifest: dict[str, object], bundle_dir: Path) -> tup
                 return None, f"sqlite payload is missing at {sqlite_path}"
             if not sqlite_path.is_file():
                 return None, f"sqlite payload path {sqlite_path} is not a file"
-            return BundlePayloadResolution(payload_format="sqlite", payload_path=sqlite_path), None
+            return BundlePayloadResolution(payload_format="sqlite", payload_path=sqlite_path, payload_version=manifest_payload_version(manifest)), None
         aggregate_path = manifest_declared_aggregate_path(manifest, bundle_dir) or (bundle_dir / BUNDLE_AGGREGATE_RELATIVE_PATH)
         if not aggregate_path.exists():
             return None, f"aggregate payload is missing at {aggregate_path}"
         if not aggregate_path.is_file():
             return None, f"aggregate payload path {aggregate_path} is not a file"
-        return BundlePayloadResolution(payload_format="jsonl", payload_path=aggregate_path), None
+        return BundlePayloadResolution(payload_format="jsonl", payload_path=aggregate_path, payload_version=manifest_payload_version(manifest)), None
 
     sqlite_default_path = bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH
     if sqlite_default_path.exists() and sqlite_default_path.is_file():
-        return BundlePayloadResolution(payload_format="sqlite", payload_path=sqlite_default_path), None
+        return BundlePayloadResolution(payload_format="sqlite", payload_path=sqlite_default_path, payload_version=manifest_payload_version(manifest)), None
 
     declared_aggregate_path = manifest_declared_aggregate_path(manifest, bundle_dir)
     if declared_aggregate_path is not None:
@@ -112,11 +142,11 @@ def resolve_bundle_payload(manifest: dict[str, object], bundle_dir: Path) -> tup
             return None, f"aggregate payload is missing at {declared_aggregate_path}"
         if not declared_aggregate_path.is_file():
             return None, f"aggregate payload path {declared_aggregate_path} is not a file"
-        return BundlePayloadResolution(payload_format="jsonl", payload_path=declared_aggregate_path), None
+        return BundlePayloadResolution(payload_format="jsonl", payload_path=declared_aggregate_path, payload_version=manifest_payload_version(manifest)), None
 
     aggregate_path = bundle_dir / BUNDLE_AGGREGATE_RELATIVE_PATH
     if aggregate_path.exists() and aggregate_path.is_file():
-        return BundlePayloadResolution(payload_format="jsonl", payload_path=aggregate_path), None
+        return BundlePayloadResolution(payload_format="jsonl", payload_path=aggregate_path, payload_version=manifest_payload_version(manifest)), None
 
     return None, (
         "bundle did not expose a supported payload; expected manifest payload_format, "
@@ -149,8 +179,14 @@ def is_supported_builder_aggregate_bundle(manifest: dict[str, object], bundle_di
 
 
 def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle_dir: Path) -> tuple[BundlePayloadResolution | None, str | None]:
+    declared_canonical = manifest_declared_canonical_exact_payload_path(manifest, bundle_dir)
+    declared_compatibility = manifest_declared_compatibility_exact_payload_path(manifest, bundle_dir)
     declared_sqlite = manifest_declared_exact_sqlite_path(manifest, bundle_dir)
     candidate_paths: list[Path] = []
+    if declared_canonical is not None:
+        candidate_paths.append(declared_canonical)
+    elif declared_compatibility is not None:
+        candidate_paths.append(declared_compatibility)
     if declared_sqlite is not None:
         candidate_paths.append(declared_sqlite)
     candidate_paths.extend(
@@ -164,7 +200,7 @@ def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle
             continue
         if not candidate.is_file():
             return None, f"exact corpus payload path {candidate} is not a file"
-        return BundlePayloadResolution(payload_format="sqlite", payload_path=candidate), None
+        return BundlePayloadResolution(payload_format="sqlite", payload_path=candidate, payload_version=manifest_payload_version(manifest)), None
     return None, "timing-conditioned bundle did not expose a supported exact SQLite payload"
 
 
@@ -188,6 +224,9 @@ def classify_bundle_contract(manifest: dict[str, object]) -> str:
         "rating_scope",
         "exact_corpus_file",
         "exact_corpus_payload_file",
+        "canonical_exact_payload_file",
+        "compatibility_exact_payload_file",
+        "payload_version",
     )
     if any(key in manifest for key in timing_keys):
         return "timing_conditioned"

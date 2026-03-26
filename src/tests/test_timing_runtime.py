@@ -48,6 +48,28 @@ def _write_exact_sqlite(db_path: Path) -> None:
         conn.close()
 
 
+def _write_compact_exact_sqlite_v2(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE positions (id INTEGER PRIMARY KEY, fen_normalized TEXT NOT NULL, total_observed_count INTEGER NOT NULL, candidate_count INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE moves (id INTEGER PRIMARY KEY, parent_position_id INTEGER NOT NULL, uci TEXT NOT NULL, raw_count INTEGER NOT NULL, FOREIGN KEY(parent_position_id) REFERENCES positions(id))"
+        )
+        cursor = conn.execute(
+            "INSERT INTO positions(fen_normalized, total_observed_count, candidate_count) VALUES (?, ?, ?)",
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", 100, 3),
+        )
+        pid = int(cursor.lastrowid)
+        conn.execute("INSERT INTO moves(parent_position_id, uci, raw_count) VALUES (?, ?, ?)", (pid, "e2e4", 70))
+        conn.execute("INSERT INTO moves(parent_position_id, uci, raw_count) VALUES (?, ?, ?)", (pid, "d2d4", 20))
+        conn.execute("INSERT INTO moves(parent_position_id, uci, raw_count) VALUES (?, ?, ?)", (pid, "g1f3", 10))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _write_behavioral_profile_set(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
@@ -73,6 +95,11 @@ def _write_timing_bundle(
     include_time_control_id: bool = True,
     include_target_rating_band: bool = True,
     timing_overlay_scope: str | None = None,
+    payload_format: str | None = None,
+    payload_version: object | None = None,
+    canonical_exact_payload_file: str | None = None,
+    compatibility_exact_payload_file: str | None = None,
+    compact_v2_exact_payload: bool = False,
 ) -> Path:
     data_dir = bundle_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -108,6 +135,14 @@ def _write_timing_bundle(
         )
     if use_json_overlay:
         manifest["timing_overlay_file"] = "data/timing_overlay.json"
+    if payload_format is not None:
+        manifest["payload_format"] = payload_format
+    if payload_version is not None:
+        manifest["payload_version"] = payload_version
+    if canonical_exact_payload_file is not None:
+        manifest["canonical_exact_payload_file"] = canonical_exact_payload_file
+    if compatibility_exact_payload_file is not None:
+        manifest["compatibility_exact_payload_file"] = compatibility_exact_payload_file
 
     keys = context_keys or [
         "rapid_300_0|1200-1399|medium|short|01-10",
@@ -139,7 +174,10 @@ def _write_timing_bundle(
     }
 
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    _write_exact_sqlite(data_dir / exact_name)
+    if compact_v2_exact_payload:
+        _write_compact_exact_sqlite_v2(data_dir / exact_name)
+    else:
+        _write_exact_sqlite(data_dir / exact_name)
     if not native:
         row = {
             "position_key": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
@@ -171,6 +209,41 @@ def test_timing_bundle_loader_supports_corpus_sqlite_name(tmp_path):
 
     assert handle.exact_payload_path is not None
     assert handle.exact_payload_path.name == "corpus.sqlite"
+
+
+def test_timing_bundle_loader_prefers_canonical_exact_payload_path_over_compatibility_alias(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+    )
+    _write_exact_sqlite(bundle_dir / "data" / "corpus.sqlite")
+
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    assert handle.exact_payload_path is not None
+    assert handle.exact_payload_path.name == "exact_corpus.sqlite"
+
+
+def test_timing_bundle_loader_supports_compact_exact_payload_v2_sqlite(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        payload_format="sqlite_compact_v2",
+        payload_version="2",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+        compact_v2_exact_payload=True,
+    )
+    provider = BuilderAggregateOpponentProvider(bundle_dir, rng=random.Random(5))
+    choice = provider.choose_move(chess.Board())
+
+    assert choice.selected_via == "corpus_exact_bundle_sqlite_compact_v2"
+    assert choice.move.uci() in {"e2e4", "d2d4", "g1f3"}
 
 
 
@@ -311,6 +384,25 @@ def test_missing_time_control_metadata_does_not_disable_overlay_matching(tmp_pat
     )
     assert choice.timing_overlay_active is True
 
+
+def test_final_canonical_bundle_missing_time_contract_fails_loudly(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        include_time_control_id=False,
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+        payload_version="2",
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles_missing_contract"))
+
+    try:
+        session._build_timed_state_from_bundle()
+    except ValueError as exc:
+        assert "missing required timing contract fields" in str(exc)
+    else:
+        assert False, "Expected _build_timed_state_from_bundle() to fail for missing canonical timing fields."
 
 
 def test_full_key_lookup_mode_still_supported_when_multi_scope_is_explicit(tmp_path):
@@ -622,7 +714,7 @@ def test_timing_summary_and_diagnostics_use_same_context_key(tmp_path):
     assert "Opponent timing:" in summary
     assert "Overlay source:" not in summary
     assert "Context:" not in summary
-    assert session.timing_diagnostics.overlay_source in {"json_file", "inline manifest", "behavioral_profile_set_sqlite"}
+    assert session.timing_diagnostics.overlay_source in {"json_file", "inline manifest", "behavioral_profile_set_sqlite", "absent"}
     assert session.timing_diagnostics.effective_context_key is not None
 
 

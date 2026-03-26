@@ -13,6 +13,9 @@ from .bundle_contract import (
     BUNDLE_MANIFEST_NAME,
     BUNDLE_SQLITE_RELATIVE_PATH,
     classify_bundle_contract,
+    manifest_declared_canonical_exact_payload_path,
+    manifest_declared_compatibility_exact_payload_path,
+    manifest_payload_version,
     is_supported_builder_aggregate_bundle,
     is_supported_timing_conditioned_bundle,
     resolve_bundle_payload,
@@ -393,6 +396,9 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
 
     retained_ply_depth, retained_source = bundle_retained_ply_depth_from_metadata(resolved_dir, manifest)
     bundle_kind = classify_bundle_contract(manifest)
+    payload_version = manifest_payload_version(manifest)
+    canonical_exact_payload = manifest_declared_canonical_exact_payload_path(manifest, resolved_dir)
+    compatibility_exact_payload = manifest_declared_compatibility_exact_payload_path(manifest, resolved_dir)
     if bundle_kind == "legacy_aggregate":
         payload_resolution, _ = resolve_bundle_payload(manifest, resolved_dir)
         supported, declared_payload_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
@@ -437,6 +443,9 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         (
             f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, payload ok, "
             f"bundle_kind={bundle_kind}, build_status={manifest.get('build_status')}, payload_format={payload_format!r}, payload_path={str(payload_path)!r}, "
+            f"canonical_exact_payload={str(canonical_exact_payload) if canonical_exact_payload else None!r}, "
+            f"compatibility_exact_payload={str(compatibility_exact_payload) if compatibility_exact_payload else None!r}, "
+            f"payload_version={payload_version!r}, "
             f"position_key_format={position_key_format}, move_key_format={move_key_format}, builder_payload_status={payload_status!r}, "
             f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r})"
         ),

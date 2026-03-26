@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import time
+import json
 from dataclasses import dataclass, replace
 from dataclasses import asdict
 from pathlib import Path
@@ -130,6 +131,10 @@ class TrainingSession:
         )
 
     def max_supported_training_depth(self) -> int:
+        contract = self._canonical_corpus_contract()
+        max_supported_player_moves = contract.get("max_supported_player_moves")
+        if isinstance(max_supported_player_moves, int) and max_supported_player_moves >= 2:
+            return max_supported_player_moves
         retained_ply_depth = self.bundle_retained_ply_depth()
         supported_depth = max_supported_player_moves_from_retained_plies(retained_ply_depth)
         if supported_depth is not None:
@@ -143,6 +148,10 @@ class TrainingSession:
         return CONSERVATIVE_FALLBACK_MAX_DEPTH
 
     def bundle_retained_ply_depth(self) -> int | None:
+        contract = self._canonical_corpus_contract()
+        max_supported_player_moves = contract.get("max_supported_player_moves")
+        if isinstance(max_supported_player_moves, int) and max_supported_player_moves >= 2:
+            return max_supported_player_moves * 2
         bundle_dir = self.runtime_context.config.corpus_bundle_dir
         if bundle_dir:
             try:
@@ -321,9 +330,14 @@ class TrainingSession:
             if isinstance(manifest, dict):
                 band = manifest.get('target_rating_band') or manifest.get('rating_band') or manifest.get('elo_band')
                 retained = manifest.get('retained_ply_depth')
+                max_supported_player_moves = manifest.get("max_supported_player_moves")
+                if max_supported_player_moves is not None:
+                    retained = f"{max_supported_player_moves} player moves"
+                rating_policy = manifest.get("rating_policy")
                 band_text = self._format_rating_band(band) or self._bundle_name_fallback(bundle_dir)
                 retained_text = f' | Retained depth: {retained}' if retained is not None else ''
-                return f'Corpus: {band_text}{retained_text}{timing_text}'
+                policy_text = f' | Rating policy: {rating_policy}' if isinstance(rating_policy, str) and rating_policy.strip() else ''
+                return f'Corpus: {band_text}{retained_text}{policy_text}{timing_text}'
             return f'Corpus: {self._bundle_name_fallback(bundle_dir)}{timing_text}'
         artifact_path = self.runtime_context.config.corpus_artifact_path
         if artifact_path:
@@ -366,11 +380,64 @@ class TrainingSession:
             if raw_time_control is not None and str(raw_time_control).strip():
                 time_control_id = str(raw_time_control).strip()
             rating_band = self._format_rating_band(manifest.get("target_rating_band") or manifest.get("rating_band") or manifest.get("elo_band"))
+            if not time_control_id and manifest.get("time_format_label"):
+                time_control_id = str(manifest.get("time_format_label")).strip()
         if not time_control_id:
             time_control_id = getattr(bundle, "bundle_invariant_time_control_id", None)
         if not rating_band:
             rating_band = getattr(bundle, "bundle_invariant_rating_band", None)
         return time_control_id, rating_band
+
+    def _canonical_corpus_contract(self) -> dict[str, object]:
+        provider = getattr(self.opponent, "bundle_provider", None)
+        bundle = getattr(provider, "bundle", None)
+        manifest = getattr(bundle, "manifest", None)
+        if not isinstance(manifest, dict):
+            metadata = getattr(bundle, "metadata", None)
+            manifest = getattr(metadata, "manifest", None)
+        if not isinstance(manifest, dict):
+            bundle_dir = self.runtime_context.config.corpus_bundle_dir
+            if bundle_dir:
+                manifest_path = Path(bundle_dir) / "manifest.json"
+                if manifest_path.exists():
+                    try:
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        manifest = None
+        if not isinstance(manifest, dict):
+            return {}
+
+        contract: dict[str, object] = {}
+        for key in (
+            "retained_ply_depth",
+            "max_supported_player_moves",
+            "time_control_id",
+            "initial_time_seconds",
+            "increment_seconds",
+            "time_format_label",
+            "target_rating_band",
+            "rating_policy",
+            "canonical_exact_payload_file",
+            "compatibility_exact_payload_file",
+            "payload_format",
+            "payload_version",
+        ):
+            value = manifest.get(key)
+            if value is not None:
+                contract[key] = value
+        return contract
+
+    def _is_final_canonical_bundle(self, manifest: dict[str, object]) -> bool:
+        return any(
+            key in manifest
+            for key in (
+                "canonical_exact_payload_file",
+                "compatibility_exact_payload_file",
+                "payload_version",
+                "max_supported_player_moves",
+                "time_format_label",
+            )
+        )
 
     def _submit_user_move(self, move_str: str) -> SessionView:
         if self.state != SessionState.PLAYER_TURN:
@@ -676,11 +743,29 @@ class TrainingSession:
         manifest = getattr(getattr(provider, "bundle", None), "manifest", None)
         if not isinstance(manifest, dict):
             return None
+        is_final_bundle = self._is_final_canonical_bundle(manifest)
         time_control_id, _rating_band = self._timing_contract_metadata()
+        initial_raw = manifest.get("initial_time_seconds", manifest.get("initial_seconds"))
+        increment_raw = manifest.get("increment_seconds")
+        if is_final_bundle and (not time_control_id or initial_raw is None or increment_raw is None):
+            missing = [
+                name
+                for name, value in (
+                    ("time_control_id", time_control_id),
+                    ("initial_time_seconds", initial_raw),
+                    ("increment_seconds", increment_raw),
+                )
+                if value is None or (isinstance(value, str) and not value.strip())
+            ]
+            raise ValueError(f"Final corpus bundle is missing required timing contract fields: {', '.join(missing)}")
         if not time_control_id:
-            time_control_id = "timed_corpus"
-        initial_seconds = float(manifest.get("initial_time_seconds", manifest.get("initial_seconds", 300.0)))
-        increment_seconds = float(manifest.get("increment_seconds", 0.0))
+            return None
+        if initial_raw is None:
+            return None
+        if increment_raw is None:
+            increment_raw = 0.0
+        initial_seconds = float(initial_raw)
+        increment_seconds = float(increment_raw)
         return TimedSessionState(
             time_control_id=time_control_id,
             initial_seconds=initial_seconds,
@@ -728,7 +813,7 @@ class TrainingSession:
         _time_control_id, rating_band = self._timing_contract_metadata()
         return {
             "time_control_id": self.timed_state.time_control_id,
-            "mover_elo_band": rating_band or "timed_corpus",
+            "mover_elo_band": rating_band or "unknown",
             "remaining_ratio": remaining_seconds / max(1.0, self.timed_state.initial_seconds),
             "remaining_seconds": remaining_seconds,
             "prev_opp_think_seconds": self.timed_state.previous_opponent_think_seconds,
