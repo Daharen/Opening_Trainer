@@ -610,22 +610,133 @@ def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
     gui._is_shutting_down = False
     gui._pending_opponent_after_handle = None
     committed = {'count': 0}
+    pending_box = {'value': None}
+    generation = {'id': 0}
     gui._refresh_view = lambda: None
-    gui.session = type('Session', (), {
-        'state': SessionState.OPPONENT_TURN,
-        'pending_opponent_action': object(),
-        'prepare_pending_opponent_action': lambda self=None: type('Pending', (), {'visible_delay_seconds': 0.2})(),
-        'commit_pending_opponent_action': lambda self=None: committed.__setitem__('count', committed['count'] + 1),
-        'cancel_pending_opponent_action': lambda self=None: None,
-    })()
+    class Session:
+        state = SessionState.OPPONENT_TURN
+        pending_opponent_action = None
+
+        def prepare_pending_opponent_action(self):
+            generation['id'] += 1
+            pending_box['value'] = type('Pending', (), {'visible_delay_seconds': 0.2, 'generation': generation['id']})()
+            self.pending_opponent_action = pending_box['value']
+            return self.pending_opponent_action
+
+        def commit_pending_opponent_action(self):
+            if self.pending_opponent_action is None:
+                return False
+            committed['count'] += 1
+            self.pending_opponent_action = None
+            self.state = SessionState.PLAYER_TURN
+            return True
+
+        def cancel_pending_opponent_action(self):
+            self.pending_opponent_action = None
+
+    gui.session = Session()
 
     OpeningTrainerGUI._schedule_pending_opponent_commit(gui)
 
     assert len(gui.root.after_calls) == 1
     assert committed['count'] == 0
+    assert gui.session.pending_opponent_action is pending_box['value']
     _delay, callback, _handle = gui.root.after_calls.pop(0)
     callback()
     assert committed['count'] == 1
+    assert gui.session.pending_opponent_action is None
+
+
+def test_schedule_pending_opponent_commit_old_order_would_clear_new_pending_action():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._pending_opponent_after_handle = None
+    committed = {'count': 0}
+    gui._refresh_view = lambda: None
+
+    class Session:
+        state = SessionState.OPPONENT_TURN
+        pending_opponent_action = None
+
+        def prepare_pending_opponent_action(self):
+            self.pending_opponent_action = type('Pending', (), {'visible_delay_seconds': 0.1})()
+            return self.pending_opponent_action
+
+        def commit_pending_opponent_action(self):
+            if self.pending_opponent_action is None:
+                return False
+            committed['count'] += 1
+            self.pending_opponent_action = None
+            return True
+
+        def cancel_pending_opponent_action(self):
+            self.pending_opponent_action = None
+
+    gui.session = Session()
+
+    def broken_order_schedule():
+        pending = gui.session.prepare_pending_opponent_action()
+        if pending is None:
+            return
+        OpeningTrainerGUI._cancel_pending_opponent_callback(gui)
+        gui._pending_opponent_after_handle = gui._schedule_after(100, gui._commit_scheduled_opponent_action)
+
+    broken_order_schedule()
+
+    assert gui.session.pending_opponent_action is None
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+    assert committed['count'] == 0
+
+
+def test_schedule_pending_opponent_commit_replaces_stale_callback_and_stale_pending_action():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = {'h0'}
+    gui._is_shutting_down = False
+    gui._pending_opponent_after_handle = 'h0'
+    gui._refresh_view = lambda: None
+    committed_generations: list[int] = []
+
+    class Session:
+        state = SessionState.OPPONENT_TURN
+
+        def __init__(self):
+            self.pending_opponent_action = type('Pending', (), {'visible_delay_seconds': 0.3, 'generation': 0})()
+            self.next_generation = 1
+
+        def prepare_pending_opponent_action(self):
+            pending = type('Pending', (), {'visible_delay_seconds': 0.2, 'generation': self.next_generation})()
+            self.next_generation += 1
+            self.pending_opponent_action = pending
+            return pending
+
+        def commit_pending_opponent_action(self):
+            pending = self.pending_opponent_action
+            if pending is None:
+                return False
+            committed_generations.append(pending.generation)
+            self.pending_opponent_action = None
+            self.state = SessionState.PLAYER_TURN
+            return True
+
+        def cancel_pending_opponent_action(self):
+            self.pending_opponent_action = None
+
+    gui.session = Session()
+
+    OpeningTrainerGUI._schedule_pending_opponent_commit(gui)
+
+    assert gui.root.cancelled == ['h0']
+    assert len(gui.root.after_calls) == 1
+    assert gui.session.pending_opponent_action is not None
+    assert gui.session.pending_opponent_action.generation == 1
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+    assert committed_generations == [1]
+    assert gui.session.pending_opponent_action is None
 
 
 def test_cancel_pending_opponent_callback_cancels_after_handle():

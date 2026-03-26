@@ -712,23 +712,30 @@ class OpeningTrainerGUI:
     def _schedule_pending_opponent_commit(self) -> None:
         if self.session.state != SessionState.OPPONENT_TURN:
             return
+        self._cancel_pending_opponent_callback()
         pending = self.session.prepare_pending_opponent_action()
         if pending is None:
+            log_line('GUI_OPPONENT_PENDING_PREPARE_SKIPPED: no pending action available', tag='timing')
             return
-        self._cancel_pending_opponent_callback()
+        log_line('GUI_OPPONENT_PENDING_PREPARED', tag='timing')
         delay_ms = max(0, int(round(pending.visible_delay_seconds * 1000)))
         if delay_ms == 0:
+            log_line('GUI_OPPONENT_COMMIT_SCHEDULED: delay_ms=0; committing immediately', tag='timing')
             self._commit_scheduled_opponent_action()
             return
         self._pending_opponent_after_handle = self._schedule_after(delay_ms, self._commit_scheduled_opponent_action)
+        log_line(f'GUI_OPPONENT_COMMIT_SCHEDULED: delay_ms={delay_ms}', tag='timing')
 
     def _commit_scheduled_opponent_action(self) -> None:
         self._pending_opponent_after_handle = None
         if getattr(self, '_is_shutting_down', False):
+            log_line('GUI_OPPONENT_COMMIT_SKIPPED: app shutting down', tag='timing')
             return
         if self.session.pending_opponent_action is None:
+            log_line('GUI_OPPONENT_COMMIT_SKIPPED: no pending action', tag='timing')
             return
         self.session.commit_pending_opponent_action()
+        log_line('GUI_OPPONENT_COMMIT_EXECUTED', tag='timing')
         self._refresh_view()
         if self.session.state == SessionState.OPPONENT_TURN:
             self._schedule_pending_opponent_commit()
@@ -745,10 +752,12 @@ class OpeningTrainerGUI:
                 pass
             after_handles = getattr(self, '_after_handles', set())
             after_handles.discard(handle)
+            log_line('GUI_OPPONENT_CALLBACK_CANCELLED: cancelled stale scheduled callback', tag='timing')
         session = getattr(self, 'session', None)
         cancel_pending = getattr(session, 'cancel_pending_opponent_action', None) if session is not None else None
         if callable(cancel_pending):
             cancel_pending()
+            log_line('GUI_OPPONENT_PENDING_DISCARDED', tag='timing')
 
     def _cancel_after_handles(self) -> None:
         handles = list(getattr(self, '_after_handles', set()))

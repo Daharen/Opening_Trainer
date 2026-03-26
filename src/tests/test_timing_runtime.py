@@ -631,6 +631,7 @@ def test_gui_mode_prepares_pending_opponent_action_without_blocking_sleep(tmp_pa
     session.player_color = chess.BLACK
     session.state = SessionState.OPPONENT_TURN
     session.timed_state = session._build_timed_state_from_bundle()
+    previous_choice = session.last_opponent_choice
     sleep_calls: list[float] = []
     monkeypatch.setattr("opening_trainer.session.time.sleep", lambda seconds: sleep_calls.append(seconds))
 
@@ -638,7 +639,7 @@ def test_gui_mode_prepares_pending_opponent_action_without_blocking_sleep(tmp_pa
 
     assert pending is not None
     assert session.pending_opponent_action is not None
-    assert session.last_opponent_choice is None
+    assert session.last_opponent_choice is previous_choice
     assert sleep_calls == []
 
 
