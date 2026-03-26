@@ -30,6 +30,25 @@ class FakeDevConsole:
         self.close_calls += 1
 
 
+class FakeDialog:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
+class FakeWindow:
+    def __init__(self):
+        self.destroy_calls = 0
+
+    def winfo_exists(self):
+        return True
+
+    def destroy(self):
+        self.destroy_calls += 1
+
+
 def test_shutdown_coordinator_is_idempotent(monkeypatch):
     events: list[str] = []
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
@@ -51,6 +70,125 @@ def test_shutdown_coordinator_is_idempotent(monkeypatch):
     assert events.count("session_close") == 1
     assert events.count("remove_diag") == 1
     assert events.count("release_guard") == 1
+
+
+def test_shutdown_coordinator_tolerates_missing_timing_override_dialog(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._shutdown_started = False
+    gui._is_shutting_down = False
+    gui._after_handles = set()
+    gui.dev_console = FakeDevConsole()
+    gui.session = SimpleNamespace(close=lambda: None)
+    gui._child_windows = []
+    gui.root = FakeRoot()
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: None)
+
+    gui._shutdown_coordinator(reason="missing_dialog")
+
+    assert gui.root.destroy_calls == 1
+
+
+def test_shutdown_coordinator_tolerates_none_timing_override_dialog(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._shutdown_started = False
+    gui._is_shutting_down = False
+    gui._after_handles = set()
+    gui.dev_console = FakeDevConsole()
+    gui.timing_override_dialog = None
+    gui.session = SimpleNamespace(close=lambda: None)
+    gui._child_windows = []
+    gui.root = FakeRoot()
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: None)
+
+    gui._shutdown_coordinator(reason="none_dialog")
+
+    assert gui.root.destroy_calls == 1
+
+
+def test_shutdown_coordinator_closes_timing_override_dialog_when_present(monkeypatch):
+    dialog = FakeDialog()
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._shutdown_started = False
+    gui._is_shutting_down = False
+    gui._after_handles = set()
+    gui.dev_console = FakeDevConsole()
+    gui.timing_override_dialog = dialog
+    gui.session = SimpleNamespace(close=lambda: None)
+    gui._child_windows = []
+    gui.root = FakeRoot()
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: None)
+
+    gui._shutdown_coordinator(reason="dialog_present")
+
+    assert dialog.close_calls == 1
+
+
+def test_shutdown_coordinator_cancels_after_handles_and_clears_them(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._shutdown_started = False
+    gui._is_shutting_down = False
+    gui._after_handles = {"after_1", "after_2"}
+    gui.dev_console = FakeDevConsole()
+    gui.session = SimpleNamespace(close=lambda: None)
+    gui._child_windows = []
+    gui.root = FakeRoot()
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: None)
+
+    gui._shutdown_coordinator(reason="cancel_after")
+
+    assert sorted(gui.root.cancelled) == ["after_1", "after_2"]
+    assert gui._after_handles == set()
+
+
+def test_shutdown_coordinator_closes_child_windows(monkeypatch):
+    tracked_window = FakeWindow()
+    toplevel_window = FakeWindow()
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._shutdown_started = False
+    gui._is_shutting_down = False
+    gui._after_handles = set()
+    gui.dev_console = FakeDevConsole()
+    gui.session = SimpleNamespace(close=lambda: None)
+    gui._child_windows = [tracked_window]
+    gui.root = FakeRoot()
+    gui.root.children = [toplevel_window]
+    monkeypatch.setattr("opening_trainer.ui.gui_app.tk.Toplevel", FakeWindow)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: None)
+
+    gui._shutdown_coordinator(reason="child_windows")
+
+    assert tracked_window.destroy_calls == 1
+    assert toplevel_window.destroy_calls == 1
+    assert gui._child_windows == []
+
+
+def test_shutdown_coordinator_invokes_session_close(monkeypatch):
+    calls: list[str] = []
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._shutdown_started = False
+    gui._is_shutting_down = False
+    gui._after_handles = set()
+    gui.dev_console = FakeDevConsole()
+    gui.session = SimpleNamespace(close=lambda: calls.append("session_close"))
+    gui._child_windows = []
+    gui.root = FakeRoot()
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: None)
+
+    gui._shutdown_coordinator(reason="session_close")
+
+    assert calls == ["session_close"]
 
 
 def test_launch_gui_logs_duplicate_owner_info_when_available(monkeypatch):
