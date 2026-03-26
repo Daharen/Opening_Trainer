@@ -153,6 +153,35 @@ def _write_timing_bundle(
     return bundle_dir
 
 
+def _write_compact_exact_sqlite(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE position_keys (position_key_id INTEGER PRIMARY KEY, position_key TEXT NOT NULL UNIQUE)")
+        conn.execute(
+            "CREATE TABLE positions (position_id INTEGER PRIMARY KEY, position_key_id INTEGER NOT NULL, candidate_move_count INTEGER NOT NULL, total_observations INTEGER NOT NULL)"
+        )
+        conn.execute("CREATE TABLE move_dictionary (move_id INTEGER PRIMARY KEY, uci TEXT NOT NULL UNIQUE)")
+        conn.execute("CREATE TABLE position_moves (position_id INTEGER NOT NULL, move_id INTEGER NOT NULL, raw_count INTEGER NOT NULL)")
+        position_key_id = int(
+            conn.execute(
+                "INSERT INTO position_keys(position_key) VALUES ('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -')"
+            ).lastrowid
+        )
+        position_id = int(
+            conn.execute(
+                "INSERT INTO positions(position_key_id, candidate_move_count, total_observations) VALUES (?, 2, 20)",
+                (position_key_id,),
+            ).lastrowid
+        )
+        e2e4_id = int(conn.execute("INSERT INTO move_dictionary(uci) VALUES ('e2e4')").lastrowid)
+        d2d4_id = int(conn.execute("INSERT INTO move_dictionary(uci) VALUES ('d2d4')").lastrowid)
+        conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, 15)", (position_id, e2e4_id))
+        conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, 5)", (position_id, d2d4_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_timing_bundle_loader_accepts_native_manifest_and_exact_path(tmp_path):
     bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True, exact_name="exact_corpus.sqlite")
     handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
@@ -207,6 +236,45 @@ def test_timing_bundle_loader_and_fallback_resolution(tmp_path):
     assert fallback.fallback_used is True
 
 
+def test_dual_emission_bundle_prefers_canonical_compact_payload(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "build_status": "timing_conditioned_ready",
+        "time_control_id": "rapid_300_0",
+        "target_rating_band": "1200-1399",
+        "initial_time_seconds": 300,
+        "increment_seconds": 0,
+        "payload_version": "exact_compact_v2",
+        "payload_role": "canonical",
+        "exact_payloads": [
+            {
+                "payload_role": "compatibility",
+                "payload_version": "legacy_exact_sqlite_v1",
+                "payload_format": "sqlite",
+                "payload_file": "data/exact_corpus.sqlite",
+            },
+            {
+                "payload_role": "canonical",
+                "payload_version": "exact_compact_v2",
+                "payload_format": "sqlite",
+                "payload_file": "data/exact_compact_corpus.sqlite",
+            },
+        ],
+    }
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _write_exact_sqlite(data_dir / "exact_corpus.sqlite")
+    _write_compact_exact_sqlite(data_dir / "exact_compact_corpus.sqlite")
+
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+    assert handle.exact_payload_path is not None
+    assert handle.exact_payload_path.name == "exact_compact_corpus.sqlite"
+    position = handle.lookup_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -")
+    assert position is not None
+    assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
+
+
 def test_legacy_aggregate_bundle_still_classifies_without_timing_markers(tmp_path):
     bundle_dir = tmp_path / "bundle"
     data_dir = bundle_dir / "data"
@@ -230,6 +298,61 @@ def test_legacy_aggregate_bundle_still_classifies_without_timing_markers(tmp_pat
     handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
     assert handle.bundle_kind == "legacy_aggregate"
     assert handle.timing_lookup_mode == "full_key"
+
+
+def test_session_uses_canonical_timing_contract_without_defaults(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=False,
+        include_time_control_id=True,
+        include_target_rating_band=True,
+    )
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "payload_version": "exact_compact_v2",
+            "payload_role": "canonical",
+            "time_control_id": "rapid_300_0",
+            "initial_time_seconds": 300,
+            "increment_seconds": 2,
+            "retained_ply_depth": 20,
+            "max_supported_player_moves": 10,
+            "rating_policy": "both_players_in_band",
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(root=tmp_path / "reviews"))
+
+    timed = session._build_timed_state_from_bundle()
+    assert timed is not None
+    assert timed.time_control_id == "rapid_300_0"
+    assert timed.initial_seconds == 300
+    assert timed.increment_seconds == 2
+    assert session.max_supported_training_depth() == 10
+    assert "Rating policy: both_players_in_band" in session.corpus_summary_text()
+
+
+def test_session_canonical_bundle_missing_timing_contract_does_not_fabricate_defaults(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle_missing_contract",
+        native=True,
+        use_json_overlay=False,
+        include_time_control_id=False,
+    )
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"payload_version": "exact_compact_v2", "payload_role": "canonical"})
+    manifest.pop("initial_time_seconds", None)
+    manifest.pop("increment_seconds", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(root=tmp_path / "reviews"))
+
+    assert session._build_timed_state_from_bundle() is None
 
 
 

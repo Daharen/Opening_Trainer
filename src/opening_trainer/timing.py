@@ -12,10 +12,16 @@ from .bundle_contract import (
     BUNDLE_MANIFEST_NAME,
     classify_bundle_contract,
     manifest_declared_behavioral_profile_set_path,
+    read_corpus_metadata_contract,
     resolve_bundle_payload,
     resolve_timing_conditioned_exact_payload,
 )
-from .bundle_corpus import BuilderAggregateCorpusProvider, JsonlAggregateCorpusProvider, SQLiteAggregateCorpusProvider
+from .bundle_corpus import (
+    BuilderAggregateCorpusProvider,
+    CompactSQLiteAggregateCorpusProvider,
+    JsonlAggregateCorpusProvider,
+    SQLiteAggregateCorpusProvider,
+)
 
 
 @dataclass(frozen=True)
@@ -216,8 +222,15 @@ def _load_exact_corpus_provider(bundle_dir: Path, manifest: dict[str, object], r
         "payload_status": manifest.get("payload_status", "timing_conditioned_exact_payload"),
     }
     if payload_resolution.payload_format == "sqlite":
+        contract = read_corpus_metadata_contract(manifest)
+        if payload_resolution.payload_version == "exact_compact_v2" or contract.payload_version == "exact_compact_v2":
+            return (
+                CompactSQLiteAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path),
+                bundle_kind,
+                payload_resolution.payload_path,
+            )
         return SQLiteAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path), "timing_conditioned", payload_resolution.payload_path
-    return JsonlAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path, rng=rng), "timing_conditioned", payload_resolution.payload_path
+    return JsonlAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path, rng=rng), bundle_kind, payload_resolution.payload_path
 
 
 def _load_timing_overlay(bundle_dir: Path, manifest: dict[str, object]) -> tuple[TimingOverlayPayload | None, str]:

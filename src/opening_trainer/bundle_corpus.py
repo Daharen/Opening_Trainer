@@ -16,6 +16,7 @@ from .bundle_contract import (
     SUPPORTED_BUNDLE_MOVE_KEY_FORMAT,
     SUPPORTED_BUNDLE_POSITION_KEY_FORMAT,
     is_supported_builder_aggregate_bundle,
+    read_corpus_metadata_contract,
     resolve_bundle_payload,
 )
 
@@ -292,6 +293,106 @@ class SQLiteAggregateCorpusProvider:
         return position
 
 
+class CompactSQLiteAggregateCorpusProvider:
+    """Reader for compact exact payload v2 with position/move dictionaries."""
+
+    def __init__(self, bundle_dir: Path, manifest: dict[str, object], payload_path: Path, cache_size: int = 512):
+        self.bundle_dir = bundle_dir
+        self.payload_path = payload_path
+        self.cache_size = max(0, cache_size)
+        self._position_cache: OrderedDict[str, BuilderAggregatePosition | None] = OrderedDict()
+        self._cache_lock = threading.Lock()
+        self._thread_local = threading.local()
+        self.metadata = self._build_metadata(manifest)
+
+    def _build_metadata(self, manifest: dict[str, object]) -> BuilderAggregateBundleMetadata:
+        return BuilderAggregateBundleMetadata(
+            bundle_dir=self.bundle_dir.resolve(),
+            manifest_path=(self.bundle_dir / BUNDLE_MANIFEST_NAME).resolve(),
+            aggregate_path=self.payload_path.resolve(),
+            manifest=manifest,
+            position_key_format=SUPPORTED_BUNDLE_POSITION_KEY_FORMAT,
+            move_key_format=SUPPORTED_BUNDLE_MOVE_KEY_FORMAT,
+            payload_status=manifest.get("payload_status"),
+            payload_format="sqlite",
+            provider_label="corpus_aggregate_bundle_sqlite_compact_v2",
+        )
+
+    def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
+        with self._cache_lock:
+            cached = self._position_cache.get(position_key)
+            if cached is not None or position_key in self._position_cache:
+                return cached
+        connection = self._get_connection_for_current_thread()
+        position_cursor = connection.cursor()
+        move_cursor = connection.cursor()
+        try:
+            position_row = position_cursor.execute(
+                """
+                SELECT p.position_id, k.position_key, p.candidate_move_count, p.total_observations
+                FROM positions p
+                JOIN position_keys k ON k.position_key_id = p.position_key_id
+                WHERE k.position_key = ?
+                LIMIT 1
+                """,
+                (position_key,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"Compact SQLite corpus schema mismatch or unsupported compact schema: {exc}") from exc
+        if position_row is None:
+            return self._remember(position_key, None)
+        try:
+            move_rows = move_cursor.execute(
+                """
+                SELECT d.uci AS move_uci, m.raw_count
+                FROM position_moves m
+                JOIN move_dictionary d ON d.move_id = m.move_id
+                WHERE m.position_id = ?
+                ORDER BY m.raw_count DESC, d.uci ASC
+                """,
+                (position_row["position_id"],),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"Compact SQLite corpus schema mismatch or unsupported compact schema: {exc}") from exc
+        candidates = tuple(
+            BuilderAggregateCandidate(uci=str(row["move_uci"]), raw_count=int(row["raw_count"]))
+            for row in move_rows
+            if row["move_uci"] is not None
+        )
+        total_observed_count = int(position_row["total_observations"] or 0)
+        if total_observed_count <= 0:
+            total_observed_count = sum(candidate.raw_count for candidate in candidates)
+        candidate_row_count = int(position_row["candidate_move_count"] or 0)
+        if candidate_row_count <= 0:
+            candidate_row_count = len(move_rows)
+        position = BuilderAggregatePosition(
+            position_key=str(position_row["position_key"]),
+            total_observed_count=total_observed_count,
+            candidates=candidates,
+            candidate_row_count=candidate_row_count,
+            unsupported_candidate_row_count=max(0, len(move_rows) - len(candidates)),
+        )
+        return self._remember(position_key, position)
+
+    def _get_connection_for_current_thread(self) -> sqlite3.Connection:
+        connection = getattr(self._thread_local, "connection", None)
+        if connection is None:
+            connection = sqlite3.connect(f"file:{self.payload_path}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            self._thread_local.connection = connection
+        return connection
+
+    def _remember(self, position_key: str, position: BuilderAggregatePosition | None) -> BuilderAggregatePosition | None:
+        if self.cache_size <= 0:
+            return position
+        with self._cache_lock:
+            self._position_cache[position_key] = position
+            self._position_cache.move_to_end(position_key)
+            while len(self._position_cache) > self.cache_size:
+                self._position_cache.popitem(last=False)
+        return position
+
+
 class BuilderAggregateCorpusProvider:
     def __init__(self, bundle_dir: str | Path, rng=None):
         self.bundle_dir = Path(bundle_dir)
@@ -312,7 +413,10 @@ class BuilderAggregateCorpusProvider:
         if payload_resolution is None:
             raise ValueError(resolution_error or f"Unsupported bundle payload at {self.bundle_dir}")
 
+        contract = read_corpus_metadata_contract(manifest)
         if payload_resolution.payload_format == "sqlite":
+            if contract.payload_version == "exact_compact_v2":
+                return CompactSQLiteAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path)
             return SQLiteAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path)
 
         provider = JsonlAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path, rng=self.rng)

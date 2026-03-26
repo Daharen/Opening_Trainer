@@ -10,6 +10,7 @@ import chess
 
 from .board import GameBoard
 from .bundle_corpus import normalize_builder_position_key
+from .bundle_contract import read_corpus_metadata_contract
 from .corpus import load_artifact
 from .developer_timing import DeveloperTimingOverrideState, DeveloperTimingOverrideStore, LiveTimingDebugState, parse_overlay_key_dimensions
 from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
@@ -130,6 +131,12 @@ class TrainingSession:
         )
 
     def max_supported_training_depth(self) -> int:
+        provider = getattr(self.opponent, "bundle_provider", None)
+        manifest = getattr(getattr(provider, "bundle", None), "manifest", None)
+        if isinstance(manifest, dict):
+            contract = read_corpus_metadata_contract(manifest)
+            if contract.max_supported_player_moves is not None and contract.max_supported_player_moves >= 2:
+                return contract.max_supported_player_moves
         retained_ply_depth = self.bundle_retained_ply_depth()
         supported_depth = max_supported_player_moves_from_retained_plies(retained_ply_depth)
         if supported_depth is not None:
@@ -156,6 +163,10 @@ class TrainingSession:
             except AttributeError:
                 provider = None
             manifest = getattr(getattr(provider, 'bundle', None), 'manifest', None)
+            if isinstance(manifest, dict):
+                contract = read_corpus_metadata_contract(manifest)
+                if contract.retained_ply_depth is not None:
+                    return contract.retained_ply_depth
             retained_ply_depth, _source = bundle_retained_ply_depth_from_metadata(Path(bundle_dir), manifest)
             if retained_ply_depth is not None:
                 return retained_ply_depth
@@ -319,11 +330,23 @@ class TrainingSession:
                 metadata = getattr(bundle_handle, 'metadata', None)
                 manifest = getattr(metadata, 'manifest', None)
             if isinstance(manifest, dict):
-                band = manifest.get('target_rating_band') or manifest.get('rating_band') or manifest.get('elo_band')
-                retained = manifest.get('retained_ply_depth')
-                band_text = self._format_rating_band(band) or self._bundle_name_fallback(bundle_dir)
-                retained_text = f' | Retained depth: {retained}' if retained is not None else ''
-                return f'Corpus: {band_text}{retained_text}{timing_text}'
+                contract = read_corpus_metadata_contract(manifest)
+                band_text = contract.target_rating_band or self._bundle_name_fallback(bundle_dir)
+                retained = contract.retained_ply_depth
+                max_moves = contract.max_supported_player_moves
+                time_control = contract.time_control_id
+                rating_policy = contract.rating_policy
+                detail_parts: list[str] = []
+                if retained is not None:
+                    detail_parts.append(f"Retained depth: {retained}")
+                if max_moves is not None:
+                    detail_parts.append(f"Max player moves: {max_moves}")
+                if time_control:
+                    detail_parts.append(f"Time control: {time_control}")
+                if rating_policy:
+                    detail_parts.append(f"Rating policy: {rating_policy}")
+                detail_suffix = f" | {' | '.join(detail_parts)}" if detail_parts else ""
+                return f'Corpus: {band_text}{detail_suffix}{timing_text}'
             return f'Corpus: {self._bundle_name_fallback(bundle_dir)}{timing_text}'
         artifact_path = self.runtime_context.config.corpus_artifact_path
         if artifact_path:
@@ -362,10 +385,9 @@ class TrainingSession:
         time_control_id = None
         rating_band = None
         if isinstance(manifest, dict):
-            raw_time_control = manifest.get("time_control_id")
-            if raw_time_control is not None and str(raw_time_control).strip():
-                time_control_id = str(raw_time_control).strip()
-            rating_band = self._format_rating_band(manifest.get("target_rating_band") or manifest.get("rating_band") or manifest.get("elo_band"))
+            contract = read_corpus_metadata_contract(manifest)
+            time_control_id = contract.time_control_id
+            rating_band = contract.target_rating_band
         if not time_control_id:
             time_control_id = getattr(bundle, "bundle_invariant_time_control_id", None)
         if not rating_band:
@@ -676,11 +698,18 @@ class TrainingSession:
         manifest = getattr(getattr(provider, "bundle", None), "manifest", None)
         if not isinstance(manifest, dict):
             return None
+        contract = read_corpus_metadata_contract(manifest)
         time_control_id, _rating_band = self._timing_contract_metadata()
-        if not time_control_id:
-            time_control_id = "timed_corpus"
-        initial_seconds = float(manifest.get("initial_time_seconds", manifest.get("initial_seconds", 300.0)))
-        increment_seconds = float(manifest.get("increment_seconds", 0.0))
+        if contract.is_canonical_contract:
+            if not time_control_id or contract.initial_time_seconds is None or contract.increment_seconds is None:
+                return None
+            initial_seconds = contract.initial_time_seconds
+            increment_seconds = contract.increment_seconds
+        else:
+            if not time_control_id:
+                time_control_id = "timed_corpus"
+            initial_seconds = float(manifest.get("initial_time_seconds", manifest.get("initial_seconds", 300.0)))
+            increment_seconds = float(manifest.get("increment_seconds", 0.0))
         return TimedSessionState(
             time_control_id=time_control_id,
             initial_seconds=initial_seconds,

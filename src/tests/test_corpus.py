@@ -249,6 +249,45 @@ def _write_sqlite_bundle(bundle_dir: Path, manifest: dict[str, object], rows: li
     return bundle_dir
 
 
+def _write_compact_sqlite_bundle(bundle_dir: Path, manifest: dict[str, object], rows: list[dict[str, object]], *, file_name: str = "exact_compact_corpus.sqlite") -> Path:
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    db_path = data_dir / file_name
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE position_keys (position_key_id INTEGER PRIMARY KEY, position_key TEXT NOT NULL UNIQUE)")
+        conn.execute(
+            "CREATE TABLE positions (position_id INTEGER PRIMARY KEY, position_key_id INTEGER NOT NULL, candidate_move_count INTEGER NOT NULL, total_observations INTEGER NOT NULL, FOREIGN KEY(position_key_id) REFERENCES position_keys(position_key_id))"
+        )
+        conn.execute("CREATE TABLE move_dictionary (move_id INTEGER PRIMARY KEY, uci TEXT NOT NULL UNIQUE)")
+        conn.execute(
+            "CREATE TABLE position_moves (position_id INTEGER NOT NULL, move_id INTEGER NOT NULL, raw_count INTEGER NOT NULL, PRIMARY KEY(position_id, move_id), FOREIGN KEY(position_id) REFERENCES positions(position_id), FOREIGN KEY(move_id) REFERENCES move_dictionary(move_id))"
+        )
+        move_cache: dict[str, int] = {}
+        for row in rows:
+            position_cursor = conn.execute("INSERT INTO position_keys(position_key) VALUES (?)", (row["position_key"],))
+            position_key_id = int(position_cursor.lastrowid)
+            candidate_rows = row.get("candidate_moves", [])
+            position_row = conn.execute(
+                "INSERT INTO positions(position_key_id, candidate_move_count, total_observations) VALUES (?, ?, ?)",
+                (position_key_id, len(candidate_rows), int(row.get("total_observed_count", row.get("total_observations", 0)))),
+            )
+            position_id = int(position_row.lastrowid)
+            for move in candidate_rows:
+                uci = str(move.get("uci") or move.get("move_key"))
+                move_id = move_cache.get(uci)
+                if move_id is None:
+                    move_cursor = conn.execute("INSERT INTO move_dictionary(uci) VALUES (?)", (uci,))
+                    move_id = int(move_cursor.lastrowid)
+                    move_cache[uci] = move_id
+                conn.execute("INSERT INTO position_moves(position_id, move_id, raw_count) VALUES (?, ?, ?)", (position_id, move_id, int(move["raw_count"])))
+        conn.commit()
+    finally:
+        conn.close()
+    return bundle_dir
+
+
 def _sample_bundle_manifest(**overrides: object) -> dict[str, object]:
     manifest = {
         "build_status": "aggregation_complete",
@@ -605,3 +644,40 @@ def test_builder_sqlite_bundle_lookup_is_thread_safe_across_loader_and_runtime_t
     assert position.total_observed_count == 12
     assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
     assert [candidate.raw_count for candidate in position.candidates] == [9, 3]
+
+
+def test_builder_compact_v2_sqlite_bundle_lookup_reads_compact_schema(tmp_path):
+    board = chess.Board()
+    bundle_dir = _write_compact_sqlite_bundle(
+        tmp_path / "compact_bundle",
+        _sample_bundle_manifest(
+            payload_format="sqlite",
+            payload_version="exact_compact_v2",
+            exact_corpus_file="data/exact_compact_corpus.sqlite",
+            max_supported_player_moves=7,
+            time_control_id="rapid_600_5",
+            initial_time_seconds=600,
+            increment_seconds=5,
+            target_rating_band="1400-1599",
+            rating_policy="both_players_in_band",
+        ),
+        [
+            {
+                "position_key": normalize_builder_position_key(board),
+                "candidate_moves": [
+                    {"uci": "e2e4", "raw_count": 8},
+                    {"uci": "d2d4", "raw_count": 3},
+                ],
+                "total_observed_count": 11,
+            }
+        ],
+    )
+    provider = BuilderAggregateCorpusProvider(bundle_dir)
+
+    position = provider.lookup_position(normalize_builder_position_key(board))
+
+    assert position is not None
+    assert provider.metadata.provider_label == "corpus_aggregate_bundle_sqlite_compact_v2"
+    assert [candidate.uci for candidate in position.candidates] == ["e2e4", "d2d4"]
+    assert [candidate.raw_count for candidate in position.candidates] == [8, 3]
+    assert position.total_observed_count == 11
