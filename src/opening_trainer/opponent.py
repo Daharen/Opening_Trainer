@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -16,6 +17,12 @@ from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact, normalize_position_key
 from .evaluation import EvaluatorConfig
 from .evaluation.engine_process import launch_engine, shutdown_engine
 from .runtime import corpus_status_detail
+from .bundle_contract import (
+    BUNDLE_MANIFEST_NAME,
+    classify_bundle_contract,
+    manifest_declared_canonical_exact_payload_path,
+    manifest_payload_version,
+)
 from .timing import (
     DynamicTimingContext,
     TimingConditionedCorpusBundleLoader,
@@ -378,12 +385,23 @@ class OpponentProvider:
         self.last_failure_reason: str | None = None
 
         if self.bundle_dir is not None:
+            bundle_contract = self._read_bundle_contract(self.bundle_dir)
             try:
                 self.bundle_provider = BuilderAggregateOpponentProvider(self.bundle_dir, rng=self.rng)
                 self.mode = "bundle"
                 self.status_message = corpus_status_detail(self.bundle_dir)
             except Exception as exc:
                 self.last_failure_reason = str(exc)
+                if self._requires_strict_exact_bundle_binding(bundle_contract):
+                    raise RuntimeError(
+                        "Failed to bind final canonical exact corpus bundle for live opponent selection; "
+                        f"bundle_dir={self.bundle_dir}; "
+                        f"bundle_kind={bundle_contract.get('bundle_kind')!r}; "
+                        f"build_status={bundle_contract.get('build_status')!r}; "
+                        f"payload_version={bundle_contract.get('payload_version')!r}; "
+                        f"canonical_exact_payload={bundle_contract.get('canonical_exact_payload')!r}; "
+                        f"cause={exc}"
+                    ) from exc
                 self.status_message = f"{corpus_status_detail(self.bundle_dir)}; runtime will attempt legacy corpus, then Stockfish, then random legal fallback."
 
         if self.bundle_provider is None and self.artifact_path is not None and self.artifact_path.is_file():
@@ -489,3 +507,30 @@ class OpponentProvider:
             except ValueError:
                 return default
         return default
+
+    @staticmethod
+    def _read_bundle_contract(bundle_dir: Path) -> dict[str, object]:
+        manifest_path = bundle_dir / BUNDLE_MANIFEST_NAME
+        if not manifest_path.exists():
+            return {}
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(manifest, dict):
+            return {}
+        canonical_exact_payload = manifest_declared_canonical_exact_payload_path(manifest, bundle_dir)
+        return {
+            "bundle_kind": classify_bundle_contract(manifest),
+            "build_status": manifest.get("build_status"),
+            "payload_version": manifest_payload_version(manifest),
+            "canonical_exact_payload": str(canonical_exact_payload) if canonical_exact_payload is not None else None,
+        }
+
+    @staticmethod
+    def _requires_strict_exact_bundle_binding(bundle_contract: dict[str, object]) -> bool:
+        return (
+            bundle_contract.get("bundle_kind") == "timing_conditioned"
+            and bundle_contract.get("canonical_exact_payload") is not None
+            and str(bundle_contract.get("payload_version") or "").strip().lower() in {"2", "v2"}
+        )

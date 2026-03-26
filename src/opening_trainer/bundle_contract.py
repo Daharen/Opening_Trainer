@@ -182,10 +182,14 @@ def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle
     declared_canonical = manifest_declared_canonical_exact_payload_path(manifest, bundle_dir)
     declared_compatibility = manifest_declared_compatibility_exact_payload_path(manifest, bundle_dir)
     declared_sqlite = manifest_declared_exact_sqlite_path(manifest, bundle_dir)
-    candidate_paths: list[Path] = []
     if declared_canonical is not None:
-        candidate_paths.append(declared_canonical)
-    elif declared_compatibility is not None:
+        if not declared_canonical.exists():
+            return None, f"canonical exact payload is missing at {declared_canonical}"
+        if not declared_canonical.is_file():
+            return None, f"canonical exact payload path {declared_canonical} is not a file"
+        return BundlePayloadResolution(payload_format="sqlite", payload_path=declared_canonical, payload_version=manifest_payload_version(manifest)), None
+    candidate_paths: list[Path] = []
+    if declared_compatibility is not None:
         candidate_paths.append(declared_compatibility)
     if declared_sqlite is not None:
         candidate_paths.append(declared_sqlite)
