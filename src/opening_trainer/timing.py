@@ -12,10 +12,11 @@ from .bundle_contract import (
     BUNDLE_MANIFEST_NAME,
     classify_bundle_contract,
     manifest_declared_behavioral_profile_set_path,
+    manifest_payload_version,
     resolve_bundle_payload,
     resolve_timing_conditioned_exact_payload,
 )
-from .bundle_corpus import BuilderAggregateCorpusProvider, JsonlAggregateCorpusProvider, SQLiteAggregateCorpusProvider
+from .bundle_corpus import BuilderAggregateCorpusProvider, CompactSQLiteAggregateCorpusProvider, JsonlAggregateCorpusProvider, SQLiteAggregateCorpusProvider
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,10 @@ def _load_exact_corpus_provider(bundle_dir: Path, manifest: dict[str, object], r
         "payload_status": manifest.get("payload_status", "timing_conditioned_exact_payload"),
     }
     if payload_resolution.payload_format == "sqlite":
+        payload_format = str(manifest.get("payload_format", "")).strip().lower()
+        payload_version = str(manifest_payload_version(manifest) or "").strip().lower()
+        if payload_format in {"sqlite_compact_v2", "compact_exact_payload_v2", "compact_sqlite_v2"} or payload_version in {"2", "v2"}:
+            return CompactSQLiteAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path), "timing_conditioned", payload_resolution.payload_path
         return SQLiteAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path), "timing_conditioned", payload_resolution.payload_path
     return JsonlAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path, rng=rng), "timing_conditioned", payload_resolution.payload_path
 

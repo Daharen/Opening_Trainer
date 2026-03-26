@@ -1059,6 +1059,19 @@ def test_training_depth_missing_metadata_falls_back_conservatively(tmp_path):
     assert 'fall back to Stockfish' in runtime.corpus.detail
 
 
+def test_training_depth_prefers_manifest_max_supported_player_moves(tmp_path):
+    bundle_dir = _write_bundle(
+        tmp_path / 'bundle_with_canonical_depth',
+        _sample_bundle_manifest(retained_ply_depth=12, max_supported_player_moves=9),
+        [],
+    )
+    runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
+    session = TrainingSession(runtime_context=runtime)
+
+    assert session.bundle_retained_ply_depth() == 18
+    assert session.max_supported_training_depth() == 9
+
+
 def test_terminal_player_checkmate_inside_envelope_is_success(tmp_path):
     session = TrainingSession(review_storage=ReviewStorage(tmp_path / 'runtime' / 'profiles'))
     session.current_routing = session.router.select(session.active_profile_id, [])
