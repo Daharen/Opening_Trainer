@@ -393,10 +393,25 @@ def test_corpus_summary_prefers_manifest_band_and_falls_back_to_bundle_name(tmp_
     metadata = type('Meta', (), {'manifest': {'target_rating_band': {'minimum': 1200, 'maximum': 1400}, 'retained_ply_depth': 12}})()
     session.opponent = type('Opponent', (), {'bundle_provider': type('Provider', (), {'bundle': type('Bundle', (), {'metadata': metadata})()})()})()
 
-    assert session.corpus_summary_text() == 'Corpus: 1200-1400 | Retained depth: 12 | Timing overlay: inactive'
+    assert session.corpus_summary_text() == 'Corpus: 1200-1400 | Retained depth: 12 | Opponent timing: off'
 
     session.opponent = type('Opponent', (), {'bundle_provider': type('Provider', (), {'bundle': type('Bundle', (), {'metadata': type('Meta', (), {'manifest': {}})()})()})()})()
     assert '1200 1400' in session.corpus_summary_text()
+
+
+def test_recent_status_text_is_human_readable_and_hides_internal_keys(tmp_path):
+    gui = _build_gui(tmp_path)
+    gui.session.required_player_moves = 4
+    gui.session._max_depth = 6
+    gui.session.settings = TrainerSettings(good_moves_acceptable=True, active_training_ply_depth=4, side_panel_visible=False, move_list_visible=True)
+
+    text = gui._build_recent_status_text("Session route: corpus training")
+
+    assert "Session route: corpus training" in text
+    assert "Recent status:" in text
+    assert "corpus_share=" not in text
+    assert "deck_size=" not in text
+    assert "timing_overlay=" not in text
 
 
 
@@ -761,5 +776,5 @@ def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):
 
     summary = OpeningTrainerGUI._training_depth_summary(gui)
 
-    assert 'Max supported: 15 player moves' in summary
-    assert '30 plies' in summary
+    assert 'App max: 15 player moves' in summary
+    assert 'Bundle max: 15 player moves' in summary

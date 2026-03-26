@@ -352,6 +352,26 @@ class TrainingSession:
             name = str(bundle_dir)
         return name.replace('_', ' ')
 
+    def _timing_contract_metadata(self) -> tuple[str | None, str | None]:
+        provider = getattr(self.opponent, "bundle_provider", None)
+        bundle = getattr(provider, "bundle", None)
+        manifest = getattr(bundle, "manifest", None)
+        if not isinstance(manifest, dict):
+            metadata = getattr(bundle, "metadata", None)
+            manifest = getattr(metadata, "manifest", None)
+        time_control_id = None
+        rating_band = None
+        if isinstance(manifest, dict):
+            raw_time_control = manifest.get("time_control_id")
+            if raw_time_control is not None and str(raw_time_control).strip():
+                time_control_id = str(raw_time_control).strip()
+            rating_band = self._format_rating_band(manifest.get("target_rating_band") or manifest.get("rating_band") or manifest.get("elo_band"))
+        if not time_control_id:
+            time_control_id = getattr(bundle, "bundle_invariant_time_control_id", None)
+        if not rating_band:
+            rating_band = getattr(bundle, "bundle_invariant_rating_band", None)
+        return time_control_id, rating_band
+
     def _submit_user_move(self, move_str: str) -> SessionView:
         if self.state != SessionState.PLAYER_TURN:
             raise RuntimeError('Cannot submit a user move when the session is not awaiting player input.')
@@ -656,7 +676,9 @@ class TrainingSession:
         manifest = getattr(getattr(provider, "bundle", None), "manifest", None)
         if not isinstance(manifest, dict):
             return None
-        time_control_id = str(manifest.get("time_control_id", "rapid_300_0"))
+        time_control_id, _rating_band = self._timing_contract_metadata()
+        if not time_control_id:
+            time_control_id = "timed_corpus"
         initial_seconds = float(manifest.get("initial_time_seconds", manifest.get("initial_seconds", 300.0)))
         increment_seconds = float(manifest.get("increment_seconds", 0.0))
         return TimedSessionState(
@@ -703,9 +725,10 @@ class TrainingSession:
             return None
         opponent_remaining_ms = self.timed_state.white_remaining_ms if self.player_color == chess.BLACK else self.timed_state.black_remaining_ms
         remaining_seconds = opponent_remaining_ms / 1000.0
+        _time_control_id, rating_band = self._timing_contract_metadata()
         return {
             "time_control_id": self.timed_state.time_control_id,
-            "mover_elo_band": self._format_rating_band(getattr(getattr(self.opponent.bundle_provider, 'bundle', None), 'manifest', {}).get("target_rating_band")) or "unknown",
+            "mover_elo_band": rating_band or "timed_corpus",
             "remaining_ratio": remaining_seconds / max(1.0, self.timed_state.initial_seconds),
             "remaining_seconds": remaining_seconds,
             "prev_opp_think_seconds": self.timed_state.previous_opponent_think_seconds,
@@ -832,28 +855,23 @@ class TrainingSession:
 
     def _timing_summary_text(self) -> str:
         if self.timed_state is None:
-            return " | Timing overlay: inactive"
+            return " | Opponent timing: off"
         white = self.timed_state.white_remaining_ms / 1000.0
         black = self.timed_state.black_remaining_ms / 1000.0
         debug_state = self.live_timing_debug_state
         if not debug_state.overlay_available:
-            timing_status = "absent"
+            timing_status = "timed"
         elif debug_state.matched_context_key is None:
-            timing_status = "available_unmatched"
+            timing_status = "timed"
         elif debug_state.fallback_used:
-            timing_status = "active_fallback"
+            timing_status = "active"
         else:
-            timing_status = "active_direct"
-        if debug_state.visible_delay_applied_seconds is not None:
-            timing_status = f"{timing_status}_visible_delay"
-        context_key = debug_state.matched_context_key or debug_state.effective_context_key
+            timing_status = "active"
         sampled = debug_state.sampled_think_time_seconds
-        sampled_text = f"{sampled:.2f}s" if isinstance(sampled, float) else "n/a"
+        think_text = f"{sampled:.2f}s" if isinstance(sampled, float) else "n/a"
         return (
-            f" | Timing overlay: {timing_status}"
-            f" | Overlay source: {debug_state.overlay_source}"
-            f" | Context: {context_key or 'n/a'}"
-            f" | Sampled think: {sampled_text}"
+            f" | Opponent timing: {timing_status}"
+            f" | Opponent think: {think_text}"
             f" | Clocks W/B: {white:.1f}s/{black:.1f}s"
         )
 
