@@ -11,7 +11,7 @@ CATEGORY_PRIORITY = ('E', 'B', 'H80', 'H60', 'H40', 'H20', 'D', 'C')
 REVIEW_CATEGORIES = ('D', 'H80', 'H60', 'H40', 'H20', 'B', 'E')
 H_CATEGORIES = ('H80', 'H60', 'H40', 'H20')
 CATEGORY_TO_ROUTING = {
-    'D': RoutingSource.SRS_DUE_REVIEW.value,
+    'D': RoutingSource.SCHEDULED_REVIEW.value,
     'B': RoutingSource.BOOSTED_REVIEW.value,
     'E': RoutingSource.EXTREME.value,
     'H80': RoutingSource.HIJACK_REENTRY.value,
@@ -61,6 +61,7 @@ class ReviewRouter:
         self.addition_counters: dict[str, int] = {'D': 0, 'B': 0}
         self.removal_counters: dict[str, int] = {'D': 0, 'B': 0}
         self.tier_queues: dict[str, deque[str]] = {category: deque() for category in REVIEW_CATEGORIES}
+        self.srs_due_queue: deque[str] = deque()
         self.deck_counts: dict[str, int] = {category: 0 for category in CATEGORY_PRIORITY[::-1]}
         self.last_shares: tuple[float, float] = (1.0, 0.0)
 
@@ -80,16 +81,13 @@ class ReviewRouter:
     def _ordinary_penalty(total_due: int) -> float:
         if total_due == 0:
             return 0.0
-        return min(0.80, 0.20 + 0.15 * int(total_due >= 2) + 0.10 * int(total_due >= 3) + 0.05 * max(0, total_due - 3))
+        return min(0.55, 0.20 + 0.05 * max(0, total_due - 1))
 
     def _compute_shares(self, d: int, h80: int, h60: int, h40: int, h20: int, b: int, e: int) -> dict[str, float]:
         total_due = d + h80 + h60 + h40 + h20 + b + e
         if total_due == 0:
             return {category: (1.0 if category == 'C' else 0.0) for category in ('C', *REVIEW_CATEGORIES)} | {'corpus': 1.0, 'review': 0.0}
-        ordinary_penalty = self._ordinary_penalty(total_due)
-        boosted_penalty = min(0.06, 0.02 * b)
-        extreme_penalty = min(0.04, 0.01 * e)
-        review_share = ordinary_penalty + boosted_penalty + extreme_penalty
+        review_share = self._ordinary_penalty(total_due)
         corpus_share = 1.0 - review_share
         masses = {
             'D': 1 * d,
@@ -209,6 +207,16 @@ class ReviewRouter:
             for item in tier_items[category]:
                 if item.review_item_id not in existing:
                     queue.append(item.review_item_id)
+
+    def _sync_srs_queue(self, srs_due_items: list) -> None:
+        allowed = {item.review_item_id for item in srs_due_items}
+        retained = [item_id for item_id in self.srs_due_queue if item_id in allowed]
+        self.srs_due_queue.clear()
+        self.srs_due_queue.extend(retained)
+        existing = set(self.srs_due_queue)
+        for item in sorted(srs_due_items, key=self._queue_sort_key):
+            if item.review_item_id not in existing:
+                self.srs_due_queue.append(item.review_item_id)
 
     def _track_state_changes(self, ids_by_tier: dict[str, set[str]]) -> None:
         for cat in REVIEW_CATEGORIES:
@@ -402,16 +410,51 @@ class ReviewRouter:
 
     def select(self, profile_id: str, items: list) -> RoutingDecision:
         srs_due_items = [item for item in items if due_state(item.srs_next_due_at_utc) == 'due' and not item.frequency_retired_for_current_due_cycle]
+        self._sync_srs_queue(srs_due_items)
+        if self.srs_due_queue:
+            item_id = self.srs_due_queue.popleft()
+            self.srs_due_queue.append(item_id)
+            selected_item = next(item for item in srs_due_items if item.review_item_id == item_id)
+            plan = ReviewPlan(
+                root_fen='startpos',
+                target_review_item_id=selected_item.review_item_id,
+                target_position_key=selected_item.position_key,
+                target_fen=selected_item.position_fen_normalized,
+                predecessor_path=tuple(selected_item.predecessor_path),
+                routing_reason=RoutingSource.SRS_DUE_REVIEW.value,
+            )
+            return RoutingDecision(
+                RoutingSource.SRS_DUE_REVIEW.value,
+                selected_item.review_item_id,
+                selected_item.urgency_tier,
+                due_state(selected_item.srs_next_due_at_utc),
+                bool(selected_item.predecessor_path),
+                'srs_due_review selected before finite review deck.',
+                profile_id,
+                review_plan=plan,
+                corpus_share=self.last_shares[0],
+                review_share=self.last_shares[1],
+                due_count=0,
+                boosted_due_count=0,
+                extreme_due_count=0,
+                deck_size=len(self.deck.tokens),
+                token_counts=self.deck_counts.copy(),
+                selected_token_category='SRS',
+                queue_position_before=0,
+                queue_position_after=len(self.srs_due_queue) - 1,
+                rebuild_trigger=None,
+            )
+
         srs_due_ids = {item.review_item_id for item in srs_due_items}
         pressure_items = [item for item in items if item.review_item_id not in srs_due_ids and not item.frequency_retired_for_current_due_cycle]
         tier_items = {
-            'D': sorted(srs_due_items, key=self._queue_sort_key),
+            'D': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.NONE.value and due_state(i.due_at_utc) == 'due' and not i.dormant], key=self._queue_sort_key),
             'H80': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H80.value and not i.dormant], key=self._queue_sort_key),
             'H60': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H60.value and not i.dormant], key=self._queue_sort_key),
             'H40': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H40.value and not i.dormant], key=self._queue_sort_key),
             'H20': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.ORDINARY.value and i.hijack_stage == HijackStage.H20.value and not i.dormant], key=self._queue_sort_key),
-            'B': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.BOOSTED.value], key=self._queue_sort_key),
-            'E': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.EXTREME.value], key=self._queue_sort_key),
+            'B': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.BOOSTED.value and due_state(i.due_at_utc) == 'due'], key=self._queue_sort_key),
+            'E': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.EXTREME.value and due_state(i.due_at_utc) == 'due'], key=self._queue_sort_key),
         }
         ids_by_tier = {category: {item.review_item_id for item in bucket} for category, bucket in tier_items.items()}
         self._sync_queues(tier_items, ids_by_tier)
@@ -430,14 +473,7 @@ class ReviewRouter:
             rebuild_trigger = 'deck_exhausted'
             self._rebuild_deck(counts_by_category)
 
-        forced_category: str | None = None
-        if self.tier_queues['D']:
-            forced_category = 'D'
-        elif self.tier_queues['E']:
-            forced_category = 'E'
-        elif self.tier_queues['B']:
-            forced_category = 'B'
-        token = forced_category or (self.deck.next_token() if self.deck.tokens else 'C')
+        token = self.deck.next_token() if self.deck.tokens else 'C'
         selected_item = None
         selected_category = token
         queue_before = None

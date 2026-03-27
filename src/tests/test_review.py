@@ -118,7 +118,7 @@ def _due_item(position_key: str, urgency_tier: str) -> ReviewItem:
     item.due_at_utc = '2000-01-01T00:00:00+00:00'
     item.updated_at_utc = '2026-01-01T00:00:00+00:00'
     item.last_seen_at_utc = '2025-01-01T00:00:00+00:00'
-    item.srs_next_due_at_utc = '2000-01-01T00:00:00+00:00'
+    item.srs_next_due_at_utc = '2099-01-01T00:00:00+00:00'
     return item
 
 
@@ -127,26 +127,25 @@ def test_due_only_ordinary_keeps_corpus_at_twenty_percent():
     decision = router.select('default', [_due_item('a', 'ordinary_review')])
     assert decision.corpus_share == pytest.approx(0.8)
     assert decision.review_share == pytest.approx(0.2)
-    assert decision.boosted_due_count == 0
-    assert decision.extreme_due_count == 0
+    assert decision.routing_source in {'scheduled_review', 'ordinary_corpus_play'}
 
 
 def test_boosted_and_extreme_reduce_corpus_share_with_exact_penalties():
     router = ReviewRouter()
     items = [_due_item('a', 'ordinary_review'), _due_item('b', 'boosted_review'), _due_item('c', 'boosted_review'), _due_item('d', 'extreme_urgency')]
     decision = router.select('default', items)
-    assert decision.corpus_share == pytest.approx(0.5)
-    assert decision.review_share == pytest.approx(0.5)
-    assert decision.boosted_due_count == 0
-    assert decision.extreme_due_count == 0
+    assert decision.corpus_share == pytest.approx(0.65)
+    assert decision.review_share == pytest.approx(0.35)
+    assert decision.boosted_due_count == 2
+    assert decision.extreme_due_count == 1
 
 
-def test_review_selection_prioritizes_extreme_then_boosted_then_ordinary():
+def test_review_selection_prioritizes_srs_due_before_pressure_deck():
     router = ReviewRouter()
     extreme = _due_item('e', 'extreme_urgency')
     boosted = _due_item('b', 'boosted_review')
     ordinary = _due_item('a', 'ordinary_review')
-    # Force review path deterministically by creating a 0 corpus share case.
+    ordinary.srs_next_due_at_utc = '2000-01-01T00:00:00+00:00'
     decision = router.select('default', [extreme] + [_due_item(str(i), 'extreme_urgency') for i in range(10)] + [boosted, ordinary])
     assert decision.routing_source == 'srs_due_review'
 
@@ -252,9 +251,9 @@ def test_rehabilitation_thresholds_are_exact_and_cumulative():
         apply_success(item, 'boosted_review')
     assert item.success_streak == 4
     assert item.urgency_tier == 'ordinary_review'
-    for _ in range(6):
+    for _ in range(2):
         apply_success(item, 'ordinary_corpus_play')
-    assert item.success_streak == 10
+    assert item.success_streak == 6
     assert item.frequency_retired_for_current_due_cycle is True
 
 
@@ -277,7 +276,7 @@ def test_stubborn_extreme_arms_then_forces_one_repeat_then_clears_on_success():
 def test_frequency_retirement_reactivates_only_after_due_cycle_transition():
     item = ReviewItem.create('default', 'k3', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
     item.urgency_tier = 'ordinary_review'
-    item.consecutive_successes = 9
+    item.consecutive_successes = 5
     apply_success(item, 'ordinary_corpus_play')
     assert item.frequency_retired_for_current_due_cycle is True
     item.due_at_utc = '2099-01-01T00:00:00+00:00'
@@ -301,6 +300,7 @@ def test_persistence_upgrade_defaults_new_frequency_and_srs_fields(tmp_path):
     assert item.frequency_state == item.urgency_tier
     assert item.srs_stage_index == 0
     assert item.srs_next_due_at_utc
+    assert item.srs_next_due_at_utc != item.due_at_utc
     assert item.srs_last_result == 'none'
 
 
@@ -318,9 +318,10 @@ def test_frequency_threshold_contract_exact_transitions():
     assert item.urgency_tier == 'boosted_review'
     apply_success(item, 'boosted_review')
     apply_success(item, 'boosted_review')
-    apply_success(item, 'boosted_review')
-    apply_success(item, 'boosted_review')
     assert item.urgency_tier == 'ordinary_review'
+    apply_success(item, 'ordinary_corpus_play')
+    apply_success(item, 'ordinary_corpus_play')
+    assert item.frequency_retired_for_current_due_cycle is True
 
 
 def test_srs_advances_only_on_explicit_spaced_review():
@@ -331,6 +332,17 @@ def test_srs_advances_only_on_explicit_spaced_review():
     assert item.srs_stage_index == start_stage
     apply_success(item, 'srs_due_review')
     assert item.srs_stage_index == start_stage + 1
+
+
+def test_srs_failure_reset_only_on_explicit_srs_due():
+    item = ReviewItem.create('default', 'srs-reset', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
+    apply_success(item, 'srs_due_review')
+    assert item.srs_stage_index == 1
+    apply_failure(item, 'fail', None, item.predecessor_path, item.line_preview_san, 'boosted_review')
+    assert item.srs_stage_index == 1
+    apply_failure(item, 'fail', None, item.predecessor_path, item.line_preview_san, 'srs_due_review')
+    assert item.srs_stage_index == 0
+    assert item.srs_lapse_count == 1
 
 
 def test_session_history_tags_outcome_channel_for_smart_profile_isolation(tmp_path):
