@@ -179,6 +179,7 @@ class OpeningTrainerGUI:
             TrainerSettings(
                 good_moves_acceptable=settings.good_moves_acceptable,
                 active_training_ply_depth=settings.active_training_ply_depth,
+                smart_profile_enabled=settings.smart_profile_enabled,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=self._remembered_bundle_path(),
@@ -191,6 +192,7 @@ class OpeningTrainerGUI:
             TrainerSettings(
                 good_moves_acceptable=settings.good_moves_acceptable,
                 active_training_ply_depth=settings.active_training_ply_depth,
+                smart_profile_enabled=settings.smart_profile_enabled,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=bundle_path,
@@ -456,12 +458,24 @@ class OpeningTrainerGUI:
         retained_ply_depth = self.session.bundle_retained_ply_depth()
         cap = self.session.max_supported_training_depth()
         retained_text = f' | Bundle max: {retained_ply_depth // 2} player moves' if retained_ply_depth is not None else ''
-        return f'Training depth: {self.session.required_player_moves} player moves | Good accepted: {"yes" if self.session.settings.good_moves_acceptable else "no"} | App max: {cap} player moves{retained_text}'
+        return f'Training depth: {self.session.required_player_moves} player moves | Good accepted: {"yes" if self.session.config.good_moves_acceptable else "no"} | App max: {cap} player moves{retained_text}'
+
+    def _smart_profile_summary_text(self) -> str:
+        status = self.session.smart_profile_status()
+        mode = 'active' if status.active else 'inactive'
+        track = f'{status.track_id}/{status.category_id}' if status.track_id and status.category_id else 'unsupported'
+        level = f'L{status.level}' if status.level is not None else 'n/a'
+        eligible = 'yes' if status.eligible_now else 'no'
+        return (
+            f'Smart Profile: {mode} | Track: {track} | Level: {level} | '
+            f'W:{status.wins_toward_promotion} L:{status.losses_toward_demotion} | Eligible now: {eligible} ({status.eligibility_reason})'
+        )
 
     def _build_recent_status_text(self, routing_summary: str) -> str:
         return '\n'.join(
             [
                 self._training_depth_summary(),
+                self._smart_profile_summary_text(),
                 routing_summary,
                 'Recent status: Ready for next move.',
             ]
@@ -477,9 +491,9 @@ class OpeningTrainerGUI:
         counts_summary = self._build_counts_summary(due, boosted, extreme)
         routing_summary = self._build_routing_summary(routing, '')
         bundle_summary = self.session.corpus_summary_text()
-        corpus_summary = self.session.corpus_summary_text()
+        corpus_summary = f'{self.session.corpus_summary_text()} | {self._smart_profile_summary_text()}'
         self.status_panel.update_status(profile_name=profile_name, bundle_summary=bundle_summary, corpus_summary=corpus_summary, routing_summary=routing_summary, counts_summary=counts_summary)
-        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), corpus_summary=self._training_depth_summary(), routing_summary=routing_summary, counts_summary=counts_summary)
+        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), corpus_summary=f'{self._training_depth_summary()} | {self._smart_profile_summary_text()}', routing_summary=routing_summary, counts_summary=counts_summary)
         self.recent_var.set(self._build_recent_status_text(routing_summary))
         self.inspector.refresh()
         view = self.session.get_view()
@@ -501,7 +515,9 @@ class OpeningTrainerGUI:
         good_var = tk.BooleanVar(value=self.session.settings.good_moves_acceptable)
         panel_var = tk.BooleanVar(value=self.panel_visible)
         move_list_var = tk.BooleanVar(value=self.move_list_visible)
+        smart_profile_var = tk.BooleanVar(value=self.session.settings.smart_profile_enabled)
         ttk.Checkbutton(frame, text='Accept Good moves (permissive mode)', variable=good_var).pack(anchor='w', pady=(0, 8))
+        ttk.Checkbutton(frame, text='Enable Smart Profile contract mode', variable=smart_profile_var).pack(anchor='w')
         ttk.Checkbutton(frame, text='Show training/review panel by default', variable=panel_var).pack(anchor='w')
         ttk.Checkbutton(frame, text='Show move list by default', variable=move_list_var).pack(anchor='w', pady=(0, 8))
         ttk.Label(frame, text='Training depth (player moves)').pack(anchor='w')
@@ -517,7 +533,16 @@ class OpeningTrainerGUI:
         def save():
             self.panel_visible = panel_var.get()
             self.move_list_visible = move_list_var.get()
-            self.session.update_settings(TrainerSettings(good_var.get(), depth_var.get(), self.panel_visible, self.move_list_visible, self._remembered_bundle_path()))
+            self.session.update_settings(
+                TrainerSettings(
+                    good_moves_acceptable=good_var.get(),
+                    active_training_ply_depth=depth_var.get(),
+                    smart_profile_enabled=smart_profile_var.get(),
+                    side_panel_visible=self.panel_visible,
+                    move_list_visible=self.move_list_visible,
+                    last_bundle_path=self._remembered_bundle_path(),
+                )
+            )
             window.destroy()
             self._apply_shell_layout(initializing=True)
             self._refresh_supporting_surfaces()
@@ -673,6 +698,9 @@ class OpeningTrainerGUI:
         dev_menu.add_command(label='Open Logs Folder', command=self._open_logs_folder)
         dev_menu.add_command(label='Copy Current Session Log Path', command=self._copy_session_log_path)
         dev_menu.add_command(label='Clear Visible Buffer', command=self._clear_visible_log_buffer)
+        dev_menu.add_separator()
+        dev_menu.add_command(label='Reset Smart Profile State', command=self._reset_smart_profile_state)
+        dev_menu.add_command(label='Set Smart Profile Level…', command=self._set_smart_profile_level)
         menubar.add_cascade(label='Developer', menu=dev_menu)
         self.root.config(menu=menubar)
 
@@ -703,6 +731,26 @@ class OpeningTrainerGUI:
 
     def _clear_visible_log_buffer(self) -> None:
         self.session_logger.clear_visible_buffer()
+
+    def _reset_smart_profile_state(self) -> None:
+        self.session.smart_profile.reset_all()
+        self._refresh_supporting_surfaces()
+
+    def _set_smart_profile_level(self) -> None:
+        time_control_id, _rating_band = self.session._timing_contract_metadata()
+        raw = simpledialog.askstring('Smart Profile Level', 'Set level for current track/category (1-28):', parent=self.root)
+        if raw is None:
+            return
+        try:
+            level = int(raw)
+        except ValueError:
+            messagebox.showerror('Smart Profile', 'Level must be an integer.', parent=self.root)
+            return
+        if not self.session.smart_profile.set_level_for_current_track(time_control_id=time_control_id, level=level):
+            messagebox.showerror('Smart Profile', 'Current bundle time control is unsupported for Smart Profile.', parent=self.root)
+            return
+        self.session._apply_settings(self.session.settings)
+        self._refresh_supporting_surfaces()
 
     def _schedule_after(self, delay_ms: int, callback) -> None:
         if getattr(self, '_is_shutting_down', False):
