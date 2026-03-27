@@ -33,6 +33,7 @@ from .runtime import (
 from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
 from .session_logging import log_line
+from .smart_profile import SmartProfileService
 from .timing import (
     DynamicTimingContext,
     TimingContext,
@@ -96,6 +97,7 @@ class TrainingSession:
         self.active_profile_id = self.profile_service.get_active_profile_id()
         self.settings_store = TrainerSettingsStore(self.review_storage.root)
         self.developer_timing_store = DeveloperTimingOverrideStore(self.review_storage.root)
+        self.smart_profile = SmartProfileService(self.review_storage, self.active_profile_id)
         self.player_color = chess.WHITE
         self.player_move_count = 0
         self.state = SessionState.IDLE
@@ -183,8 +185,17 @@ class TrainingSession:
 
     def _apply_settings(self, settings: TrainerSettings) -> None:
         self.settings = settings.normalized(maximum_depth=self.max_supported_training_depth())
-        self.required_player_moves = self.settings.active_training_ply_depth
-        self.config = type(self.config)(**{**self.config.snapshot(), 'active_envelope_player_moves': self.required_player_moves, 'good_moves_acceptable': self.settings.good_moves_acceptable})
+        time_control_id, _rating_band = self._timing_contract_metadata()
+        if self.settings.smart_profile_enabled:
+            required_moves, good_accepted = self.smart_profile.enforce_runtime_contract(
+                time_control_id=time_control_id,
+                fallback_turns=self.settings.active_training_ply_depth,
+                fallback_good_accepted=self.settings.good_moves_acceptable,
+            )
+        else:
+            required_moves, good_accepted = self.settings.active_training_ply_depth, self.settings.good_moves_acceptable
+        self.required_player_moves = required_moves
+        self.config = type(self.config)(**{**self.config.snapshot(), 'active_envelope_player_moves': self.required_player_moves, 'good_moves_acceptable': good_accepted})
         self.evaluator.config = self.config
         self.evaluator.overlay_classifier.config = self.config
         self.evaluator.engine_authority.config = self.config
@@ -266,6 +277,7 @@ class TrainingSession:
     def switch_profile(self, profile_id: str) -> None:
         self.profile_service.switch_profile(profile_id)
         self.active_profile_id = profile_id
+        self.smart_profile.switch_profile(profile_id)
 
     def run_session(self, input_func=None) -> None:
         if input_func is None:
@@ -482,6 +494,7 @@ class TrainingSession:
                 player_color=self.player_color,
             )
             self.state = SessionState.FAIL_RESOLUTION
+            self._record_smart_profile_outcome(False)
             self._resolve_fail()
             return self.get_view()
         if self._resolve_terminal_board_state():
@@ -490,6 +503,7 @@ class TrainingSession:
             impact_summary, next_reason = self._capture_success_if_needed()
             self.last_outcome = SessionOutcome(True, f'Completed {self.required_player_moves} accepted player moves inside the opening window.', None, evaluation, 'pass', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', next_reason, self._profile_name(), impact_summary)
             self.state = SessionState.SUCCESS_RESOLUTION
+            self._record_smart_profile_outcome(True)
             self._resolve_success()
             return self.get_view()
         self.state = SessionState.OPPONENT_TURN
@@ -515,14 +529,48 @@ class TrainingSession:
             impact_summary, next_reason = self._capture_success_if_needed()
             self.last_outcome = SessionOutcome(True, reason, None, self.last_evaluation, 'pass', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', next_reason, self._profile_name(), impact_summary)
             self.state = SessionState.SUCCESS_RESOLUTION
+            self._record_smart_profile_outcome(True)
             self._resolve_success()
             return True
         impact_summary = 'Terminal game state reached; no additional review item recorded.'
         next_reason = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
         self.last_outcome = SessionOutcome(False, reason, None, self.last_evaluation, 'fail', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', next_reason, self._profile_name(), impact_summary, player_color=self.player_color)
         self.state = SessionState.FAIL_RESOLUTION
+        self._record_smart_profile_outcome(False)
         self._resolve_fail()
         return True
+
+    def smart_profile_status(self):
+        time_control_id, rating_band = self._timing_contract_metadata()
+        routing_source = self.current_routing.routing_source if self.current_routing else 'not_started'
+        return self.smart_profile.status(
+            routing_source=routing_source,
+            bundle_available=bool(self.runtime_context.config.corpus_bundle_dir),
+            time_control_id=time_control_id,
+            bundle_rating_band=rating_band,
+            required_turns=self.required_player_moves,
+            good_accepted=self.config.good_moves_acceptable,
+        )
+
+    def _record_smart_profile_outcome(self, passed: bool) -> None:
+        if not self.settings.smart_profile_enabled:
+            return
+        time_control_id, rating_band = self._timing_contract_metadata()
+        routing_source = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
+        eligibility = self.smart_profile.evaluate_eligibility(
+            routing_source=routing_source,
+            bundle_available=bool(self.runtime_context.config.corpus_bundle_dir),
+            time_control_id=time_control_id,
+            bundle_rating_band=rating_band,
+            required_turns=self.required_player_moves,
+            good_accepted=self.config.good_moves_acceptable,
+        )
+        self.smart_profile.apply_eligible_result(
+            eligibility,
+            passed=passed,
+            bundle_time_control_id=time_control_id,
+            bundle_rating_band=rating_band,
+        )
 
     def _lookup_punishing_reply(self) -> tuple[str | None, str | None]:
         board_after_fail = self.board.board.copy(stack=True)

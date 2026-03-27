@@ -66,8 +66,10 @@ class FakeSession:
         self.settings = TrainerSettings()
         self._max_depth = 5
         self.required_player_moves = 5
+        self.config = type('Config', (), {'good_moves_acceptable': True})()
         self.saved_settings = None
         self.settings_store = self
+        self.smart_profile = type('SmartProfile', (), {'reset_all': lambda self: None, 'set_level_for_current_track': lambda self, **kwargs: True})()
 
     def start_new_game(self):
         self.start_calls += 1
@@ -78,6 +80,7 @@ class FakeSession:
     def update_settings(self, settings):
         self.saved_settings = settings
         self.settings = settings
+        self.config.good_moves_acceptable = settings.good_moves_acceptable
         return settings
 
     def max_supported_training_depth(self):
@@ -89,8 +92,30 @@ class FakeSession:
     def corpus_summary_text(self):
         return 'Corpus: 1000-1200 | Retained depth: 10'
 
+    def smart_profile_status(self):
+        return type(
+            'SmartProfileStatus',
+            (),
+            {
+                'active': True,
+                'track_id': 'rapid',
+                'category_id': '600+0',
+                'level': 4,
+                'wins_toward_promotion': 2,
+                'losses_toward_demotion': 1,
+                'eligible_now': True,
+                'eligibility_reason': 'Eligible ordinary corpus ladder game.',
+            },
+        )()
+
     def cancel_pending_opponent_action(self):
         return None
+
+    def _timing_contract_metadata(self):
+        return "600+0", "1000-1200"
+
+    def _apply_settings(self, settings):
+        self.update_settings(settings)
 
 
 class RecordingModal:
