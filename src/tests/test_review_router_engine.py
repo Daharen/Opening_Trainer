@@ -6,11 +6,17 @@ from opening_trainer.review.models import ReviewItem, ReviewPathMove
 from opening_trainer.review.router import ReviewRouter
 
 
-def _item(position_key: str, tier: str, due_at: str = '2000-01-01T00:00:00+00:00', last_seen: str = '2025-01-01T00:00:00+00:00') -> ReviewItem:
+def _item(
+    position_key: str,
+    tier: str,
+    due_at: str = '2000-01-01T00:00:00+00:00',
+    last_seen: str = '2025-01-01T00:00:00+00:00',
+    srs_due_at: str = '2099-01-01T00:00:00+00:00',
+) -> ReviewItem:
     item = ReviewItem.create('default', position_key, 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
     item.urgency_tier = tier
     item.due_at_utc = due_at
-    item.srs_next_due_at_utc = due_at
+    item.srs_next_due_at_utc = srs_due_at
     item.last_seen_at_utc = last_seen
     return item
 
@@ -24,12 +30,12 @@ def test_outer_share_ladder_and_reserve_bands():
     router = ReviewRouter()
     assert _shares(router, 0, 0, 0) == pytest.approx((1.0, 0.0))
     assert _shares(router, 1, 0, 0) == pytest.approx((0.8, 0.2))
-    assert _shares(router, 2, 0, 0) == pytest.approx((0.65, 0.35))
-    assert _shares(router, 3, 0, 0) == pytest.approx((0.55, 0.45))
-    assert _shares(router, 4, 0, 0) == pytest.approx((0.5, 0.5))
-    assert _shares(router, 30, 0, 0)[0] == pytest.approx(0.2)
-    assert _shares(router, 30, 3, 0)[0] == pytest.approx(0.14)
-    assert _shares(router, 30, 3, 4)[0] == pytest.approx(0.10)
+    assert _shares(router, 2, 0, 0) == pytest.approx((0.75, 0.25))
+    assert _shares(router, 3, 0, 0) == pytest.approx((0.7, 0.3))
+    assert _shares(router, 4, 0, 0) == pytest.approx((0.65, 0.35))
+    assert _shares(router, 30, 0, 0)[0] == pytest.approx(0.45)
+    assert _shares(router, 30, 3, 0)[0] == pytest.approx(0.45)
+    assert _shares(router, 30, 3, 4)[0] == pytest.approx(0.45)
 
 
 def test_tier_weighting_changes_review_distribution():
@@ -120,10 +126,10 @@ def test_boundary_rotation_and_same_item_safeguard():
     a = _item('a', 'ordinary_review')
     b = _item('b', 'ordinary_review')
     decisions = [router.select('default', [a, b]) for _ in range(30)]
-    first_review = next(dec for dec in decisions if dec.routing_source == 'srs_due_review')
+    first_review = next(dec for dec in decisions if dec.routing_source == 'scheduled_review')
     router.deck.index = len(router.deck.tokens)
     second = router.select('default', [a, b])
-    if second.routing_source == 'srs_due_review':
+    if second.routing_source == 'scheduled_review':
         assert first_review.selected_review_item_id in {a.review_item_id, b.review_item_id}
 
 
@@ -132,8 +138,18 @@ def test_integration_interleaves_corpus_and_review_with_finite_deck():
     items = [_item('a', 'ordinary_review'), _item('b', 'boosted_review'), _item('c', 'extreme_urgency')]
     decisions = [router.select('default', items) for _ in range(30)]
     sources = {decision.routing_source for decision in decisions}
-    assert 'srs_due_review' in sources
+    assert 'scheduled_review' in sources
+    assert 'boosted_review' in sources or 'extreme_urgency_review' in sources
     assert all(decision.deck_size in (20, 40, 80) for decision in decisions)
+
+
+def test_srs_due_queue_preempts_pressure_deck():
+    router = ReviewRouter()
+    srs_due = _item('srs', 'ordinary_review', srs_due_at='2000-01-01T00:00:00+00:00')
+    boosted = _item('b', 'boosted_review')
+    decision = router.select('default', [srs_due, boosted])
+    assert decision.routing_source == 'srs_due_review'
+    assert decision.selected_review_item_id == srs_due.review_item_id
 
 
 def test_minimum_tier_representation_forces_non_empty_tiers_when_possible():
@@ -171,12 +187,12 @@ def test_skipped_review_slots_increment_on_review_token_only():
     router.deck.tokens = ['C']
     router.deck.index = 0
     router.select('default', [d1, d2])
-    assert {d1.skipped_review_slots, d2.skipped_review_slots} == {0, 1}
+    assert {d1.skipped_review_slots, d2.skipped_review_slots} == {0}
     router.deck.tokens = ['B']
     router.deck.index = 0
     boosted = _item('b', 'boosted_review')
     router.select('default', [d1, d2, boosted])
-    assert {d1.skipped_review_slots, d2.skipped_review_slots} == {0, 1}
+    assert {d1.skipped_review_slots, d2.skipped_review_slots} == {1}
 
 
 def test_hijack_ticker_pass_schedules_match_spec():

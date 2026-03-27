@@ -11,6 +11,13 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _default_srs_next_due(payload: dict[str, Any]) -> str:
+    due_at = payload.get('due_at_utc')
+    if isinstance(due_at, str) and due_state(due_at) == 'scheduled':
+        return due_at
+    return (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).isoformat()
+
+
 class UrgencyTier(str, Enum):
     ORDINARY = 'ordinary_review'
     BOOSTED = 'boosted_review'
@@ -182,8 +189,8 @@ class ReviewItem:
         payload.setdefault('frequency_state', legacy_tier)
         payload.setdefault('frequency_state_entered_at_utc', payload.get('updated_at_utc', utc_now_iso()))
         payload.setdefault('srs_stage_index', 0)
-        payload.setdefault('srs_next_due_at_utc', payload.get('due_at_utc', utc_now_iso()))
-        payload.setdefault('srs_last_reviewed_at_utc', payload.get('last_seen_at_utc'))
+        payload.setdefault('srs_next_due_at_utc', _default_srs_next_due(payload))
+        payload.setdefault('srs_last_reviewed_at_utc', None)
         payload.setdefault('srs_last_result', 'none')
         payload.setdefault('srs_lapse_count', 0)
         return cls(**payload)

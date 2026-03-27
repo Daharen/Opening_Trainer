@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from .models import ReviewItem, RoutingSource, UrgencyTier, due_state, utc_now_iso
 
 SRS_INTERVAL_DAYS = [1, 3, 7, 14, 30, 60, 120]
-ORDINARY_DUE_RETIREMENT_THRESHOLD = 10
+ORDINARY_DUE_RETIREMENT_THRESHOLD = 6
 
 
 def _urgency_for_failures(item: ReviewItem) -> str:
@@ -57,10 +57,9 @@ def apply_failure(item: ReviewItem, failure_reason: str, preferred_move_uci: str
     if routing_reason == RoutingSource.SRS_DUE_REVIEW.value:
         item.srs_stage_index = 0
         item.srs_lapse_count += 1
-    if item.srs_stage_index == 0:
         item.srs_next_due_at_utc = (datetime.now(timezone.utc) + timedelta(days=SRS_INTERVAL_DAYS[0])).replace(microsecond=0).isoformat()
-    item.srs_last_reviewed_at_utc = now
-    item.srs_last_result = 'failure'
+        item.srs_last_reviewed_at_utc = now
+        item.srs_last_result = 'failure'
     return item
 
 
