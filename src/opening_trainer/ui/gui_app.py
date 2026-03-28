@@ -11,7 +11,13 @@ from tkinter import ttk
 
 import chess
 
-from ..corpus.catalog import DEFAULT_CORPUS_CATALOG_ROOT, bundle_variant_label, discover_corpus_catalog
+from ..corpus.catalog import (
+    DEFAULT_CORPUS_CATALOG_ROOT,
+    bundle_variant_label,
+    discover_corpus_catalog,
+    sort_key_rating_band,
+    sort_key_time_control,
+)
 from ..models import SessionState
 from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
 from ..settings import TrainerSettings
@@ -92,8 +98,7 @@ class OpeningTrainerGUI:
         self.start_button.pack(side='left')
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
-        tk.Button(toolbar, text='Corpus bundle', command=self._open_bundle_picker).pack(side='left', padx=6)
-        tk.Button(toolbar, text='Back to Corpus Selection', command=self._return_to_corpus_selection).pack(side='left', padx=6)
+        tk.Button(toolbar, text='Corpus Selection', command=self._open_bundle_picker).pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
@@ -317,6 +322,7 @@ class OpeningTrainerGUI:
         self._hide_loading()
         self._populate_bundle_options()
         self._refresh_catalog()
+        self._prefill_catalog_for_mode()
         if message:
             self.bundle_detail_var.set(message)
         self.bundle_picker.place(relx=0.5, rely=0.5, anchor='center')
@@ -373,6 +379,7 @@ class OpeningTrainerGUI:
         self.catalog_variant_combo.bind('<<ComboboxSelected>>', self._on_catalog_variant_selected)
         if self.catalog is not None and not self.catalog.entries:
             self.catalog_summary_var.set('No valid bundles were discovered in this catalog root yet.')
+        self._update_catalog_summary()
 
     def _on_catalog_category_selected(self, _event=None) -> None:
         self._refresh_catalog_time_controls()
@@ -389,6 +396,7 @@ class OpeningTrainerGUI:
     def _refresh_catalog_time_controls(self) -> None:
         selected_category = self.catalog_category_var.get().strip()
         controls = list(self.catalog_grouped.get(selected_category, {}).keys())
+        controls.sort(key=sort_key_time_control)
         self.catalog_time_control_combo.configure(values=controls)
         self.catalog_time_control_var.set(controls[0] if controls else '')
         self._refresh_catalog_rating_bands()
@@ -397,6 +405,7 @@ class OpeningTrainerGUI:
         selected_category = self.catalog_category_var.get().strip()
         selected_control = self.catalog_time_control_var.get().strip()
         bands = list(self.catalog_grouped.get(selected_category, {}).get(selected_control, {}).keys())
+        bands.sort(key=sort_key_rating_band)
         self.catalog_rating_band_combo.configure(values=bands)
         self.catalog_rating_band_var.set(bands[0] if bands else '')
         self._refresh_catalog_variants()
@@ -422,23 +431,93 @@ class OpeningTrainerGUI:
         return self.catalog_leaf_variants[0]
 
     def _update_catalog_summary(self) -> None:
+        status = self.session.smart_profile_status()
+        mode_header = 'Smart Profile ladder active' if status.active else 'Manual mode active'
+        mode_lines = [f'Mode: {"Smart Profile" if status.active else "Manual"}']
+        if status.active:
+            mode_lines.extend(
+                [
+                    f'Selected track: {status.track_id or "n/a"}',
+                    f'Expected bundle: {status.expected_bundle_summary}',
+                    f'Success streak: {status.consecutive_eligible_successes}',
+                    f'Failure streak: {status.consecutive_eligible_failures}',
+                    f'Eligible now: {"yes" if status.eligible_now else "no"} ({status.eligibility_reason})',
+                ]
+            )
+        else:
+            mode_lines.append('Smart Profile ladder counting is inactive in Manual mode.')
+
         entry = self._selected_catalog_entry()
         if entry is None:
-            self.catalog_summary_var.set('Select a discovered category, time control, and rating band.')
+            self.catalog_summary_var.set(
+                f'{mode_header} | '
+                + ' | '.join(mode_lines)
+                + ' | Select a discovered category, time control, and rating band.'
+            )
             return
         retained = entry.retained_ply_depth if entry.retained_ply_depth is not None else 'n/a'
         policy = entry.rating_policy or 'n/a'
         overlay = 'yes' if entry.timing_overlay_exists else 'no'
+        active_bundle = self._remembered_bundle_path() or 'fallback / none'
         self.catalog_summary_var.set(
-            f'Control: {entry.time_control_id} | Band: {entry.target_rating_band} | Retained depth: {retained} | '
+            f'{mode_header} | '
+            + ' | '.join(mode_lines)
+            + f' | Active bundle: {active_bundle} | Control: {entry.time_control_id} | Band: {entry.target_rating_band} | Retained depth: {retained} | '
             f'Rating policy: {policy} | Timing-conditioned metadata: {overlay} | Bundle path: {entry.bundle_dir}'
         )
 
+    def _prefill_catalog_for_mode(self) -> None:
+        status = self.session.smart_profile_status()
+        if not status.active:
+            self._update_catalog_summary()
+            return
+        expected_bundle_path = self.session.smart_profile_expected_bundle_path()
+        expected_control = (status.category_id or '').strip()
+        expected_band = self._extract_expected_band(status.expected_bundle_summary)
+        expected_category = ''
+        if expected_control:
+            for category, controls in self.catalog_grouped.items():
+                if expected_control in controls:
+                    expected_category = category
+                    break
+        if expected_category:
+            self.catalog_category_var.set(expected_category)
+            self._refresh_catalog_time_controls()
+        if expected_control and expected_control in self.catalog_time_control_combo.cget('values'):
+            self.catalog_time_control_var.set(expected_control)
+            self._refresh_catalog_rating_bands()
+        if expected_band and expected_band in self.catalog_rating_band_combo.cget('values'):
+            self.catalog_rating_band_var.set(expected_band)
+            self._refresh_catalog_variants()
+        if expected_bundle_path:
+            expected_path_token = str(Path(expected_bundle_path))
+            for variant in self.catalog_leaf_variants:
+                if str(variant.bundle_dir) == expected_path_token:
+                    self.catalog_variant_var.set(bundle_variant_label(variant))
+                    break
+        self._update_catalog_summary()
+
+    def _extract_expected_band(self, expected_summary: str) -> str:
+        if not expected_summary or "Expected:" not in expected_summary:
+            return ""
+        try:
+            body = expected_summary.split("Expected:", 1)[1].strip()
+            before_arrow = body.split("->", 1)[0].strip()
+            parts = [part.strip() for part in before_arrow.split("/", 1)]
+            if len(parts) < 2:
+                return ""
+            return parts[1]
+        except Exception:
+            return ""
 
     def _load_expected_smart_profile_bundle(self) -> None:
+        status = self.session.smart_profile_status()
+        if not status.active:
+            messagebox.showinfo('Smart Profile', 'Manual mode active. Switch to Smart Profile mode to load the expected ladder bundle.', parent=self.root)
+            return
         expected = self.session.smart_profile_expected_bundle_path()
         if not expected:
-            messagebox.showerror('Smart Profile', 'Expected Smart Profile bundle is unavailable in the discovered catalog.', parent=self.root)
+            messagebox.showerror('Smart Profile', f'Expected bundle missing. {status.expected_bundle_summary}', parent=self.root)
             return
         self._load_selected_bundle(expected)
 
@@ -540,9 +619,6 @@ class OpeningTrainerGUI:
 
     def _open_bundle_picker(self):
         self._show_bundle_picker('Choose a corpus bundle for this session. The last valid bundle will be reused on future launches.')
-
-    def _return_to_corpus_selection(self):
-        self._show_bundle_picker('Return to corpus selection. Pick a new structured catalog entry or use the legacy direct path.')
 
     def _open_profiles(self):
         ProfileDialog(self.root, self.session, self._refresh_supporting_surfaces).open()
@@ -648,13 +724,15 @@ class OpeningTrainerGUI:
 
     def _smart_profile_summary_text(self) -> str:
         status = self.session.smart_profile_status()
-        mode = 'active' if status.active else 'inactive'
+        if not status.active:
+            return 'Manual mode active | Smart Profile ladder counting inactive.'
         track = f'{status.track_id}/{status.category_id}' if status.track_id and status.category_id else 'unsupported'
         level = f'L{status.level}' if status.level is not None else 'n/a'
         eligible = 'yes' if status.eligible_now else 'no'
         return (
-            f'Smart Profile: {mode} | Track: {track} | Level: {level} | '
-            f'S:{status.consecutive_eligible_successes} F:{status.consecutive_eligible_failures} | Eligible now: {eligible} ({status.eligibility_reason}) | {status.expected_bundle_summary}'
+            f'Smart Profile ladder active | Track: {track} | Level: {level} | '
+            f'Success streak: {status.consecutive_eligible_successes} | Failure streak: {status.consecutive_eligible_failures} | '
+            f'Eligible now: {eligible} ({status.eligibility_reason}) | Expected bundle: {status.expected_bundle_summary}'
         )
 
     def _build_recent_status_text(self, routing_summary: str) -> str:

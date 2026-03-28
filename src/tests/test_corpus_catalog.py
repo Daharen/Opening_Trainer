@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from opening_trainer.corpus.catalog import DEFAULT_CORPUS_CATALOG_ROOT, discover_corpus_catalog, resolve_time_control_category
+from opening_trainer.corpus.catalog import (
+    DEFAULT_CORPUS_CATALOG_ROOT,
+    discover_corpus_catalog,
+    resolve_time_control_category,
+    sort_key_rating_band,
+)
 from opening_trainer.settings import TrainerSettings
 from opening_trainer.ui.gui_app import OpeningTrainerGUI
 
@@ -153,3 +158,21 @@ def test_time_control_category_helper_is_stable_for_lane_one_examples():
     assert resolve_time_control_category("600+0", 600) == "Rapid"
     assert resolve_time_control_category("300+0", 300) == "Blitz"
     assert resolve_time_control_category("120+2", 120) == "Bullet"
+
+
+def test_rating_band_sorting_is_numeric_and_human_sensible():
+    unsorted = ["1800-2000", "3000-3999", "1000-1200", "600-800", "400-600", "800-1000"]
+
+    sorted_bands = sorted(unsorted, key=sort_key_rating_band)
+
+    assert sorted_bands[:4] == ["400-600", "600-800", "800-1000", "1000-1200"]
+    assert sorted_bands[-2:] == ["1800-2000", "3000-3999"]
+
+
+def test_rating_band_sorting_handles_nonstandard_values_after_numeric_ranges():
+    unsorted = ["pro", "2200-2400", "n/a", "400-600", "open"]
+
+    sorted_bands = sorted(unsorted, key=sort_key_rating_band)
+
+    assert sorted_bands[:2] == ["400-600", "2200-2400"]
+    assert sorted_bands[2:] == ["n/a", "open", "pro"]
