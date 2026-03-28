@@ -95,6 +95,7 @@ class OpeningTrainerGUI:
         self._is_shutting_down = False
         self._after_handles: set[str] = set()
         self._pending_opponent_after_handle = None
+        self._board_animation_after_handle = None
         self._child_windows: list[tk.Toplevel] = []
 
         self.root.columnconfigure(0, weight=1)
@@ -807,7 +808,7 @@ class OpeningTrainerGUI:
         self._hide_bundle_picker()
         self.selected_square = None
         self.pending_restart = False
-        self.board_view.cancel_drag()
+        self._clear_board_transients()
         self._refresh_view()
 
     def _update_bundle_summary(self) -> None:
@@ -836,7 +837,7 @@ class OpeningTrainerGUI:
             self.session.start_new_game()
             self.selected_square = None
             self.pending_restart = False
-            self.board_view.cancel_drag()
+            self._clear_board_transients()
             self._refresh_view()
             return
         self._start_loading_job(
@@ -853,7 +854,7 @@ class OpeningTrainerGUI:
     def _apply_started_game(self) -> None:
         self.selected_square = None
         self.pending_restart = False
-        self.board_view.cancel_drag()
+        self._clear_board_transients()
         self._refresh_view()
 
     def _set_loading_message(self, message: str) -> None:
@@ -1108,6 +1109,7 @@ class OpeningTrainerGUI:
         self._cancel_pending_opponent_callback()
         self.pending_restart = False
         self.selected_square = None
+        self._clear_board_transients()
         self.session.start_new_game()
         self._refresh_view()
 
@@ -1171,9 +1173,19 @@ class OpeningTrainerGUI:
         if move is None:
             self._refresh_view('Illegal move selection.')
             return
+        moved_piece = board.piece_at(from_square)
         self.board_view.cancel_drag()
         self.session.submit_user_move_uci(move.uci())
+        if moved_piece is not None:
+            self.board_view.start_settle_animation(
+                piece_symbol=moved_piece.symbol(),
+                release_x=event.x,
+                release_y=event.y,
+                destination_square=move.to_square,
+                player_color=view.player_color,
+            )
         self._refresh_view()
+        self._schedule_board_animation_refresh()
         self._schedule_pending_opponent_commit()
 
     def _build_move(self, from_square: chess.Square, to_square: chess.Square, board: chess.Board) -> chess.Move | None:
@@ -1270,6 +1282,22 @@ class OpeningTrainerGUI:
         self._after_handles.add(handle)
         return handle
 
+    def _schedule_board_animation_refresh(self) -> None:
+        if getattr(self, '_is_shutting_down', False):
+            return
+        if self._board_animation_after_handle is not None:
+            return
+
+        def tick() -> None:
+            self._board_animation_after_handle = None
+            if getattr(self, '_is_shutting_down', False):
+                return
+            if self.board_view.animation_in_progress():
+                self._refresh_view()
+                self._board_animation_after_handle = self._schedule_after(16, tick)
+
+        self._board_animation_after_handle = self._schedule_after(16, tick)
+
     def _schedule_pending_opponent_commit(self) -> None:
         if self.session.state != SessionState.OPPONENT_TURN:
             return
@@ -1320,6 +1348,30 @@ class OpeningTrainerGUI:
             cancel_pending()
             log_line('GUI_OPPONENT_PENDING_DISCARDED', tag='timing')
 
+    def _cancel_board_animation_callback(self) -> None:
+        handle = getattr(self, '_board_animation_after_handle', None)
+        self._board_animation_after_handle = None
+        if handle is None:
+            return
+        root = getattr(self, 'root', None)
+        try:
+            if root is not None:
+                root.after_cancel(handle)
+        except Exception:
+            pass
+        after_handles = getattr(self, '_after_handles', set())
+        after_handles.discard(handle)
+
+    def _clear_board_transients(self) -> None:
+        self._cancel_board_animation_callback()
+        board_view = getattr(self, 'board_view', None)
+        if board_view is None:
+            return
+        if hasattr(board_view, 'clear_transient_state'):
+            board_view.clear_transient_state()
+        else:
+            board_view.cancel_drag()
+
     def _cancel_after_handles(self) -> None:
         handles = list(getattr(self, '_after_handles', set()))
         if not hasattr(self, '_after_handles'):
@@ -1344,6 +1396,7 @@ class OpeningTrainerGUI:
         self._is_shutting_down = True
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
         self._cancel_pending_opponent_callback()
+        self._clear_board_transients()
         self._cancel_after_handles()
         log_line('APP_SHUTDOWN_CANCEL_TIMERS_DONE', tag='startup')
         self._close_optional_component('dev_console')

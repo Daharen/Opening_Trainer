@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import tkinter as tk
 from dataclasses import dataclass
+from time import monotonic
 
 import chess
 
@@ -33,7 +34,19 @@ class DragState:
     piece_symbol: str
     cursor_x: int
     cursor_y: int
-    active: bool = False
+    moved: bool = False
+
+
+@dataclass(frozen=True)
+class SettleAnimationState:
+    piece_symbol: str
+    start_x: float
+    start_y: float
+    end_x: float
+    end_y: float
+    destination_square: chess.Square
+    start_time: float
+    duration_seconds: float
 
 
 class BoardView(tk.Canvas):
@@ -47,6 +60,7 @@ class BoardView(tk.Canvas):
         self.arrow_move_uci: str | None = None
         self.arrow_color: str = '#2e7d32'
         self.drag_state: DragState | None = None
+        self.settle_animation: SettleAnimationState | None = None
         self.bind('<Configure>', self._on_resize)
         self.configure(width=board_size, height=board_size)
 
@@ -69,33 +83,63 @@ class BoardView(tk.Canvas):
         self.arrow_color = color
 
     def start_drag(self, source_square: chess.Square, piece_symbol: str, cursor_x: int, cursor_y: int) -> None:
-        self.drag_state = DragState(source_square, source_square, piece_symbol, cursor_x, cursor_y, active=False)
+        self.settle_animation = None
+        self.drag_state = DragState(source_square, source_square, piece_symbol, cursor_x, cursor_y, moved=False)
 
     def update_drag(self, x: int, y: int, player_color: chess.Color) -> None:
         if self.drag_state is None:
             return
         origin_x, origin_y = self._square_center(self.drag_state.source_square, player_color)
-        active = self.drag_state.active or math.hypot(x - origin_x, y - origin_y) >= DRAG_THRESHOLD
+        moved = self.drag_state.moved or math.hypot(x - origin_x, y - origin_y) >= DRAG_THRESHOLD
         self.drag_state = DragState(
             source_square=self.drag_state.source_square,
             current_square=self.square_at_xy(x, y, player_color),
             piece_symbol=self.drag_state.piece_symbol,
             cursor_x=x,
             cursor_y=y,
-            active=active,
+            moved=moved,
         )
 
     def cancel_drag(self) -> None:
         self.drag_state = None
 
+    def clear_transient_state(self) -> None:
+        self.drag_state = None
+        self.settle_animation = None
+
     def release_drag(self, x: int, y: int, player_color: chess.Color) -> tuple[chess.Square, chess.Square | None, bool] | None:
         if self.drag_state is None:
             return None
         source_square = self.drag_state.source_square
-        was_active = self.drag_state.active
+        was_drag = self.drag_state.moved
         destination = self.square_at_xy(x, y, player_color)
         self.drag_state = None
-        return source_square, destination, was_active
+        return source_square, destination, was_drag
+
+    def start_settle_animation(
+        self,
+        *,
+        piece_symbol: str,
+        release_x: int,
+        release_y: int,
+        destination_square: chess.Square,
+        player_color: chess.Color,
+        duration_ms: int = 65,
+    ) -> None:
+        end_x, end_y = self._square_center(destination_square, player_color)
+        self.settle_animation = SettleAnimationState(
+            piece_symbol=piece_symbol,
+            start_x=float(release_x),
+            start_y=float(release_y),
+            end_x=end_x,
+            end_y=end_y,
+            destination_square=destination_square,
+            start_time=monotonic(),
+            duration_seconds=max(0.01, duration_ms / 1000),
+        )
+
+    def animation_in_progress(self) -> bool:
+        return self._settle_piece_position() is not None
 
     def square_at_xy(self, x: int, y: int, player_color: chess.Color) -> chess.Square | None:
         origin_x, origin_y = self.board_origin
@@ -129,7 +173,11 @@ class BoardView(tk.Canvas):
             piece = board.piece_at(square)
             if piece is None:
                 continue
-            text_fill = '#666666' if self.drag_state and self.drag_state.active and square == self.drag_state.source_square else '#111111'
+            if self.drag_state is not None and square == self.drag_state.source_square:
+                continue
+            if self.settle_animation is not None and square == self.settle_animation.destination_square:
+                continue
+            text_fill = '#111111'
             self.create_text(
                 x0 + self.square_size / 2,
                 y0 + self.square_size / 2,
@@ -153,13 +201,25 @@ class BoardView(tk.Canvas):
             self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill='#333333')
 
     def _draw_drag_piece(self) -> None:
-        if not self.drag_state or not self.drag_state.active:
+        if not self.drag_state:
             return
         self.create_text(
             self.drag_state.cursor_x,
             self.drag_state.cursor_y,
             text=PIECE_GLYPHS[self.drag_state.piece_symbol],
             font=('Arial Unicode MS', int(self.square_size * 0.62)),
+            fill='#111111',
+        )
+        settle_position = self._settle_piece_position()
+        if settle_position is None:
+            return
+        settle_x, settle_y = settle_position
+        assert self.settle_animation is not None
+        self.create_text(
+            settle_x,
+            settle_y,
+            text=PIECE_GLYPHS[self.settle_animation.piece_symbol],
+            font=('Arial Unicode MS', int(self.square_size * 0.58)),
             fill='#111111',
         )
 
@@ -204,3 +264,15 @@ class BoardView(tk.Canvas):
             origin_x + col * self.square_size + self.square_size / 2,
             origin_y + row * self.square_size + self.square_size / 2,
         )
+
+    def _settle_piece_position(self) -> tuple[float, float] | None:
+        if self.settle_animation is None:
+            return None
+        elapsed = monotonic() - self.settle_animation.start_time
+        if elapsed >= self.settle_animation.duration_seconds:
+            self.settle_animation = None
+            return None
+        progress = max(0.0, min(1.0, elapsed / self.settle_animation.duration_seconds))
+        x = self.settle_animation.start_x + (self.settle_animation.end_x - self.settle_animation.start_x) * progress
+        y = self.settle_animation.start_y + (self.settle_animation.end_y - self.settle_animation.start_y) * progress
+        return x, y
