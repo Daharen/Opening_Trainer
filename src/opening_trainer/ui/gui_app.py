@@ -492,7 +492,8 @@ class OpeningTrainerGUI:
         if expected_bundle_path:
             expected_path_token = str(Path(expected_bundle_path))
             for variant in self.catalog_leaf_variants:
-                if str(variant.bundle_dir) == expected_path_token:
+                variant_path_token = str(Path(str(variant.bundle_dir)))
+                if variant_path_token == expected_path_token:
                     self.catalog_variant_var.set(bundle_variant_label(variant))
                     break
         self._update_catalog_summary()
