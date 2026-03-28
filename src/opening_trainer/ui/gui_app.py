@@ -46,8 +46,8 @@ PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': 
 DEFAULT_BUNDLE_SEARCH_ROOTS = (Path('artifacts'),)
 ANIMATION_IMPL_MARKER = 'committed_move_anim_v2'
 ANIMATION_LOG_PREFIX = 'GUI_ANIM'
-PLAYER_COMMITTED_MOVE_DURATION_MS = 150
-OPPONENT_COMMITTED_MOVE_DURATION_MS = 140
+PLAYER_COMMITTED_MOVE_DURATION_MS = 240
+OPPONENT_COMMITTED_MOVE_DURATION_MS = 220
 
 
 class OpeningTrainerGUI:
@@ -1142,7 +1142,7 @@ class OpeningTrainerGUI:
         supporting_refresh = 'deferred'
         if animation_active:
             self._supporting_refresh_pending_after_first_tick = True
-            supporting_refresh = 'deferred_until_first_tick'
+            supporting_refresh = 'deferred_until_finalize'
         else:
             self._schedule_supporting_surface_refresh()
         self._log_animation_event(
@@ -1445,14 +1445,6 @@ class OpeningTrainerGUI:
                 deferred_modal='yes' if getattr(self, '_deferred_outcome_view', None) is not None else 'no',
             )
             if active:
-                if getattr(self, '_supporting_refresh_pending_after_first_tick', False):
-                    self._supporting_refresh_pending_after_first_tick = False
-                    self._schedule_supporting_surface_refresh()
-                    self._log_animation_event(
-                        'SUPPORTING_REFRESH_RELEASED',
-                        phase='first_tick',
-                        elapsed_ms=elapsed_ms,
-                    )
                 self._refresh_board_canvas()
                 self._board_animation_after_handle = self._schedule_after(16, tick)
             else:
@@ -1461,7 +1453,7 @@ class OpeningTrainerGUI:
                     self._schedule_supporting_surface_refresh()
                     self._log_animation_event(
                         'SUPPORTING_REFRESH_RELEASED',
-                        phase='finalize_fallback',
+                        phase='finalize',
                         elapsed_ms=elapsed_ms,
                     )
                 self._finalize_board_animation_if_complete()
