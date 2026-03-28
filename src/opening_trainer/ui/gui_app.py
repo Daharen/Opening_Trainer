@@ -11,6 +11,7 @@ from tkinter import ttk
 
 import chess
 
+from ..corpus.catalog import DEFAULT_CORPUS_CATALOG_ROOT, bundle_variant_label, discover_corpus_catalog
 from ..models import SessionState
 from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
 from ..settings import TrainerSettings
@@ -55,6 +56,19 @@ class OpeningTrainerGUI:
         self.bundle_combobox = None
         self.bundle_path_var = tk.StringVar()
         self.available_bundles: list[tuple[str, Path]] = []
+        self.catalog_category_var = tk.StringVar()
+        self.catalog_time_control_var = tk.StringVar()
+        self.catalog_rating_band_var = tk.StringVar()
+        self.catalog_variant_var = tk.StringVar()
+        self.catalog_summary_var = tk.StringVar(value='Catalog selection summary will appear here.')
+        self.catalog_root_var = tk.StringVar()
+        self.catalog_category_combo = None
+        self.catalog_time_control_combo = None
+        self.catalog_rating_band_combo = None
+        self.catalog_variant_combo = None
+        self.catalog_grouped = {}
+        self.catalog_leaf_variants = []
+        self.catalog = None
         self._loading_queue: queue.Queue | None = None
         self._loading_thread = None
         self._loading_job_active = False
@@ -79,6 +93,7 @@ class OpeningTrainerGUI:
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
         tk.Button(toolbar, text='Corpus bundle', command=self._open_bundle_picker).pack(side='left', padx=6)
+        tk.Button(toolbar, text='Back to Corpus Selection', command=self._return_to_corpus_selection).pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
@@ -127,16 +142,47 @@ class OpeningTrainerGUI:
 
         self.bundle_picker = ttk.LabelFrame(self.main_region, text='Select corpus bundle', padding=12)
         self.bundle_picker.columnconfigure(0, weight=1)
-        ttk.Label(self.bundle_picker, text='Choose a discovered bundle or browse to a custom bundle path.', wraplength=360, justify='left').grid(row=0, column=0, columnspan=3, sticky='w')
+        ttk.Label(
+            self.bundle_picker,
+            text='Choose a discovered bundle or use structured catalog selection driven by manifest metadata.',
+            wraplength=360,
+            justify='left',
+        ).grid(row=0, column=0, columnspan=4, sticky='w')
+        ttk.Label(self.bundle_picker, text='Catalog root').grid(row=1, column=0, sticky='w', pady=(10, 0))
+        ttk.Entry(self.bundle_picker, textvariable=self.catalog_root_var).grid(row=2, column=0, columnspan=3, sticky='ew', pady=(4, 8))
+        ttk.Button(self.bundle_picker, text='Browse root…', command=self._browse_catalog_root).grid(row=2, column=3, sticky='e', padx=(8, 0), pady=(4, 8))
+        ttk.Button(self.bundle_picker, text='Refresh catalog', command=self._refresh_catalog).grid(row=3, column=3, sticky='e', padx=(8, 0), pady=(0, 8))
+        catalog_frame = ttk.LabelFrame(self.bundle_picker, text='Structured catalog selection')
+        catalog_frame.grid(row=4, column=0, columnspan=4, sticky='ew', pady=(0, 8))
+        catalog_frame.columnconfigure(1, weight=1)
+        ttk.Label(catalog_frame, text='Time category').grid(row=0, column=0, sticky='w', padx=(8, 6), pady=(8, 4))
+        self.catalog_category_combo = ttk.Combobox(catalog_frame, state='readonly', textvariable=self.catalog_category_var)
+        self.catalog_category_combo.grid(row=0, column=1, sticky='ew', padx=(0, 8), pady=(8, 4))
+        ttk.Label(catalog_frame, text='Exact control').grid(row=1, column=0, sticky='w', padx=(8, 6), pady=4)
+        self.catalog_time_control_combo = ttk.Combobox(catalog_frame, state='readonly', textvariable=self.catalog_time_control_var)
+        self.catalog_time_control_combo.grid(row=1, column=1, sticky='ew', padx=(0, 8), pady=4)
+        ttk.Label(catalog_frame, text='Rating band').grid(row=2, column=0, sticky='w', padx=(8, 6), pady=4)
+        self.catalog_rating_band_combo = ttk.Combobox(catalog_frame, state='readonly', textvariable=self.catalog_rating_band_var)
+        self.catalog_rating_band_combo.grid(row=2, column=1, sticky='ew', padx=(0, 8), pady=4)
+        ttk.Label(catalog_frame, text='Variant').grid(row=3, column=0, sticky='w', padx=(8, 6), pady=(4, 8))
+        self.catalog_variant_combo = ttk.Combobox(catalog_frame, state='readonly', textvariable=self.catalog_variant_var)
+        self.catalog_variant_combo.grid(row=3, column=1, sticky='ew', padx=(0, 8), pady=(4, 8))
+        ttk.Label(catalog_frame, textvariable=self.catalog_summary_var, wraplength=360, justify='left').grid(
+            row=4, column=0, columnspan=2, sticky='ew', padx=8, pady=(0, 8)
+        )
+        ttk.Button(catalog_frame, text='Use catalog selection', command=self._apply_catalog_selection).grid(row=5, column=0, columnspan=2, sticky='w', padx=8, pady=(0, 8))
+        ttk.Separator(self.bundle_picker, orient='horizontal').grid(row=5, column=0, columnspan=4, sticky='ew', pady=(4, 8))
+        ttk.Label(self.bundle_picker, text='Legacy direct bundle selection', justify='left').grid(row=6, column=0, columnspan=4, sticky='w')
+        ttk.Label(self.bundle_picker, text='Choose a discovered bundle or browse to a custom bundle path.', wraplength=360, justify='left').grid(row=7, column=0, columnspan=4, sticky='w')
         self.bundle_combobox = ttk.Combobox(self.bundle_picker, state='readonly')
-        self.bundle_combobox.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(10, 8))
-        ttk.Button(self.bundle_picker, text='Refresh', command=self._populate_bundle_options).grid(row=1, column=2, sticky='e', padx=(8, 0), pady=(10, 8))
-        ttk.Label(self.bundle_picker, text='Custom path').grid(row=2, column=0, sticky='w')
-        ttk.Entry(self.bundle_picker, textvariable=self.bundle_path_var).grid(row=3, column=0, columnspan=2, sticky='ew', pady=(4, 0))
+        self.bundle_combobox.grid(row=8, column=0, columnspan=3, sticky='ew', pady=(10, 8))
+        ttk.Button(self.bundle_picker, text='Refresh', command=self._populate_bundle_options).grid(row=8, column=3, sticky='e', padx=(8, 0), pady=(10, 8))
+        ttk.Label(self.bundle_picker, text='Custom path').grid(row=9, column=0, sticky='w')
+        ttk.Entry(self.bundle_picker, textvariable=self.bundle_path_var).grid(row=10, column=0, columnspan=3, sticky='ew', pady=(4, 0))
         self.browse_bundle_button = ttk.Button(self.bundle_picker, text='Browse…', command=self._browse_bundle_path)
-        self.browse_bundle_button.grid(row=3, column=2, sticky='e', padx=(8, 0))
+        self.browse_bundle_button.grid(row=10, column=3, sticky='e', padx=(8, 0))
         actions = ttk.Frame(self.bundle_picker)
-        actions.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(12, 0))
+        actions.grid(row=11, column=0, columnspan=4, sticky='ew', pady=(12, 0))
         ttk.Button(actions, text='Use selection', command=self._apply_bundle_selection).pack(side='left')
         ttk.Button(actions, text='Skip bundle', command=self._skip_bundle_selection).pack(side='left', padx=(8, 0))
 
@@ -148,6 +194,7 @@ class OpeningTrainerGUI:
         self.board_view.bind('<ButtonRelease-1>', self._on_board_release)
         self._apply_shell_layout(initializing=True)
         self._populate_bundle_options()
+        self._refresh_catalog()
         self._update_bundle_summary()
         self.root.protocol('WM_DELETE_WINDOW', self._request_shutdown)
 
@@ -183,6 +230,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=self._remembered_bundle_path(),
+                last_corpus_catalog_root=self._catalog_root_setting(),
             )
         )
 
@@ -196,6 +244,25 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=bundle_path,
+                last_corpus_catalog_root=self._catalog_root_setting(),
+            )
+        )
+
+    def _catalog_root_setting(self) -> str | None:
+        settings = self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth())
+        return settings.last_corpus_catalog_root or DEFAULT_CORPUS_CATALOG_ROOT
+
+    def _set_catalog_root_setting(self, catalog_root: str) -> None:
+        settings = self.session.settings
+        self.session.update_settings(
+            TrainerSettings(
+                good_moves_acceptable=settings.good_moves_acceptable,
+                active_training_ply_depth=settings.active_training_ply_depth,
+                smart_profile_enabled=settings.smart_profile_enabled,
+                side_panel_visible=self.panel_visible,
+                move_list_visible=self.move_list_visible,
+                last_bundle_path=self._remembered_bundle_path(),
+                last_corpus_catalog_root=catalog_root,
             )
         )
 
@@ -236,6 +303,7 @@ class OpeningTrainerGUI:
     def _show_bundle_picker(self, message: str | None = None) -> None:
         self._hide_loading()
         self._populate_bundle_options()
+        self._refresh_catalog()
         if message:
             self.bundle_detail_var.set(message)
         self.bundle_picker.place(relx=0.5, rely=0.5, anchor='center')
@@ -266,6 +334,100 @@ class OpeningTrainerGUI:
         else:
             self.bundle_combobox.set('')
         self.bundle_combobox.bind('<<ComboboxSelected>>', self._on_bundle_combo_selected)
+
+    def _browse_catalog_root(self) -> None:
+        selected = filedialog.askdirectory(parent=self.root, title='Select corpus catalog root directory')
+        if selected:
+            self.catalog_root_var.set(selected)
+            self._refresh_catalog()
+
+    def _refresh_catalog(self) -> None:
+        root_value = self.catalog_root_var.get().strip() or self._catalog_root_setting()
+        self.catalog_root_var.set(root_value)
+        self._set_catalog_root_setting(root_value)
+        self.catalog = discover_corpus_catalog(root_value)
+        self.catalog_grouped = self.catalog.grouped()
+        categories = list(self.catalog_grouped.keys())
+        self.catalog_category_combo.configure(values=categories)
+        if categories:
+            self.catalog_category_var.set(categories[0])
+        else:
+            self.catalog_category_var.set('')
+        self._refresh_catalog_time_controls()
+        self.catalog_category_combo.bind('<<ComboboxSelected>>', self._on_catalog_category_selected)
+        self.catalog_time_control_combo.bind('<<ComboboxSelected>>', self._on_catalog_time_control_selected)
+        self.catalog_rating_band_combo.bind('<<ComboboxSelected>>', self._on_catalog_rating_band_selected)
+        self.catalog_variant_combo.bind('<<ComboboxSelected>>', self._on_catalog_variant_selected)
+        if self.catalog is not None and not self.catalog.entries:
+            self.catalog_summary_var.set('No valid bundles were discovered in this catalog root yet.')
+
+    def _on_catalog_category_selected(self, _event=None) -> None:
+        self._refresh_catalog_time_controls()
+
+    def _on_catalog_time_control_selected(self, _event=None) -> None:
+        self._refresh_catalog_rating_bands()
+
+    def _on_catalog_rating_band_selected(self, _event=None) -> None:
+        self._refresh_catalog_variants()
+
+    def _on_catalog_variant_selected(self, _event=None) -> None:
+        self._update_catalog_summary()
+
+    def _refresh_catalog_time_controls(self) -> None:
+        selected_category = self.catalog_category_var.get().strip()
+        controls = list(self.catalog_grouped.get(selected_category, {}).keys())
+        self.catalog_time_control_combo.configure(values=controls)
+        self.catalog_time_control_var.set(controls[0] if controls else '')
+        self._refresh_catalog_rating_bands()
+
+    def _refresh_catalog_rating_bands(self) -> None:
+        selected_category = self.catalog_category_var.get().strip()
+        selected_control = self.catalog_time_control_var.get().strip()
+        bands = list(self.catalog_grouped.get(selected_category, {}).get(selected_control, {}).keys())
+        self.catalog_rating_band_combo.configure(values=bands)
+        self.catalog_rating_band_var.set(bands[0] if bands else '')
+        self._refresh_catalog_variants()
+
+    def _refresh_catalog_variants(self) -> None:
+        selected_category = self.catalog_category_var.get().strip()
+        selected_control = self.catalog_time_control_var.get().strip()
+        selected_band = self.catalog_rating_band_var.get().strip()
+        variants = list(self.catalog_grouped.get(selected_category, {}).get(selected_control, {}).get(selected_band, ()))
+        self.catalog_leaf_variants = variants
+        labels = [bundle_variant_label(entry) for entry in variants]
+        self.catalog_variant_combo.configure(values=labels)
+        self.catalog_variant_var.set(labels[0] if labels else '')
+        self._update_catalog_summary()
+
+    def _selected_catalog_entry(self):
+        label = self.catalog_variant_var.get().strip()
+        if not self.catalog_leaf_variants:
+            return None
+        labels = [bundle_variant_label(entry) for entry in self.catalog_leaf_variants]
+        if label in labels:
+            return self.catalog_leaf_variants[labels.index(label)]
+        return self.catalog_leaf_variants[0]
+
+    def _update_catalog_summary(self) -> None:
+        entry = self._selected_catalog_entry()
+        if entry is None:
+            self.catalog_summary_var.set('Select a discovered category, time control, and rating band.')
+            return
+        retained = entry.retained_ply_depth if entry.retained_ply_depth is not None else 'n/a'
+        policy = entry.rating_policy or 'n/a'
+        overlay = 'yes' if entry.timing_overlay_exists else 'no'
+        self.catalog_summary_var.set(
+            f'Control: {entry.time_control_id} | Band: {entry.target_rating_band} | Retained depth: {retained} | '
+            f'Rating policy: {policy} | Timing-conditioned metadata: {overlay} | Bundle path: {entry.bundle_dir}'
+        )
+
+    def _apply_catalog_selection(self) -> None:
+        entry = self._selected_catalog_entry()
+        if entry is None:
+            messagebox.showerror('Corpus catalog', 'Choose a valid catalog entry before loading.', parent=self.root)
+            return
+        self.bundle_path_var.set(str(entry.bundle_dir))
+        self._load_selected_bundle(str(entry.bundle_dir))
 
     def _on_bundle_combo_selected(self, _event=None) -> None:
         index = self.bundle_combobox.current()
@@ -357,6 +519,9 @@ class OpeningTrainerGUI:
 
     def _open_bundle_picker(self):
         self._show_bundle_picker('Choose a corpus bundle for this session. The last valid bundle will be reused on future launches.')
+
+    def _return_to_corpus_selection(self):
+        self._show_bundle_picker('Return to corpus selection. Pick a new structured catalog entry or use the legacy direct path.')
 
     def _open_profiles(self):
         ProfileDialog(self.root, self.session, self._refresh_supporting_surfaces).open()
@@ -541,6 +706,7 @@ class OpeningTrainerGUI:
                     side_panel_visible=self.panel_visible,
                     move_list_visible=self.move_list_visible,
                     last_bundle_path=self._remembered_bundle_path(),
+                    last_corpus_catalog_root=self._catalog_root_setting(),
                 )
             )
             window.destroy()

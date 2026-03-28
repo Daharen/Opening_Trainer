@@ -17,11 +17,13 @@ class TrainerSettings:
     side_panel_visible: bool = False
     move_list_visible: bool = True
     last_bundle_path: str | None = None
+    last_corpus_catalog_root: str | None = None
 
     def normalized(self, *, maximum_depth: int | None = None) -> 'TrainerSettings':
         effective_maximum = maximum_depth if maximum_depth is not None else max(self.active_training_ply_depth, CONSERVATIVE_FALLBACK_MAX_DEPTH)
         clamped_depth = max(MINIMUM_TRAINING_DEPTH, min(int(self.active_training_ply_depth), int(effective_maximum)))
         bundle_path = str(self.last_bundle_path).strip() if self.last_bundle_path is not None and str(self.last_bundle_path).strip() else None
+        catalog_root = str(self.last_corpus_catalog_root).strip() if self.last_corpus_catalog_root is not None and str(self.last_corpus_catalog_root).strip() else None
         return TrainerSettings(
             good_moves_acceptable=bool(self.good_moves_acceptable),
             active_training_ply_depth=clamped_depth,
@@ -29,6 +31,7 @@ class TrainerSettings:
             side_panel_visible=bool(self.side_panel_visible),
             move_list_visible=bool(self.move_list_visible),
             last_bundle_path=bundle_path,
+            last_corpus_catalog_root=catalog_root,
         )
 
 
@@ -52,6 +55,7 @@ class TrainerSettingsStore:
             side_panel_visible=bool(payload.get('side_panel_visible', False)),
             move_list_visible=bool(payload.get('move_list_visible', True)),
             last_bundle_path=payload.get('last_bundle_path') or None,
+            last_corpus_catalog_root=payload.get('last_corpus_catalog_root') or None,
         )
         normalized = settings.normalized(maximum_depth=maximum_depth)
         if normalized != settings:
