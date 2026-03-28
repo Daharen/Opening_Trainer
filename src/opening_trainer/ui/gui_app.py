@@ -67,6 +67,16 @@ class OpeningTrainerGUI:
         self.catalog_rating_band_var = tk.StringVar()
         self.catalog_variant_var = tk.StringVar()
         self.catalog_summary_var = tk.StringVar(value='Catalog selection summary will appear here.')
+        self.smart_mode_var = tk.BooleanVar(value=self.session.settings.training_mode == 'smart_profile')
+        self.top_track_var = tk.StringVar(value='Rapid')
+        self.top_level_var = tk.StringVar(value='—')
+        self.top_elo_var = tk.StringVar(value='—')
+        self.top_depth_var = tk.StringVar(value='—')
+        self.top_good_var = tk.StringVar(value='—')
+        self.top_time_control_var = tk.StringVar(value=self.session.settings.selected_time_control_id)
+        self.manual_elo_var = tk.StringVar(value='')
+        self.manual_depth_var = tk.IntVar(value=self.session.settings.active_training_ply_depth)
+        self.manual_good_var = tk.StringVar(value='Yes' if self.session.settings.good_moves_acceptable else 'No')
         self.catalog_root_var = tk.StringVar()
         self.catalog_category_combo = None
         self.catalog_time_control_combo = None
@@ -88,7 +98,7 @@ class OpeningTrainerGUI:
         self._child_windows: list[tk.Toplevel] = []
 
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(2, weight=1)
 
         self._build_menubar()
 
@@ -102,8 +112,39 @@ class OpeningTrainerGUI:
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
+        self.control_strip = ttk.LabelFrame(self.root, text='Training contract')
+        self.control_strip.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 4))
+        ttk.Checkbutton(self.control_strip, text='Smart', variable=self.smart_mode_var, command=self._on_top_mode_toggle).grid(row=0, column=0, sticky='w', padx=(8, 6), pady=6)
+        ttk.Label(self.control_strip, text='Track').grid(row=0, column=1, sticky='w')
+        ttk.Label(self.control_strip, textvariable=self.top_track_var).grid(row=0, column=2, sticky='w', padx=(0, 10))
+        ttk.Label(self.control_strip, text='Level').grid(row=0, column=3, sticky='w')
+        self.top_level_label = ttk.Label(self.control_strip, textvariable=self.top_level_var)
+        self.top_level_label.grid(row=0, column=4, sticky='w', padx=(0, 10))
+        ttk.Label(self.control_strip, text='Control').grid(row=0, column=5, sticky='w')
+        self.top_time_control_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.top_time_control_var, width=8)
+        self.top_time_control_combo.grid(row=0, column=6, sticky='w', padx=(0, 10))
+        ttk.Label(self.control_strip, text='ELO').grid(row=0, column=7, sticky='w')
+        self.top_elo_label = ttk.Label(self.control_strip, textvariable=self.top_elo_var)
+        self.top_elo_label.grid(row=0, column=8, sticky='w', padx=(0, 6))
+        self.top_elo_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.manual_elo_var, width=10)
+        self.top_elo_combo.grid(row=0, column=8, sticky='w', padx=(0, 6))
+        ttk.Label(self.control_strip, text='Depth').grid(row=0, column=9, sticky='w')
+        self.top_depth_label = ttk.Label(self.control_strip, textvariable=self.top_depth_var)
+        self.top_depth_label.grid(row=0, column=10, sticky='w', padx=(0, 6))
+        self.top_depth_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.manual_depth_var, width=4)
+        self.top_depth_combo.grid(row=0, column=10, sticky='w', padx=(0, 6))
+        ttk.Label(self.control_strip, text='Good Moves Allowed?').grid(row=0, column=11, sticky='w')
+        self.top_good_label = ttk.Label(self.control_strip, textvariable=self.top_good_var)
+        self.top_good_label.grid(row=0, column=12, sticky='w', padx=(0, 8))
+        self.top_good_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.manual_good_var, values=['Yes', 'No'], width=4)
+        self.top_good_combo.grid(row=0, column=12, sticky='w', padx=(0, 8))
+        self.top_time_control_combo.bind('<<ComboboxSelected>>', self._on_top_time_control_selected)
+        self.top_elo_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
+        self.top_depth_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
+        self.top_good_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
+
         self.root_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bd=0)
-        self.root_pane.grid(row=1, column=0, sticky='nsew', padx=12, pady=(6, 12))
+        self.root_pane.grid(row=2, column=0, sticky='nsew', padx=12, pady=(6, 12))
 
         self.main_region = tk.Frame(self.root)
         self.main_region.columnconfigure(0, weight=1, minsize=420)
@@ -202,6 +243,7 @@ class OpeningTrainerGUI:
         self._populate_bundle_options()
         self._refresh_catalog()
         self._update_bundle_summary()
+        self._refresh_top_control_strip()
         self.root.protocol('WM_DELETE_WINDOW', self._request_shutdown)
 
     def run(self) -> None:
@@ -241,6 +283,7 @@ class OpeningTrainerGUI:
                 smart_profile_enabled=settings.smart_profile_enabled,
                 training_mode=settings.training_mode,
                 selected_smart_track=settings.selected_smart_track,
+                selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=self._remembered_bundle_path(),
@@ -257,6 +300,7 @@ class OpeningTrainerGUI:
                 smart_profile_enabled=settings.smart_profile_enabled,
                 training_mode=settings.training_mode,
                 selected_smart_track=settings.selected_smart_track,
+                selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=bundle_path,
@@ -277,6 +321,7 @@ class OpeningTrainerGUI:
                 smart_profile_enabled=settings.smart_profile_enabled,
                 training_mode=settings.training_mode,
                 selected_smart_track=settings.selected_smart_track,
+                selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=self._remembered_bundle_path(),
@@ -380,6 +425,123 @@ class OpeningTrainerGUI:
         if self.catalog is not None and not self.catalog.entries:
             self.catalog_summary_var.set('No valid bundles were discovered in this catalog root yet.')
         self._update_catalog_summary()
+        self._refresh_top_control_strip()
+
+    def _all_discovered_time_controls(self) -> list[str]:
+        controls = sorted({entry.time_control_id for entry in (self.catalog.entries if self.catalog else ())}, key=sort_key_time_control)
+        return controls
+
+    def _derive_track_label(self, time_control_id: str) -> str:
+        grouped = self.catalog_grouped if isinstance(self.catalog_grouped, dict) else {}
+        for category, controls in grouped.items():
+            if time_control_id in controls:
+                return category
+        return 'Other'
+
+    def _on_top_mode_toggle(self) -> None:
+        mode = 'smart_profile' if self.smart_mode_var.get() else 'manual'
+        settings = self.session.settings
+        self.session.update_settings(
+            TrainerSettings(
+                good_moves_acceptable=settings.good_moves_acceptable,
+                active_training_ply_depth=settings.active_training_ply_depth,
+                smart_profile_enabled=mode == 'smart_profile',
+                training_mode=mode,
+                selected_smart_track=settings.selected_smart_track,
+                selected_time_control_id=self.top_time_control_var.get().strip() or settings.selected_time_control_id,
+                side_panel_visible=self.panel_visible,
+                move_list_visible=self.move_list_visible,
+                last_bundle_path=self._remembered_bundle_path(),
+                last_corpus_catalog_root=self._catalog_root_setting(),
+            )
+        )
+        self._refresh_top_control_strip()
+        self._refresh_supporting_surfaces()
+
+    def _on_top_time_control_selected(self, _event=None) -> None:
+        selected = self.top_time_control_var.get().strip()
+        if not selected:
+            return
+        track = self._derive_track_label(selected).lower()
+        settings = self.session.settings
+        self.session.update_settings(
+            TrainerSettings(
+                good_moves_acceptable=settings.good_moves_acceptable,
+                active_training_ply_depth=settings.active_training_ply_depth,
+                smart_profile_enabled=settings.training_mode == 'smart_profile',
+                training_mode=settings.training_mode,
+                selected_smart_track=track if track in {'rapid', 'blitz', 'bullet'} else settings.selected_smart_track,
+                selected_time_control_id=selected,
+                side_panel_visible=self.panel_visible,
+                move_list_visible=self.move_list_visible,
+                last_bundle_path=self._remembered_bundle_path(),
+                last_corpus_catalog_root=self._catalog_root_setting(),
+            )
+        )
+        self._refresh_top_control_strip()
+        self._refresh_supporting_surfaces()
+
+    def _on_manual_contract_changed(self, _event=None) -> None:
+        if self.smart_mode_var.get():
+            return
+        settings = self.session.settings
+        self.session.update_settings(
+            TrainerSettings(
+                good_moves_acceptable=self.manual_good_var.get().strip().lower() == 'yes',
+                active_training_ply_depth=int(self.manual_depth_var.get()),
+                smart_profile_enabled=False,
+                training_mode='manual',
+                selected_smart_track=settings.selected_smart_track,
+                selected_time_control_id=self.top_time_control_var.get().strip() or settings.selected_time_control_id,
+                side_panel_visible=self.panel_visible,
+                move_list_visible=self.move_list_visible,
+                last_bundle_path=self._remembered_bundle_path(),
+                last_corpus_catalog_root=self._catalog_root_setting(),
+            )
+        )
+        self._refresh_top_control_strip()
+
+    def _refresh_top_control_strip(self) -> None:
+        controls = self._all_discovered_time_controls()
+        if not controls:
+            controls = [self.session.settings.selected_time_control_id]
+        self.top_time_control_combo.configure(values=controls)
+        if self.top_time_control_var.get().strip() not in controls:
+            self.top_time_control_var.set(controls[0])
+        track = self._derive_track_label(self.top_time_control_var.get().strip())
+        self.top_track_var.set(track)
+        status = self.session.smart_profile_status()
+        self.smart_mode_var.set(status.active)
+        bands = sorted(
+            {entry.target_rating_band for entry in (self.catalog.entries if self.catalog else ()) if entry.time_control_id == self.top_time_control_var.get().strip()},
+            key=sort_key_rating_band,
+        )
+        self.top_elo_combo.configure(values=bands)
+        if bands and self.manual_elo_var.get() not in bands:
+            self.manual_elo_var.set(bands[0])
+        max_depth = self.session.max_supported_training_depth()
+        self.top_depth_combo.configure(values=list(range(2, max_depth + 1)))
+        if status.active:
+            self.top_level_var.set(f"L{status.level}" if status.level is not None else '—')
+            self.top_elo_var.set(status.expected_rating_band or '—')
+            self.top_depth_var.set(str(status.contract_turns) if status.contract_turns is not None else '—')
+            self.top_good_var.set('Yes' if status.contract_good_accepted else 'No')
+            self.top_level_label.grid()
+            self.top_elo_combo.grid_remove()
+            self.top_depth_combo.grid_remove()
+            self.top_good_combo.grid_remove()
+            self.top_elo_label.grid()
+            self.top_depth_label.grid()
+            self.top_good_label.grid()
+        else:
+            self.top_level_var.set('')
+            self.top_level_label.grid_remove()
+            self.top_elo_label.grid_remove()
+            self.top_depth_label.grid_remove()
+            self.top_good_label.grid_remove()
+            self.top_elo_combo.grid()
+            self.top_depth_combo.grid()
+            self.top_good_combo.grid()
 
     def _on_catalog_category_selected(self, _event=None) -> None:
         self._refresh_catalog_time_controls()
@@ -598,6 +760,7 @@ class OpeningTrainerGUI:
         self._set_last_bundle_path(payload['bundle_path'])
         self._update_bundle_summary()
         self._apply_shell_layout(initializing=True)
+        self._refresh_top_control_strip()
         self._hide_bundle_picker()
         self.selected_square = None
         self.pending_restart = False
@@ -775,39 +938,23 @@ class OpeningTrainerGUI:
         window.transient(self.root)
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill='both', expand=True)
-        cap = self.session.max_supported_training_depth()
-        depth_var = tk.IntVar(value=self.session.settings.active_training_ply_depth)
-        good_var = tk.BooleanVar(value=self.session.settings.good_moves_acceptable)
         panel_var = tk.BooleanVar(value=self.panel_visible)
         move_list_var = tk.BooleanVar(value=self.move_list_visible)
-        smart_profile_var = tk.BooleanVar(value=self.session.settings.training_mode == 'smart_profile')
-        track_var = tk.StringVar(value=self.session.settings.selected_smart_track)
-        ttk.Checkbutton(frame, text='Accept Good moves (permissive mode)', variable=good_var).pack(anchor='w', pady=(0, 8))
-        ttk.Checkbutton(frame, text='Enable Smart Profile contract mode', variable=smart_profile_var).pack(anchor='w')
-        ttk.Label(frame, text='Smart track').pack(anchor='w', pady=(6, 0))
-        ttk.Combobox(frame, state='readonly', textvariable=track_var, values=['rapid', 'blitz', 'bullet'], width=10).pack(anchor='w')
         ttk.Checkbutton(frame, text='Show training/review panel by default', variable=panel_var).pack(anchor='w')
         ttk.Checkbutton(frame, text='Show move list by default', variable=move_list_var).pack(anchor='w', pady=(0, 8))
-        ttk.Label(frame, text='Training depth (player moves)').pack(anchor='w')
-        ttk.Combobox(frame, state='readonly', textvariable=depth_var, values=list(range(2, cap + 1)), width=8).pack(anchor='w', pady=(0, 8))
-        retained_ply_depth = self.session.bundle_retained_ply_depth()
-        detail = f'Current bundle supports up to {cap} player moves'
-        if retained_ply_depth is not None:
-            detail += f' ({retained_ply_depth} retained plies reported by the manifest).'
-        else:
-            detail += '. Conservative fallback cap applied.'
-        ttk.Label(frame, text=detail, wraplength=320, justify='left').pack(anchor='w', pady=(0, 8))
+        ttk.Label(frame, text='Contract mode, time control, ELO, depth, and Good-move policy now live in the top strip.', wraplength=320, justify='left').pack(anchor='w', pady=(0, 8))
 
         def save():
             self.panel_visible = panel_var.get()
             self.move_list_visible = move_list_var.get()
             self.session.update_settings(
                 TrainerSettings(
-                    good_moves_acceptable=good_var.get(),
-                    active_training_ply_depth=depth_var.get(),
-                    smart_profile_enabled=smart_profile_var.get(),
-                    training_mode='smart_profile' if smart_profile_var.get() else 'manual',
-                    selected_smart_track=track_var.get(),
+                    good_moves_acceptable=self.session.settings.good_moves_acceptable,
+                    active_training_ply_depth=self.session.settings.active_training_ply_depth,
+                    smart_profile_enabled=self.session.settings.smart_profile_enabled,
+                    training_mode=self.session.settings.training_mode,
+                    selected_smart_track=self.session.settings.selected_smart_track,
+                    selected_time_control_id=self.session.settings.selected_time_control_id,
                     side_panel_visible=self.panel_visible,
                     move_list_visible=self.move_list_visible,
                     last_bundle_path=self._remembered_bundle_path(),

@@ -592,6 +592,123 @@ def test_remembered_bundle_path_defaults_to_none(tmp_path):
     assert gui._remembered_bundle_path() is None
 
 
+def test_options_dialog_no_longer_owns_smart_contract_controls():
+    source = inspect.getsource(OpeningTrainerGUI._open_options)
+
+    assert 'Enable Smart Profile contract mode' not in source
+    assert 'Smart track' not in source
+    assert 'Training depth (player moves)' not in source
+    assert 'Accept Good moves' not in source
+
+
+class _FakeComboStrip(FakeGridWidget):
+    def __init__(self, values=()):
+        super().__init__()
+        self._values = tuple(values)
+
+    def configure(self, **kwargs):
+        super().configure(**kwargs)
+        if "values" in kwargs:
+            self._values = tuple(kwargs["values"])
+
+    def cget(self, name):
+        if name == "values":
+            return self._values
+        raise KeyError(name)
+
+
+def _build_control_strip_gui():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.catalog = type("Catalog", (), {"entries": ()})()
+    gui.catalog_grouped = {"Rapid": {"600+0": {"400-600": ()}}}
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "settings": TrainerSettings(training_mode="smart_profile", selected_time_control_id="600+0"),
+            "max_supported_training_depth": lambda self: 6,
+            "smart_profile_status": lambda self: type(
+                "Status",
+                (),
+                {
+                    "active": True,
+                    "level": 1,
+                    "expected_rating_band": "400-600",
+                    "contract_turns": 3,
+                    "contract_good_accepted": True,
+                },
+            )(),
+        },
+    )()
+    gui.smart_mode_var = FakeStringVar()
+    gui.top_track_var = FakeStringVar()
+    gui.top_level_var = FakeStringVar()
+    gui.top_elo_var = FakeStringVar()
+    gui.top_depth_var = FakeStringVar()
+    gui.top_good_var = FakeStringVar()
+    gui.top_time_control_var = FakeStringVar("600+0")
+    gui.manual_elo_var = FakeStringVar()
+    gui.manual_depth_var = FakeStringVar("3")
+    gui.manual_good_var = FakeStringVar("Yes")
+    gui.top_time_control_combo = _FakeComboStrip()
+    gui.top_elo_combo = _FakeComboStrip()
+    gui.top_depth_combo = _FakeComboStrip()
+    gui.top_good_combo = _FakeComboStrip()
+    gui.top_level_label = FakeGridWidget()
+    gui.top_elo_label = FakeGridWidget()
+    gui.top_depth_label = FakeGridWidget()
+    gui.top_good_label = FakeGridWidget()
+    return gui
+
+
+def test_smart_on_shows_labels_and_hides_manual_controls():
+    gui = _build_control_strip_gui()
+
+    gui._refresh_top_control_strip()
+
+    assert gui.top_level_label.visible is True
+    assert gui.top_elo_label.visible is True
+    assert gui.top_depth_label.visible is True
+    assert gui.top_good_label.visible is True
+    assert gui.top_elo_combo.visible is False
+    assert gui.top_depth_combo.visible is False
+    assert gui.top_good_combo.visible is False
+
+
+def test_smart_off_shows_editable_manual_controls():
+    gui = _build_control_strip_gui()
+    gui.session.smart_profile_status = lambda: type(
+        "Status",
+        (),
+        {
+            "active": False,
+            "level": None,
+            "expected_rating_band": None,
+            "contract_turns": None,
+            "contract_good_accepted": None,
+        },
+    )()
+
+    gui._refresh_top_control_strip()
+
+    assert gui.top_elo_combo.visible is True
+    assert gui.top_depth_combo.visible is True
+    assert gui.top_good_combo.visible is True
+    assert gui.top_level_label.visible is False
+    assert gui.top_elo_label.visible is False
+
+
+def test_track_label_is_derived_from_selected_exact_time_control():
+    gui = _build_control_strip_gui()
+    gui.catalog = type("Catalog", (), {"entries": (type("Entry", (), {"time_control_id": "120+1", "target_rating_band": "400-600"})(),)})()
+    gui.catalog_grouped = {"Bullet": {"120+1": {"400-600": ()}}}
+    gui.top_time_control_var.set("120+1")
+
+    gui._refresh_top_control_strip()
+
+    assert gui.top_track_var.get() == "Bullet"
+
+
 
 def test_load_selected_bundle_invokes_loading_state(monkeypatch, tmp_path):
     gui = _build_gui(tmp_path)

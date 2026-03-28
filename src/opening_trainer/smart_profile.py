@@ -5,18 +5,13 @@ from datetime import datetime, timezone
 from math import inf
 from typing import Any
 
-from .corpus.catalog import BundleCatalogEntry, discover_corpus_catalog
+from .corpus.catalog import BundleCatalogEntry, discover_corpus_catalog, resolve_time_control_category
 from .review.storage import ReviewStorage
 
 TRACK_TO_EXACT_CATEGORY = {
     "rapid": "600+0",
     "blitz": "300+0",
     "bullet": "120+1",
-}
-SUPPORTED_TRACK_BY_TIME_CONTROL = {
-    "600+0": ("rapid", "600+0"),
-    "300+0": ("blitz", "300+0"),
-    "120+1": ("bullet", "120+1"),
 }
 
 ORDINARY_ONLY_ROUTING_SOURCES = {"ordinary_corpus_play"}
@@ -103,23 +98,30 @@ class SmartProfileTrackState:
 class SmartProfileState:
     mode: str = SMART_PROFILE_MODE
     selected_track_id: str = "rapid"
+    selected_time_control_id: str = "600+0"
     tracks: dict[str, dict[str, SmartProfileTrackState]] = field(default_factory=dict)
 
     def ensure_defaults(self) -> None:
-        for tc, (track, _category) in SUPPORTED_TRACK_BY_TIME_CONTROL.items():
+        for track, tc in TRACK_TO_EXACT_CATEGORY.items():
             by_category = self.tracks.setdefault(track, {})
             if tc not in by_category:
                 by_category[tc] = SmartProfileTrackState(track_id=track, time_control_category_id=tc)
 
     def get_track_state(self, track_id: str, category_id: str) -> SmartProfileTrackState:
         self.ensure_defaults()
+        by_category = self.tracks.setdefault(track_id, {})
+        if category_id not in by_category:
+            by_category[category_id] = SmartProfileTrackState(track_id=track_id, time_control_category_id=category_id)
         return self.tracks[track_id][category_id]
 
     def active_track_state(self) -> SmartProfileTrackState:
         self.ensure_defaults()
         track_id = self.selected_track_id if self.selected_track_id in TRACK_TO_EXACT_CATEGORY else "rapid"
-        category_id = TRACK_TO_EXACT_CATEGORY[track_id]
-        return self.get_track_state(track_id, category_id)
+        selected = normalize_time_control_id(self.selected_time_control_id) or TRACK_TO_EXACT_CATEGORY[track_id]
+        by_category = self.tracks.setdefault(track_id, {})
+        if selected not in by_category:
+            by_category[selected] = SmartProfileTrackState(track_id=track_id, time_control_category_id=selected)
+        return self.get_track_state(track_id, selected)
 
     @property
     def mode_enabled(self) -> bool:
@@ -131,6 +133,7 @@ class SmartProfileState:
             "mode": self.mode,
             "mode_enabled": self.mode_enabled,
             "selected_track_id": self.selected_track_id,
+            "selected_time_control_id": self.selected_time_control_id,
             "tracks": {
                 track: {category: state.to_dict() for category, state in categories.items()}
                 for track, categories in self.tracks.items()
@@ -155,7 +158,8 @@ class SmartProfileState:
         selected_track_id = str(payload.get("selected_track_id", "rapid")).strip().lower()
         if selected_track_id not in TRACK_TO_EXACT_CATEGORY:
             selected_track_id = "rapid"
-        state = cls(mode=mode_raw, selected_track_id=selected_track_id, tracks=tracks)
+        selected_time_control = normalize_time_control_id(payload.get("selected_time_control_id")) or TRACK_TO_EXACT_CATEGORY[selected_track_id]
+        state = cls(mode=mode_raw, selected_track_id=selected_track_id, selected_time_control_id=selected_time_control, tracks=tracks)
         state.ensure_defaults()
         return state
 
@@ -185,6 +189,9 @@ class SmartProfileStatus:
     track_id: str | None
     category_id: str | None
     level: int | None
+    expected_rating_band: str | None
+    contract_turns: int | None
+    contract_good_accepted: bool | None
     contract_summary: str
     consecutive_eligible_successes: int
     consecutive_eligible_failures: int
@@ -260,7 +267,11 @@ def resolve_track_category(time_control_id: str | None) -> tuple[str, str] | Non
     normalized = normalize_time_control_id(time_control_id)
     if normalized is None:
         return None
-    return SUPPORTED_TRACK_BY_TIME_CONTROL.get(normalized)
+    category = resolve_time_control_category(normalized)
+    track = category.strip().lower()
+    if track not in TRACK_TO_EXACT_CATEGORY:
+        return None
+    return track, normalized
 
 
 def format_expected_band(contract: SmartProfileLevelContract) -> str:
@@ -291,7 +302,20 @@ class SmartProfileService:
     def set_selected_track(self, track_id: str) -> None:
         normalized = track_id.strip().lower()
         self.state.selected_track_id = normalized if normalized in TRACK_TO_EXACT_CATEGORY else "rapid"
+        if resolve_track_category(self.state.selected_time_control_id) is None or resolve_track_category(self.state.selected_time_control_id)[0] != self.state.selected_track_id:
+            self.state.selected_time_control_id = TRACK_TO_EXACT_CATEGORY[self.state.selected_track_id]
         self.save()
+
+    def set_selected_time_control(self, time_control_id: str) -> bool:
+        resolved = resolve_track_category(time_control_id)
+        if resolved is None:
+            return False
+        track_id, category_id = resolved
+        self.state.selected_track_id = track_id
+        self.state.selected_time_control_id = category_id
+        self.state.get_track_state(track_id, category_id)
+        self.save()
+        return True
 
     def current_track_state(self) -> tuple[SmartProfileTrackState, SmartProfileLevelContract]:
         track_state = self.state.active_track_state()
@@ -440,6 +464,9 @@ class SmartProfileService:
             track_id=track_state.track_id,
             category_id=track_state.time_control_category_id,
             level=track_state.current_level,
+            expected_rating_band=resolution.expected_rating_band,
+            contract_turns=contract.turns_to_succeed,
+            contract_good_accepted=contract.good_accepted,
             contract_summary=(
                 f"L{track_state.current_level}: target {format_expected_band(contract)}, turns {contract.turns_to_succeed}, "
                 f"Good {'accepted' if contract.good_accepted else 'rejected'}, promote {contract.game_successes_to_promote}, demote {contract.game_failures_to_demote}"
@@ -458,7 +485,10 @@ class SmartProfileService:
         self.state.ensure_defaults()
         self.save()
 
-    def set_level_for_current_track(self, level: int) -> bool:
+    def set_level_for_current_track(self, level: int, time_control_id: str | None = None) -> bool:
+        if time_control_id is not None:
+            if not self.set_selected_time_control(time_control_id):
+                return False
         state = self.state.active_track_state()
         state.current_level = max(1, min(HIGHEST_CORPUS_BACKED_LEVEL, int(level)))
         state.consecutive_eligible_successes = 0
