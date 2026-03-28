@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import queue
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
+from time import monotonic
 from tkinter import filedialog, messagebox, simpledialog
 from tkinter import ttk
 
@@ -42,6 +44,8 @@ from .timing_override_dialog import TimingOverrideDialog
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
 DEFAULT_BUNDLE_SEARCH_ROOTS = (Path('artifacts'),)
+ANIMATION_IMPL_MARKER = 'committed_move_anim_v2'
+ANIMATION_LOG_PREFIX = 'GUI_ANIM'
 
 
 class OpeningTrainerGUI:
@@ -246,6 +250,12 @@ class OpeningTrainerGUI:
         self._update_bundle_summary()
         self._refresh_top_control_strip()
         self.root.protocol('WM_DELETE_WINDOW', self._request_shutdown)
+
+    def _log_animation_event(self, event: str, **fields: object) -> None:
+        parts = [f'{ANIMATION_LOG_PREFIX}_{event}']
+        for key, value in fields.items():
+            parts.append(f'{key}={value}')
+        log_line('; '.join(parts), tag='timing')
 
     def run(self) -> None:
         self._schedule_after(0, self._initialize_app_shell)
@@ -810,7 +820,7 @@ class OpeningTrainerGUI:
         self.selected_square = None
         self.pending_restart = False
         self._deferred_outcome_view = None
-        self._clear_board_transients()
+        self._clear_board_transients(reason='bundle_load')
         self._refresh_view()
 
     def _update_bundle_summary(self) -> None:
@@ -840,7 +850,7 @@ class OpeningTrainerGUI:
             self.selected_square = None
             self.pending_restart = False
             self._deferred_outcome_view = None
-            self._clear_board_transients()
+            self._clear_board_transients(reason='new_game_start')
             self._refresh_view()
             return
         self._start_loading_job(
@@ -858,7 +868,7 @@ class OpeningTrainerGUI:
         self.selected_square = None
         self.pending_restart = False
         self._deferred_outcome_view = None
-        self._clear_board_transients()
+        self._clear_board_transients(reason='new_game_started_worker')
         self._refresh_view()
 
     def _set_loading_message(self, message: str) -> None:
@@ -1068,6 +1078,13 @@ class OpeningTrainerGUI:
                 self.pending_restart = True
                 animation_in_progress = getattr(self.board_view, 'animation_in_progress', None)
                 if callable(animation_in_progress) and animation_in_progress():
+                    outcome_kind = getattr(getattr(view, 'last_outcome', None), 'terminal_kind', 'unknown')
+                    self._log_animation_event(
+                        'DEFER_MODAL',
+                        outcome=outcome_kind,
+                        reason='restart_pending_during_animation',
+                        active='yes',
+                    )
                     self._deferred_outcome_view = view
                     self._schedule_board_animation_refresh()
                 else:
@@ -1132,7 +1149,7 @@ class OpeningTrainerGUI:
         self.pending_restart = False
         self._deferred_outcome_view = None
         self.selected_square = None
-        self._clear_board_transients()
+        self._clear_board_transients(reason='acknowledge_outcome')
         self.session.start_new_game()
         self._refresh_view()
 
@@ -1200,6 +1217,7 @@ class OpeningTrainerGUI:
         self.board_view.cancel_drag()
         self.session.submit_user_move_uci(move.uci())
         if moved_piece is not None:
+            prior_animation_exists = getattr(self.board_view, 'settle_animation', None) is not None
             self.board_view.start_committed_move_animation(
                 piece_symbol=moved_piece.symbol(),
                 source_square=from_square,
@@ -1207,7 +1225,17 @@ class OpeningTrainerGUI:
                 player_color=view.player_color,
                 duration_ms=95,
             )
+            self._log_animation_event(
+                'PLAYER_START',
+                piece=moved_piece.symbol(),
+                from_sq=chess.square_name(from_square),
+                to_sq=chess.square_name(move.to_square),
+                duration_ms=95,
+                color='white' if view.player_color == chess.WHITE else 'black',
+                prior_transient='yes' if prior_animation_exists else 'no',
+            )
         self._refresh_view()
+        self._log_animation_event('PLAYER_POST_START_REPAINT', triggered='yes')
         self._schedule_board_animation_refresh()
         self._schedule_pending_opponent_commit()
 
@@ -1315,7 +1343,22 @@ class OpeningTrainerGUI:
             self._board_animation_after_handle = None
             if getattr(self, '_is_shutting_down', False):
                 return
-            if self.board_view.animation_in_progress():
+            active = self.board_view.animation_in_progress()
+            sample_animation_position = getattr(self.board_view, 'sample_animation_position', None)
+            sampled = sample_animation_position() if callable(sample_animation_position) else None
+            settle = getattr(self.board_view, 'settle_animation', None)
+            elapsed_ms = 0
+            if settle is not None:
+                elapsed_ms = max(0, int(round((monotonic() - settle.start_time) * 1000)))
+            sampled_text = 'none' if sampled is None else f'{sampled[0]:.1f},{sampled[1]:.1f}'
+            self._log_animation_event(
+                'TICK',
+                active='yes' if active else 'no',
+                elapsed_ms=elapsed_ms,
+                sample=sampled_text,
+                deferred_modal='yes' if getattr(self, '_deferred_outcome_view', None) is not None else 'no',
+            )
+            if active:
                 self._refresh_board_canvas()
                 self._board_animation_after_handle = self._schedule_after(16, tick)
             else:
@@ -1335,7 +1378,16 @@ class OpeningTrainerGUI:
             return False
         if not animation_complete():
             return False
-        return bool(finalize_animation())
+        destination_square = getattr(getattr(board_view, 'settle_animation', None), 'destination_square', None)
+        finalized = bool(finalize_animation())
+        destination = 'none' if destination_square is None else chess.square_name(destination_square)
+        self._log_animation_event(
+            'FINALIZE',
+            finalized='yes' if finalized else 'no',
+            destination=destination,
+            deferred_modal='yes' if getattr(self, '_deferred_outcome_view', None) is not None else 'no',
+        )
+        return finalized
 
     def _schedule_pending_opponent_commit(self) -> None:
         if self.session.state != SessionState.OPPONENT_TURN:
@@ -1366,11 +1418,14 @@ class OpeningTrainerGUI:
         committed_choice = getattr(pending, 'choice', None)
         committed_move = getattr(committed_choice, 'move', None)
         board_before = getattr(pending, 'board_before', None)
+        metadata_complete = committed_move is not None and board_before is not None
+        self._log_animation_event('OPPONENT_PENDING_METADATA', complete='yes' if metadata_complete else 'no')
         moved_piece = None
         if committed_move is not None and board_before is not None:
             moved_piece = board_before.piece_at(committed_move.from_square)
         self.session.commit_pending_opponent_action()
         log_line('GUI_OPPONENT_COMMIT_EXECUTED', tag='timing')
+        animation_started = False
         if moved_piece is not None and committed_move is not None:
             get_view = getattr(self.session, 'get_view', None)
             if not callable(get_view):
@@ -1384,8 +1439,26 @@ class OpeningTrainerGUI:
                 destination_square=committed_move.to_square,
                 player_color=player_color,
             )
+            animation_started = True
+            self._log_animation_event(
+                'OPPONENT_START',
+                piece=moved_piece.symbol(),
+                from_sq=chess.square_name(committed_move.from_square),
+                to_sq=chess.square_name(committed_move.to_square),
+                duration_ms=90,
+                color='white' if player_color == chess.WHITE else 'black',
+                metadata_complete='yes',
+            )
+        else:
+            self._log_animation_event('OPPONENT_START', metadata_complete='no', started='no')
         self._refresh_view()
         self._schedule_board_animation_refresh()
+        self._log_animation_event(
+            'OPPONENT_POST_COMMIT_REFRESH',
+            repaint='yes',
+            animation_refresh='scheduled',
+            animation_started='yes' if animation_started else 'no',
+        )
         if self.session.state == SessionState.OPPONENT_TURN:
             self._schedule_pending_opponent_commit()
 
@@ -1422,7 +1495,8 @@ class OpeningTrainerGUI:
         after_handles = getattr(self, '_after_handles', set())
         after_handles.discard(handle)
 
-    def _clear_board_transients(self) -> None:
+    def _clear_board_transients(self, *, reason: str = 'unspecified') -> None:
+        self._log_animation_event('CLEAR_TRANSIENTS', reason=reason)
         self._cancel_board_animation_callback()
         self._deferred_outcome_view = None
         board_view = getattr(self, 'board_view', None)
@@ -1443,6 +1517,13 @@ class OpeningTrainerGUI:
         animation_in_progress = getattr(self.board_view, 'animation_in_progress', None)
         if callable(animation_in_progress) and animation_in_progress():
             return
+        settle_animation = getattr(self.board_view, 'settle_animation', None)
+        outcome_kind = getattr(getattr(deferred, 'last_outcome', None), 'terminal_kind', 'unknown')
+        self._log_animation_event(
+            'SHOW_DEFERRED_MODAL',
+            outcome=outcome_kind,
+            finalized='yes' if settle_animation is None else 'no',
+        )
         self._deferred_outcome_view = None
         self._show_outcome_modal(deferred)
 
@@ -1470,7 +1551,7 @@ class OpeningTrainerGUI:
         self._is_shutting_down = True
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
         self._cancel_pending_opponent_callback()
-        self._clear_board_transients()
+        self._clear_board_transients(reason='shutdown')
         self._cancel_after_handles()
         log_line('APP_SHUTDOWN_CANCEL_TIMERS_DONE', tag='startup')
         self._close_optional_component('dev_console')
@@ -1555,6 +1636,11 @@ def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
             log_line("APP_DUPLICATE_OWNER_INFO_MISSING", tag="startup")
         log_line("INSTANCE_DUPLICATE: Opening Trainer is already starting or running.", tag="startup")
         return
+    repo_root = Path(__file__).resolve().parents[3]
+    log_line(
+        f'GUI_ANIM_IMPL_VERSION: marker={ANIMATION_IMPL_MARKER}; repo_root={repo_root}; executable={sys.executable}',
+        tag='startup',
+    )
     log_line("GUI_BOOTSTRAP: creating Tk root.", tag="startup")
     try:
         app = OpeningTrainerGUI(runtime_context=runtime_context)

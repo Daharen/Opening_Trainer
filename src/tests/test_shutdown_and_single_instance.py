@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from opening_trainer.single_instance import cleanup_stale_instance_diagnostics
-from opening_trainer.ui.gui_app import OpeningTrainerGUI, launch_gui
+from opening_trainer.ui.gui_app import ANIMATION_IMPL_MARKER, OpeningTrainerGUI, launch_gui
 
 
 class FakeRoot:
@@ -207,6 +207,28 @@ def test_launch_gui_logs_duplicate_owner_info_when_available(monkeypatch):
 
     assert any(line.startswith("APP_DUPLICATE_BLOCKED") for line in lines)
     assert any("APP_DUPLICATE_OWNER_INFO_AVAILABLE" in line and "pid=4242" in line for line in lines)
+
+
+def test_launch_gui_logs_animation_implementation_marker(monkeypatch):
+    lines: list[str] = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.acquire_single_instance_guard", lambda: True)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.write_instance_diagnostics", lambda **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda message, tag="startup": lines.append(message))
+
+    class FakeApp:
+        def __init__(self, runtime_context=None):
+            self.runtime_context = runtime_context
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr("opening_trainer.ui.gui_app.OpeningTrainerGUI", FakeApp)
+
+    launch_gui()
+
+    assert any(line.startswith("GUI_ANIM_IMPL_VERSION:") and f"marker={ANIMATION_IMPL_MARKER}" in line for line in lines)
 
 
 def test_cleanup_stale_instance_diagnostics_when_mutex_is_free(monkeypatch, tmp_path):

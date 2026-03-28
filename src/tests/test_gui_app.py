@@ -568,6 +568,20 @@ def test_render_draws_settle_piece_without_drag_state():
     assert (200.0, 190.0, PIECE_GLYPHS["P"]) in drawn
 
 
+def test_draw_settle_piece_sampling_is_non_mutating():
+    board_view = BoardView.__new__(BoardView)
+    board_view.square_size = 53
+    board_view.settle_animation = SettleAnimationState("P", 120.0, 120.0, 220.0, 220.0, chess.E4, start_time=0.0, duration_seconds=0.1)
+    sampled = {'count': 0}
+    board_view.sample_animation_position = lambda: sampled.__setitem__('count', sampled['count'] + 1) or (200.0, 190.0)
+    board_view.create_text = lambda *_args, **_kwargs: None
+
+    BoardView._draw_settle_piece(board_view)
+
+    assert sampled['count'] == 1
+    assert board_view.settle_animation is not None
+
+
 def test_start_committed_move_animation_uses_square_centers():
     board_view = BoardView.__new__(BoardView)
     board_view.board_size = 480
@@ -1348,6 +1362,44 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     assert board_local_calls['count'] == 0
 
 
+def test_on_board_release_logs_player_animation_start(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    board = chess.Board()
+    gui.session = type(
+        'Session',
+        (),
+        {
+            'get_view': lambda self=None: view,
+            'current_board': lambda self=None: board,
+            'submit_user_move_uci': lambda self, _uci: None,
+        },
+    )()
+    gui.selected_square = chess.E2
+    gui._refresh_board_local = lambda *args, **kwargs: None
+    gui._refresh_view = lambda *args, **kwargs: None
+    gui._schedule_board_animation_refresh = lambda: None
+    gui._schedule_pending_opponent_commit = lambda: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
+            'cancel_drag': lambda self: None,
+            'start_committed_move_animation': lambda self, **kwargs: None,
+            'settle_animation': None,
+        },
+    )()
+    gui._build_move = lambda from_square, to_square, current_board: chess.Move(from_square, to_square)
+    lines: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag='timing': lines.append(message))
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert any(line.startswith('GUI_ANIM_PLAYER_START') for line in lines)
+    assert any(line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT') for line in lines)
+
+
 def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.root = FakeRoot()
@@ -1437,6 +1489,44 @@ def test_commit_scheduled_opponent_action_uses_full_refresh():
     assert refresh_calls['count'] == 1
     assert animation_calls['count'] == 1
     assert animation_schedule_calls['count'] == 1
+
+
+def test_commit_scheduled_opponent_action_logs_animation_metadata(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._pending_opponent_after_handle = None
+    gui._is_shutting_down = False
+    gui._deferred_outcome_view = None
+    gui._refresh_view = lambda: None
+    gui._schedule_board_animation_refresh = lambda: None
+    gui._schedule_pending_opponent_commit = lambda: None
+    lines: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag='timing': lines.append(message))
+
+    class Session:
+        state = SessionState.PLAYER_TURN
+        pending_opponent_action = type(
+            'Pending',
+            (),
+            {
+                'choice': type('Choice', (), {'move': chess.Move.from_uci('e7e5')})(),
+                'board_before': chess.Board(),
+            },
+        )()
+
+        def commit_pending_opponent_action(self):
+            self.pending_opponent_action = None
+
+        def get_view(self):
+            return type('View', (), {'player_color': chess.WHITE})()
+
+    gui.session = Session()
+    gui.board_view = type('BoardViewStub', (), {'start_committed_move_animation': lambda self, **kwargs: None})()
+
+    OpeningTrainerGUI._commit_scheduled_opponent_action(gui)
+
+    assert any(line.startswith('GUI_ANIM_OPPONENT_PENDING_METADATA') for line in lines)
+    assert any(line.startswith('GUI_ANIM_OPPONENT_START') for line in lines)
+    assert any(line.startswith('GUI_ANIM_OPPONENT_POST_COMMIT_REFRESH') for line in lines)
 
 
 def test_refresh_view_defers_outcome_modal_until_animation_finishes():
@@ -1591,11 +1681,25 @@ def test_clear_board_transients_cancels_animation_and_clears_board_view():
     cleared = {'count': 0}
     gui.board_view = type('BoardViewStub', (), {'clear_transient_state': lambda self=None: cleared.__setitem__('count', cleared['count'] + 1)})()
 
-    OpeningTrainerGUI._clear_board_transients(gui)
+    OpeningTrainerGUI._clear_board_transients(gui, reason='test_reset')
 
     assert gui.root.cancelled == ['h9']
     assert gui._board_animation_after_handle is None
     assert cleared['count'] == 1
+
+
+def test_clear_board_transients_logs_reason(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._board_animation_after_handle = None
+    gui.board_view = type('BoardViewStub', (), {'clear_transient_state': lambda self=None: None})()
+    lines: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag='timing': lines.append(message))
+
+    OpeningTrainerGUI._clear_board_transients(gui, reason='restart')
+
+    assert any(line.startswith('GUI_ANIM_CLEAR_TRANSIENTS') and 'reason=restart' in line for line in lines)
 
 
 def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
