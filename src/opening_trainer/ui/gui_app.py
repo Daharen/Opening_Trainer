@@ -100,6 +100,7 @@ class OpeningTrainerGUI:
         self._after_handles: set[str] = set()
         self._pending_opponent_after_handle = None
         self._board_animation_after_handle = None
+        self._supporting_surfaces_after_handle = None
         self._deferred_outcome_view = None
         self._child_windows: list[tk.Toplevel] = []
 
@@ -1107,6 +1108,37 @@ class OpeningTrainerGUI:
         self.board_view.set_selection(self.selected_square, legal_targets)
         self.board_view.render(board, view.player_color)
 
+    def _schedule_supporting_surface_refresh(self) -> None:
+        if getattr(self, '_is_shutting_down', False):
+            return
+        if getattr(self, '_supporting_surfaces_after_handle', None) is not None:
+            return
+
+        def deferred_refresh() -> None:
+            self._supporting_surfaces_after_handle = None
+            if getattr(self, '_is_shutting_down', False):
+                return
+            self._refresh_supporting_surfaces()
+
+        self._supporting_surfaces_after_handle = self._schedule_after(0, deferred_refresh)
+
+    def _refresh_post_animation_start(self, *, actor: str) -> None:
+        settle = getattr(self.board_view, 'settle_animation', None)
+        start_time = getattr(settle, 'start_time', None)
+        board_repaint_elapsed_ms = 0
+        if start_time is not None:
+            board_repaint_elapsed_ms = max(0, int(round((monotonic() - start_time) * 1000)))
+        self._refresh_board_canvas()
+        self._schedule_board_animation_refresh()
+        self._schedule_supporting_surface_refresh()
+        self._log_animation_event(
+            f'{actor}_POST_START_REPAINT',
+            board_repaint='yes',
+            board_repaint_elapsed_ms=board_repaint_elapsed_ms,
+            animation_refresh='scheduled',
+            supporting_refresh='deferred',
+        )
+
     def _show_outcome_modal(self, view):
         outcome = view.last_outcome
         if outcome is None:
@@ -1234,9 +1266,7 @@ class OpeningTrainerGUI:
                 color='white' if view.player_color == chess.WHITE else 'black',
                 prior_transient='yes' if prior_animation_exists else 'no',
             )
-        self._refresh_view()
-        self._log_animation_event('PLAYER_POST_START_REPAINT', triggered='yes')
-        self._schedule_board_animation_refresh()
+        self._refresh_post_animation_start(actor='PLAYER')
         self._schedule_pending_opponent_commit()
 
     def _build_move(self, from_square: chess.Square, to_square: chess.Square, board: chess.Board) -> chess.Move | None:
@@ -1355,6 +1385,7 @@ class OpeningTrainerGUI:
                 'TICK',
                 active='yes' if active else 'no',
                 elapsed_ms=elapsed_ms,
+                first_tick_elapsed_ms=elapsed_ms,
                 sample=sampled_text,
                 deferred_modal='yes' if getattr(self, '_deferred_outcome_view', None) is not None else 'no',
             )
@@ -1451,14 +1482,18 @@ class OpeningTrainerGUI:
             )
         else:
             self._log_animation_event('OPPONENT_START', metadata_complete='no', started='no')
-        self._refresh_view()
-        self._schedule_board_animation_refresh()
-        self._log_animation_event(
-            'OPPONENT_POST_COMMIT_REFRESH',
-            repaint='yes',
-            animation_refresh='scheduled',
-            animation_started='yes' if animation_started else 'no',
-        )
+        if animation_started:
+            self._refresh_post_animation_start(actor='OPPONENT')
+        else:
+            self._refresh_view()
+            self._schedule_board_animation_refresh()
+            self._log_animation_event(
+                'OPPONENT_POST_COMMIT_REFRESH',
+                repaint='yes',
+                animation_refresh='scheduled',
+                animation_started='no',
+                supporting_refresh='inline',
+            )
         if self.session.state == SessionState.OPPONENT_TURN:
             self._schedule_pending_opponent_commit()
 

@@ -634,6 +634,43 @@ def test_start_committed_move_animation_biases_start_time_for_immediate_motion()
     assert board_view.settle_animation.start_time <= time.monotonic() - (ANIMATION_START_LEAD_SECONDS * 0.8)
 
 
+def test_board_resize_coalesces_redraw_and_refreshes_latest_board():
+    board_view = BoardView.__new__(BoardView)
+    board_view.min_board_size = 360
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view._last_board_fen = chess.STARTING_FEN
+    board_view._last_player_color = chess.WHITE
+    board_view._resize_refresh_after_handle = None
+    configure_calls: list[tuple[int, int]] = []
+    board_view.configure = lambda **kwargs: configure_calls.append((kwargs['width'], kwargs['height']))
+    cancelled: list[str] = []
+    board_view.after_cancel = lambda handle: cancelled.append(handle)
+    idle_callbacks: list[tuple[str, object]] = []
+
+    def fake_after_idle(callback):
+        handle = f'i{len(idle_callbacks)}'
+        idle_callbacks.append((handle, callback))
+        return handle
+
+    board_view.after_idle = fake_after_idle
+    render_calls: list[tuple[str, chess.Color]] = []
+    board_view.render = lambda board, player_color: render_calls.append((board.fen(), player_color))
+
+    BoardView._on_resize(board_view, type('Event', (), {'width': 500, 'height': 420})())
+    BoardView._on_resize(board_view, type('Event', (), {'width': 530, 'height': 440})())
+
+    assert configure_calls == [(420, 420), (440, 440)]
+    assert cancelled == ['i0']
+    assert board_view._resize_refresh_after_handle == 'i1'
+
+    _latest_handle, callback = idle_callbacks[-1]
+    callback()
+
+    assert board_view._resize_refresh_after_handle is None
+    assert render_calls == [(chess.STARTING_FEN, chess.WHITE)]
+
+
 def test_render_keeps_origin_piece_visible_before_drag_threshold():
     board_view = BoardView.__new__(BoardView)
     board_view.board_size = 480
@@ -1338,9 +1375,14 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     gui.selected_square = chess.E2
     board_local_calls = {'count': 0}
     full_refresh_calls = {'count': 0}
+    board_canvas_calls = {'count': 0}
+    deferred_supporting_calls = {'count': 0}
     gui._refresh_board_local = lambda *args, **kwargs: board_local_calls.__setitem__('count', board_local_calls['count'] + 1)
     gui._refresh_view = lambda *args, **kwargs: full_refresh_calls.__setitem__('count', full_refresh_calls['count'] + 1)
+    gui._refresh_board_canvas = lambda: board_canvas_calls.__setitem__('count', board_canvas_calls['count'] + 1)
     gui._schedule_board_animation_refresh = lambda: None
+    gui._schedule_supporting_surface_refresh = lambda: deferred_supporting_calls.__setitem__('count', deferred_supporting_calls['count'] + 1)
+    gui._log_animation_event = lambda *args, **kwargs: None
     gui._schedule_pending_opponent_commit = lambda: None
     animation_calls = {'count': 0}
     gui.board_view = type(
@@ -1358,7 +1400,9 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
 
     assert submitted['uci'] == 'e2e4'
     assert animation_calls['count'] == 1
-    assert full_refresh_calls['count'] == 1
+    assert full_refresh_calls['count'] == 0
+    assert board_canvas_calls['count'] == 1
+    assert deferred_supporting_calls['count'] == 1
     assert board_local_calls['count'] == 0
 
 
@@ -1378,6 +1422,8 @@ def test_on_board_release_logs_player_animation_start(monkeypatch):
     gui.selected_square = chess.E2
     gui._refresh_board_local = lambda *args, **kwargs: None
     gui._refresh_view = lambda *args, **kwargs: None
+    gui._refresh_board_canvas = lambda *args, **kwargs: None
+    gui._schedule_supporting_surface_refresh = lambda: None
     gui._schedule_board_animation_refresh = lambda: None
     gui._schedule_pending_opponent_commit = lambda: None
     gui.board_view = type(
@@ -1398,6 +1444,7 @@ def test_on_board_release_logs_player_animation_start(monkeypatch):
 
     assert any(line.startswith('GUI_ANIM_PLAYER_START') for line in lines)
     assert any(line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT') for line in lines)
+    assert any('supporting_refresh=deferred' in line for line in lines if line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT'))
 
 
 def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
@@ -1444,15 +1491,20 @@ def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
     assert gui.session.pending_opponent_action is None
 
 
-def test_commit_scheduled_opponent_action_uses_full_refresh():
+def test_commit_scheduled_opponent_action_uses_deferred_supporting_refresh_after_board_repaint():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui._pending_opponent_after_handle = 'h7'
     gui._is_shutting_down = False
     gui._deferred_outcome_view = None
     refresh_calls = {'count': 0}
     gui._refresh_view = lambda: refresh_calls.__setitem__('count', refresh_calls['count'] + 1)
+    board_canvas_calls = {'count': 0}
+    gui._refresh_board_canvas = lambda: board_canvas_calls.__setitem__('count', board_canvas_calls['count'] + 1)
+    deferred_supporting_calls = {'count': 0}
+    gui._schedule_supporting_surface_refresh = lambda: deferred_supporting_calls.__setitem__('count', deferred_supporting_calls['count'] + 1)
     animation_schedule_calls = {'count': 0}
     gui._schedule_board_animation_refresh = lambda: animation_schedule_calls.__setitem__('count', animation_schedule_calls['count'] + 1)
+    gui._log_animation_event = lambda *args, **kwargs: None
     gui._schedule_pending_opponent_commit = lambda: None
 
     class Session:
@@ -1486,7 +1538,9 @@ def test_commit_scheduled_opponent_action_uses_full_refresh():
     OpeningTrainerGUI._commit_scheduled_opponent_action(gui)
 
     assert gui._pending_opponent_after_handle is None
-    assert refresh_calls['count'] == 1
+    assert refresh_calls['count'] == 0
+    assert board_canvas_calls['count'] == 1
+    assert deferred_supporting_calls['count'] == 1
     assert animation_calls['count'] == 1
     assert animation_schedule_calls['count'] == 1
 
@@ -1497,6 +1551,8 @@ def test_commit_scheduled_opponent_action_logs_animation_metadata(monkeypatch):
     gui._is_shutting_down = False
     gui._deferred_outcome_view = None
     gui._refresh_view = lambda: None
+    gui._refresh_board_canvas = lambda: None
+    gui._schedule_supporting_surface_refresh = lambda: None
     gui._schedule_board_animation_refresh = lambda: None
     gui._schedule_pending_opponent_commit = lambda: None
     lines: list[str] = []
@@ -1526,7 +1582,8 @@ def test_commit_scheduled_opponent_action_logs_animation_metadata(monkeypatch):
 
     assert any(line.startswith('GUI_ANIM_OPPONENT_PENDING_METADATA') for line in lines)
     assert any(line.startswith('GUI_ANIM_OPPONENT_START') for line in lines)
-    assert any(line.startswith('GUI_ANIM_OPPONENT_POST_COMMIT_REFRESH') for line in lines)
+    assert any(line.startswith('GUI_ANIM_OPPONENT_POST_START_REPAINT') for line in lines)
+    assert any('supporting_refresh=deferred' in line for line in lines if line.startswith('GUI_ANIM_OPPONENT_POST_START_REPAINT'))
 
 
 def test_refresh_view_defers_outcome_modal_until_animation_finishes():
@@ -1734,6 +1791,57 @@ def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
     callback2()
     assert refreshes['count'] == 2
     assert finalized['count'] == 1
+
+
+def test_schedule_board_animation_refresh_logs_first_tick_elapsed(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._board_animation_after_handle = None
+    gui._refresh_board_canvas = lambda: None
+    gui._show_deferred_outcome_modal_if_ready = lambda: None
+    gui._deferred_outcome_view = None
+    start_time = time.monotonic() - 0.03
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'animation_in_progress': lambda self=None: False,
+            'animation_complete': lambda self=None: True,
+            'finalize_animation': lambda self=None: True,
+            'sample_animation_position': lambda self=None: (12.5, 19.5),
+            'settle_animation': type('Anim', (), {'start_time': start_time})(),
+        },
+    )()
+    lines: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag='timing': lines.append(message))
+
+    OpeningTrainerGUI._schedule_board_animation_refresh(gui)
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+
+    tick_line = next(line for line in lines if line.startswith('GUI_ANIM_TICK'))
+    assert 'first_tick_elapsed_ms=' in tick_line
+
+
+def test_schedule_supporting_surface_refresh_coalesces_callbacks():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._supporting_surfaces_after_handle = None
+    refresh_calls = {'count': 0}
+    gui._refresh_supporting_surfaces = lambda: refresh_calls.__setitem__('count', refresh_calls['count'] + 1)
+
+    OpeningTrainerGUI._schedule_supporting_surface_refresh(gui)
+    OpeningTrainerGUI._schedule_supporting_surface_refresh(gui)
+
+    assert len(gui.root.after_calls) == 1
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+    assert gui._supporting_surfaces_after_handle is None
+    assert refresh_calls['count'] == 1
 
 
 def test_schedule_board_animation_refresh_finalizes_then_shows_deferred_modal():
