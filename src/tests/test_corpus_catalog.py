@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from opening_trainer.corpus.catalog import DEFAULT_CORPUS_CATALOG_ROOT, discover_corpus_catalog, resolve_time_control_category
+from opening_trainer.settings import TrainerSettings
+from opening_trainer.ui.gui_app import OpeningTrainerGUI
+
+
+def _write_timing_bundle(
+    root: Path,
+    name: str,
+    *,
+    time_control_id: str,
+    initial: int,
+    increment: int,
+    minimum: int,
+    maximum: int,
+    retained: int,
+    rating_policy: str = "both_players_in_band",
+) -> Path:
+    bundle_dir = root / name
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "exact_corpus.sqlite").write_bytes(b"sqlite")
+    (data_dir / "behavioral_profile_set.sqlite").write_bytes(b"overlay")
+    manifest = {
+        "build_status": "finalized",
+        "time_control_id": time_control_id,
+        "initial_time_seconds": initial,
+        "increment_seconds": increment,
+        "target_rating_band": {"minimum": minimum, "maximum": maximum},
+        "rating_policy": rating_policy,
+        "retained_ply_depth": retained,
+        "payload_version": "v1",
+        "canonical_exact_payload_file": "data/exact_corpus.sqlite",
+        "behavioral_profile_set_file": "data/behavioral_profile_set.sqlite",
+    }
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return bundle_dir
+
+
+def test_catalog_discovers_and_groups_only_present_valid_bundles(tmp_path):
+    _write_timing_bundle(
+        tmp_path,
+        "full_400_600_both_in_band_ply30_tc600p0_timing_conditioned",
+        time_control_id="600+0",
+        initial=600,
+        increment=0,
+        minimum=400,
+        maximum=600,
+        retained=30,
+    )
+    _write_timing_bundle(
+        tmp_path,
+        "full_1000_1200_both_in_band_ply30_tc600p0_timing_conditioned",
+        time_control_id="600+0",
+        initial=600,
+        increment=0,
+        minimum=1000,
+        maximum=1200,
+        retained=30,
+    )
+    _write_timing_bundle(
+        tmp_path,
+        "full_400_600_both_in_band_ply30_tc120p2_timing_conditioned",
+        time_control_id="120+2",
+        initial=120,
+        increment=2,
+        minimum=400,
+        maximum=600,
+        retained=30,
+    )
+
+    catalog = discover_corpus_catalog(tmp_path)
+    grouped = catalog.grouped()
+
+    assert len(catalog.entries) == 3
+    assert "Rapid" in grouped
+    assert "600+0" in grouped["Rapid"]
+    assert set(grouped["Rapid"]["600+0"].keys()) == {"400-600", "1000-1200"}
+    assert "Bullet" in grouped
+    assert "120+2" in grouped["Bullet"]
+    assert "300+0" not in grouped.get("Blitz", {})
+
+
+def test_catalog_invalid_bundle_is_isolated_without_breaking_catalog(tmp_path):
+    _write_timing_bundle(
+        tmp_path,
+        "valid",
+        time_control_id="300+0",
+        initial=300,
+        increment=0,
+        minimum=1200,
+        maximum=1400,
+        retained=20,
+    )
+    broken = tmp_path / "broken"
+    broken.mkdir(parents=True, exist_ok=True)
+    (broken / "manifest.json").write_text("{", encoding="utf-8")
+
+    catalog = discover_corpus_catalog(tmp_path)
+
+    assert len(catalog.entries) == 1
+    assert len(catalog.invalid_entries) == 1
+    assert catalog.invalid_entries[0].bundle_dir == broken
+
+
+def test_structured_and_legacy_paths_converge_to_same_authoritative_bundle_state(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path,
+        "selected_bundle",
+        time_control_id="600+0",
+        initial=600,
+        increment=0,
+        minimum=400,
+        maximum=600,
+        retained=30,
+    )
+
+    class SessionStub:
+        def __init__(self):
+            self.settings = TrainerSettings()
+            self._saved = self.settings
+            self.settings_store = self
+
+        def max_supported_training_depth(self):
+            return 5
+
+        def update_settings(self, settings):
+            self.settings = settings
+            self._saved = settings
+            return settings
+
+        def load(self, maximum_depth=None):
+            del maximum_depth
+            return self._saved
+
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.panel_visible = False
+    gui.move_list_visible = True
+    gui.session = SessionStub()
+
+    gui._set_last_bundle_path(str(bundle_dir))
+    loaded = gui.session.settings_store.load(maximum_depth=5)
+
+    assert loaded.last_bundle_path == str(bundle_dir)
+    assert loaded.last_corpus_catalog_root == DEFAULT_CORPUS_CATALOG_ROOT
+
+
+def test_time_control_category_helper_is_stable_for_lane_one_examples():
+    assert resolve_time_control_category("600+0", 600) == "Rapid"
+    assert resolve_time_control_category("300+0", 300) == "Blitz"
+    assert resolve_time_control_category("120+2", 120) == "Bullet"

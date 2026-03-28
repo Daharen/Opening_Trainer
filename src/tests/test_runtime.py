@@ -998,12 +998,14 @@ def test_settings_store_persists_shell_defaults_and_last_bundle(tmp_path):
             side_panel_visible=False,
             move_list_visible=True,
             last_bundle_path='  /tmp/example_bundle  ',
+            last_corpus_catalog_root='  /tmp/corpus_root  ',
         )
     )
 
     assert saved.side_panel_visible is False
     assert saved.move_list_visible is True
     assert saved.last_bundle_path == '/tmp/example_bundle'
+    assert saved.last_corpus_catalog_root == '/tmp/corpus_root'
 
     loaded = store.load(maximum_depth=5)
     assert loaded == saved
