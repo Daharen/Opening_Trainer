@@ -997,6 +997,7 @@ def test_settings_store_persists_shell_defaults_and_last_bundle(tmp_path):
             active_training_ply_depth=3,
             side_panel_visible=False,
             move_list_visible=True,
+            training_panel_visible_columns=('position', 'side'),
             last_bundle_path='  /tmp/example_bundle  ',
             last_corpus_catalog_root='  /tmp/corpus_root  ',
         )
@@ -1004,11 +1005,33 @@ def test_settings_store_persists_shell_defaults_and_last_bundle(tmp_path):
 
     assert saved.side_panel_visible is False
     assert saved.move_list_visible is True
+    assert saved.training_panel_visible_columns == ('position', 'side')
     assert saved.last_bundle_path == '/tmp/example_bundle'
     assert saved.last_corpus_catalog_root == '/tmp/corpus_root'
 
     loaded = store.load(maximum_depth=5)
     assert loaded == saved
+
+
+def test_settings_store_defaults_and_persists_training_panel_columns(tmp_path):
+    from opening_trainer.settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings, TrainerSettingsStore
+
+    store = TrainerSettingsStore(tmp_path)
+    fresh = store.load(maximum_depth=5)
+    assert fresh.training_panel_visible_columns == DEFAULT_TRAINING_PANEL_COLUMNS
+
+    saved = store.save(
+        TrainerSettings(
+            training_panel_visible_columns=('position', 'side', 'due'),
+            side_panel_visible=True,
+            move_list_visible=False,
+        )
+    )
+    reloaded = store.load(maximum_depth=5)
+    assert reloaded.training_panel_visible_columns == ('position', 'side', 'due')
+    assert reloaded.side_panel_visible is True
+    assert reloaded.move_list_visible is False
+    assert reloaded == saved
 
 
 

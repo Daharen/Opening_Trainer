@@ -29,23 +29,25 @@ class ReviewInspector(ttk.Frame):
         'next_due',
         'routing',
     )
+    column_labels = {column: column.replace('_', ' ').title() for column in columns}
 
-    def __init__(self, master, session, refresh_callback):
+    def __init__(self, master, session, refresh_callback, *, visible_columns: tuple[str, ...] | None = None):
         super().__init__(master)
         self.session = session
         self.refresh_callback = refresh_callback
         self.filter_var = tk.StringVar(value='all')
+        self.visible_columns = tuple(column for column in (visible_columns or self.columns) if column in self.columns) or self.columns
 
         ttk.Combobox(self, textvariable=self.filter_var, values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency'], state='readonly').pack(anchor='e')
         self.filter_var.trace_add('write', lambda *_: self.refresh())
 
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill='both', expand=True)
-        self.tree = ttk.Treeview(tree_frame, columns=self.columns, show='headings', height=8)
+        self.tree = ttk.Treeview(tree_frame, columns=self.columns, show='headings', height=8, displaycolumns=self.visible_columns)
         scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         for column in self.columns:
-            self.tree.heading(column, text=column.replace('_', ' ').title())
+            self.tree.heading(column, text=self.column_labels[column])
             self.tree.column(column, width=110, anchor='w')
         self.tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
@@ -54,6 +56,11 @@ class ReviewInspector(ttk.Frame):
         button_row.pack(fill='x', pady=4)
         ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
+
+    def set_visible_columns(self, columns: tuple[str, ...] | list[str]) -> None:
+        normalized = tuple(column for column in columns if column in self.columns) or self.columns
+        self.visible_columns = normalized
+        self.tree.configure(displaycolumns=self.visible_columns)
 
     def refresh(self):
         for row in self.tree.get_children():

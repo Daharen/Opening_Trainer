@@ -20,7 +20,7 @@ from ..corpus.catalog import (
 )
 from ..models import SessionState
 from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
-from ..settings import TrainerSettings
+from ..settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from ..session import TrainingSession
 from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
 from ..session_logging import get_session_logger, log_line
@@ -38,7 +38,6 @@ from .move_list_panel import MoveListPanel
 from .outcome_modal import OutcomeModal
 from .profile_dialog import ProfileDialog
 from .review_inspector import ReviewInspector
-from .status_panel import StatusPanel
 from .timing_override_dialog import TimingOverrideDialog
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
@@ -57,6 +56,7 @@ class OpeningTrainerGUI:
         self.loading_var = tk.StringVar(value='')
         self.bundle_status_var = tk.StringVar(value='No active corpus bundle selected.')
         self.bundle_detail_var = tk.StringVar(value='Select a corpus bundle to enable corpus-backed opponent play.')
+        self.top_summary_var = tk.StringVar(value='')
         self.start_button = None
         self.browse_bundle_button = None
         self.bundle_combobox = None
@@ -98,7 +98,7 @@ class OpeningTrainerGUI:
         self._child_windows: list[tk.Toplevel] = []
 
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(2, weight=1)
+        self.root.rowconfigure(3, weight=1)
 
         self._build_menubar()
 
@@ -112,8 +112,11 @@ class OpeningTrainerGUI:
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
-        self.control_strip = ttk.LabelFrame(self.root, text='Training contract')
-        self.control_strip.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 4))
+        self.summary_strip = ttk.Frame(self.root)
+        self.summary_strip.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 2))
+        ttk.Label(self.summary_strip, textvariable=self.top_summary_var).grid(row=0, column=0, sticky='w')
+        self.control_strip = ttk.Frame(self.root)
+        self.control_strip.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 4))
         ttk.Checkbutton(self.control_strip, text='Smart', variable=self.smart_mode_var, command=self._on_top_mode_toggle).grid(row=0, column=0, sticky='w', padx=(8, 6), pady=6)
         ttk.Label(self.control_strip, text='Track').grid(row=0, column=1, sticky='w')
         ttk.Label(self.control_strip, textvariable=self.top_track_var).grid(row=0, column=2, sticky='w', padx=(0, 10))
@@ -144,39 +147,35 @@ class OpeningTrainerGUI:
         self.top_good_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
 
         self.root_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bd=0)
-        self.root_pane.grid(row=2, column=0, sticky='nsew', padx=12, pady=(6, 12))
+        self.root_pane.grid(row=3, column=0, sticky='nsew', padx=12, pady=(6, 12))
 
         self.main_region = tk.Frame(self.root)
         self.main_region.columnconfigure(0, weight=1, minsize=420)
-        self.main_region.rowconfigure(2, weight=1)
-        self.compact_status_panel = StatusPanel(self.main_region, compact=True)
-        self.compact_status_panel.grid(row=0, column=0, sticky='ew', pady=(0, 8))
-        self.top_captured_panel = CapturedMaterialPanel(self.main_region, title='Far side')
-        self.top_captured_panel.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+        self.main_region.rowconfigure(1, weight=1)
+        self.top_captured_panel = CapturedMaterialPanel(self.main_region)
+        self.top_captured_panel.grid(row=0, column=0, sticky='ew', pady=(0, 8))
         self.board_view = BoardView(self.main_region, board_size=560, min_board_size=360)
-        self.board_view.grid(row=2, column=0, sticky='nsew')
-        self.bottom_captured_panel = CapturedMaterialPanel(self.main_region, title='Near side')
-        self.bottom_captured_panel.grid(row=3, column=0, sticky='ew', pady=(8, 0))
+        self.board_view.grid(row=1, column=0, sticky='nsew')
+        self.bottom_captured_panel = CapturedMaterialPanel(self.main_region)
+        self.bottom_captured_panel.grid(row=2, column=0, sticky='ew', pady=(8, 0))
 
         self.side_panel = tk.Frame(self.root, width=360)
         self.side_panel.columnconfigure(0, weight=1)
-        self.side_panel.rowconfigure(3, weight=1)
-        self.status_panel = StatusPanel(self.side_panel)
-        self.status_panel.grid(row=0, column=0, sticky='ew')
-        bundle_frame = ttk.LabelFrame(self.side_panel, text='Corpus bundle')
-        bundle_frame.grid(row=1, column=0, sticky='ew', pady=(8, 4))
-        ttk.Label(bundle_frame, textvariable=self.bundle_status_var, anchor='w', justify='left').pack(fill='x', padx=8, pady=(8, 2))
-        ttk.Label(bundle_frame, textvariable=self.bundle_detail_var, anchor='w', justify='left', wraplength=320).pack(fill='x', padx=8, pady=(0, 8))
+        self.side_panel.rowconfigure(0, weight=1)
         self.recent_var = tk.StringVar()
-        tk.Label(self.side_panel, textvariable=self.recent_var, justify='left', anchor='w').grid(row=2, column=0, sticky='ew', pady=4)
         self.side_content = ttk.Frame(self.side_panel)
-        self.side_content.grid(row=3, column=0, sticky='nsew')
+        self.side_content.grid(row=0, column=0, sticky='nsew')
         self.side_content.columnconfigure(0, weight=1)
-        self.side_content.rowconfigure(0, weight=1)
+        self.side_content.rowconfigure(0, weight=4)
         self.side_content.rowconfigure(1, weight=1)
         self.move_list_panel = MoveListPanel(self.side_content)
         self.move_list_panel.grid(row=0, column=0, sticky='nsew', pady=(0, 8))
-        self.inspector = ReviewInspector(self.side_content, self.session, self._refresh_supporting_surfaces)
+        self.inspector = ReviewInspector(
+            self.side_content,
+            self.session,
+            self._refresh_supporting_surfaces,
+            visible_columns=self.session.settings.training_panel_visible_columns,
+        )
         self.inspector.grid(row=1, column=0, sticky='nsew')
 
         self.loading_frame = ttk.Frame(self.main_region, padding=18)
@@ -286,6 +285,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
             )
@@ -303,6 +303,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=bundle_path,
                 last_corpus_catalog_root=self._catalog_root_setting(),
             )
@@ -324,6 +325,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=catalog_root,
             )
@@ -469,6 +471,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
             )
@@ -796,6 +799,7 @@ class OpeningTrainerGUI:
         self.panel_visible = self._load_panel_visibility_preference()
         self.move_list_visible = self._load_move_list_visibility_preference()
         self.inspector.session = self.session
+        self.inspector.set_visible_columns(self.session.settings.training_panel_visible_columns)
         self._set_last_bundle_path(payload['bundle_path'])
         self._update_bundle_summary()
         self._apply_shell_layout(initializing=True)
@@ -900,6 +904,19 @@ class OpeningTrainerGUI:
             return 'Review queue: clear'
         return f'Review queue: {due} due ({boosted} boosted, {extreme} urgent)'
 
+    def _build_top_summary_row(self, *, profile_name: str, due: int, boosted: int, extreme: int) -> str:
+        status = self.session.smart_profile_status()
+        if not status.active:
+            return f'Profile: {profile_name}'
+        level = f"L{status.level}" if status.level is not None else '—'
+        return (
+            f'Profile: {profile_name}   '
+            f'Level: {level}   '
+            f'Success streak: {status.consecutive_eligible_successes}   '
+            f'Failure streak: {status.consecutive_eligible_failures}   '
+            f'{due} due ({boosted} boosted, {extreme} urgent)'
+        )
+
     def _build_routing_summary(self, routing: str, explain: str) -> str:
         del explain
         labels = {
@@ -955,19 +972,29 @@ class OpeningTrainerGUI:
         boosted = sum(1 for item in items if item.urgency_tier == 'boosted_review')
         extreme = sum(1 for item in items if item.urgency_tier == 'extreme_urgency')
         routing = self.session.current_routing.routing_source if self.session.current_routing else 'not_started'
-        counts_summary = self._build_counts_summary(due, boosted, extreme)
         routing_summary = self._build_routing_summary(routing, '')
-        bundle_summary = self.session.corpus_summary_text()
-        corpus_summary = f'{self.session.corpus_summary_text()} | {self._smart_profile_summary_text()}'
-        self.status_panel.update_status(profile_name=profile_name, bundle_summary=bundle_summary, corpus_summary=corpus_summary, routing_summary=routing_summary, counts_summary=counts_summary)
-        self.compact_status_panel.update_status(profile_name=profile_name, bundle_summary=self._build_compact_bundle_summary(), corpus_summary=f'{self._training_depth_summary()} | {self._smart_profile_summary_text()}', routing_summary=routing_summary, counts_summary=counts_summary)
+        self.top_summary_var.set(self._build_top_summary_row(profile_name=profile_name, due=due, boosted=boosted, extreme=extreme))
         self.recent_var.set(self._build_recent_status_text(routing_summary))
         self.inspector.refresh()
         view = self.session.get_view()
         self.move_list_panel.update_moves(view.move_history)
         board = chess.Board(view.board_fen)
-        self.top_captured_panel.update_board(board, player_color=view.player_color, near_side=False)
-        self.bottom_captured_panel.update_board(board, player_color=view.player_color, near_side=True)
+        timed_state = getattr(self.session, 'timed_state', None)
+        white_clock_seconds = timed_state.white_remaining_ms / 1000.0 if timed_state is not None else None
+        black_clock_seconds = timed_state.black_remaining_ms / 1000.0 if timed_state is not None else None
+        top_is_white = view.player_color == chess.BLACK
+        self.top_captured_panel.update_board(
+            board,
+            player_color=view.player_color,
+            near_side=False,
+            clock_seconds=white_clock_seconds if top_is_white else black_clock_seconds,
+        )
+        self.bottom_captured_panel.update_board(
+            board,
+            player_color=view.player_color,
+            near_side=True,
+            clock_seconds=white_clock_seconds if view.player_color == chess.WHITE else black_clock_seconds,
+        )
         self._update_bundle_summary()
 
     def _open_options(self):
@@ -979,13 +1006,29 @@ class OpeningTrainerGUI:
         frame.pack(fill='both', expand=True)
         panel_var = tk.BooleanVar(value=self.panel_visible)
         move_list_var = tk.BooleanVar(value=self.move_list_visible)
+        visible_columns = set(self.session.settings.training_panel_visible_columns or DEFAULT_TRAINING_PANEL_COLUMNS)
+        column_vars = {
+            column: tk.BooleanVar(value=column in visible_columns)
+            for column in self.inspector.columns
+        }
         ttk.Checkbutton(frame, text='Show training/review panel by default', variable=panel_var).pack(anchor='w')
         ttk.Checkbutton(frame, text='Show move list by default', variable=move_list_var).pack(anchor='w', pady=(0, 8))
-        ttk.Label(frame, text='Contract mode, time control, ELO, depth, and Good-move policy now live in the top strip.', wraplength=320, justify='left').pack(anchor='w', pady=(0, 8))
+        ttk.Label(frame, text='Training panel columns', justify='left').pack(anchor='w')
+        columns_frame = ttk.Frame(frame)
+        columns_frame.pack(fill='x', pady=(0, 8))
+        for index, column in enumerate(self.inspector.columns):
+            ttk.Checkbutton(
+                columns_frame,
+                text=self.inspector.column_labels[column],
+                variable=column_vars[column],
+            ).grid(row=index // 3, column=index % 3, sticky='w', padx=(0, 12), pady=2)
 
         def save():
             self.panel_visible = panel_var.get()
             self.move_list_visible = move_list_var.get()
+            selected_columns = tuple(
+                column for column in self.inspector.columns if column_vars[column].get()
+            ) or DEFAULT_TRAINING_PANEL_COLUMNS
             self.session.update_settings(
                 TrainerSettings(
                     good_moves_acceptable=self.session.settings.good_moves_acceptable,
@@ -996,11 +1039,13 @@ class OpeningTrainerGUI:
                     selected_time_control_id=self.session.settings.selected_time_control_id,
                     side_panel_visible=self.panel_visible,
                     move_list_visible=self.move_list_visible,
+                    training_panel_visible_columns=selected_columns,
                     last_bundle_path=self._remembered_bundle_path(),
                     last_corpus_catalog_root=self._catalog_root_setting(),
                 )
             )
             window.destroy()
+            self.inspector.set_visible_columns(selected_columns)
             self._apply_shell_layout(initializing=True)
             self._refresh_supporting_surfaces()
 

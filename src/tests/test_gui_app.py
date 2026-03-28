@@ -5,7 +5,7 @@ import inspect
 import chess
 
 from opening_trainer.models import MoveHistoryEntry, SessionOutcome, SessionState, SessionView
-from opening_trainer.settings import TrainerSettings
+from opening_trainer.settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from opening_trainer.session import TrainingSession
 from opening_trainer.session_contracts import OutcomeBoardContract, OutcomeModalContract
 from opening_trainer.ui.board_view import BoardView, DragState
@@ -583,18 +583,38 @@ def test_captured_strip_panel_follows_player_perspective():
     from opening_trainer.ui.captured_material_panel import CapturedMaterialPanel
 
     panel = CapturedMaterialPanel.__new__(CapturedMaterialPanel)
-    panel.primary_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
-    panel.secondary_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    panel.pieces_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    panel.clock_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
     panel.delta_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
     board = chess.Board()
     board.remove_piece_at(chess.D8)
     board.remove_piece_at(chess.A1)
 
-    CapturedMaterialPanel.update_board(panel, board, player_color=chess.BLACK, near_side=True)
-    assert panel.primary_var.value.startswith('Black captured:')
-    assert '♖' in panel.primary_var.value
-    assert panel.secondary_var.value.startswith('White captured:')
-    assert '♛' in panel.secondary_var.value
+    CapturedMaterialPanel.update_board(panel, board, player_color=chess.BLACK, near_side=True, clock_seconds=599.8)
+    assert '♖' in panel.pieces_var.value
+    assert panel.clock_var.value == '10:00'
+    assert panel.delta_var.value == ''
+
+
+def test_captured_strip_panel_shows_plus_only_for_side_with_advantage():
+    from opening_trainer.ui.captured_material_panel import CapturedMaterialPanel
+
+    board = chess.Board()
+    board.remove_piece_at(chess.D8)
+    top_panel = CapturedMaterialPanel.__new__(CapturedMaterialPanel)
+    top_panel.pieces_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    top_panel.clock_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    top_panel.delta_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    bottom_panel = CapturedMaterialPanel.__new__(CapturedMaterialPanel)
+    bottom_panel.pieces_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    bottom_panel.clock_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+    bottom_panel.delta_var = type('Var', (), {'set': lambda self, value: setattr(self, 'value', value)})()
+
+    CapturedMaterialPanel.update_board(top_panel, board, player_color=chess.WHITE, near_side=False, clock_seconds=600)
+    CapturedMaterialPanel.update_board(bottom_panel, board, player_color=chess.WHITE, near_side=True, clock_seconds=599)
+
+    assert top_panel.delta_var.value == ''
+    assert bottom_panel.delta_var.value == '+9'
 
 
 def test_remembered_bundle_path_defaults_to_none(tmp_path):
@@ -610,6 +630,8 @@ def test_options_dialog_no_longer_owns_smart_contract_controls():
     assert 'Smart track' not in source
     assert 'Training depth (player moves)' not in source
     assert 'Accept Good moves' not in source
+    assert 'Training panel columns' in source
+    assert 'for column in self.inspector.columns' in source
 
 
 class _FakeComboStrip(FakeGridWidget):
@@ -713,6 +735,31 @@ def test_smart_off_shows_editable_manual_controls():
     assert gui.top_good_combo.visible is True
     assert gui.top_level_label.visible is False
     assert gui.top_elo_label.visible is False
+
+
+def test_top_summary_row_manual_mode_is_profile_only(tmp_path):
+    gui = _build_gui(tmp_path)
+    gui.session.smart_profile_status = lambda: type('Status', (), {'active': False})()
+    text = OpeningTrainerGUI._build_top_summary_row(gui, profile_name='Daharen', due=1, boosted=1, extreme=0)
+    assert text == 'Profile: Daharen'
+
+
+def test_top_summary_row_smart_mode_shows_compact_hud(tmp_path):
+    gui = _build_gui(tmp_path)
+    text = OpeningTrainerGUI._build_top_summary_row(gui, profile_name='Daharen', due=0, boosted=1, extreme=0)
+    assert text == 'Profile: Daharen   Level: L4   Success streak: 2   Failure streak: 1   0 due (1 boosted, 0 urgent)'
+
+
+def test_main_layout_no_longer_includes_repeated_status_surfaces():
+    source = inspect.getsource(OpeningTrainerGUI.__init__)
+    assert 'StatusPanel' not in source
+    assert "text='Corpus bundle'" not in source
+    assert "text='Far side'" not in source
+    assert "text='Near side'" not in source
+
+
+def test_training_panel_default_visible_columns_are_core_triage_fields():
+    assert DEFAULT_TRAINING_PANEL_COLUMNS == ('position', 'side', 'frequency_state', 'fails', 'success_streak')
 
 
 def test_track_label_is_derived_from_selected_exact_time_control():
