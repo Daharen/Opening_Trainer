@@ -50,7 +50,7 @@ def test_time_control_mapping_exact_controls_only():
     assert resolve_track_category("300+0") == ("blitz", "300+0")
     assert resolve_track_category("120+1") == ("bullet", "120+1")
     assert resolve_track_category(" 600+0 ") == ("rapid", "600+0")
-    assert resolve_track_category("180+0") is None
+    assert resolve_track_category("180+0") == ("blitz", "180+0")
 
 
 def test_track_state_is_independent_and_persistent(tmp_path):
@@ -199,7 +199,7 @@ def test_runtime_contract_applies_to_session_from_active_level(tmp_path):
     bundle_dir = _bundle(tmp_path, time_control="300+0", minimum=1400, maximum=1600)
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles"))
-    session.update_settings(session.settings.__class__(training_mode="smart_profile", selected_smart_track="blitz"))
+    session.update_settings(session.settings.__class__(training_mode="smart_profile", selected_smart_track="blitz", selected_time_control_id="300+0"))
     session.smart_profile.set_selected_track("blitz")
     state = session.smart_profile.state.get_track_state("blitz", "300+0")
     state.current_level = 9
@@ -217,3 +217,37 @@ def test_smart_profile_state_file_created_for_profile(tmp_path):
     payload = storage.load_smart_profile_state("default")
     assert payload["mode"] == "smart_profile"
     assert payload["selected_track_id"] == "rapid"
+
+
+def test_manual_mode_never_counts_even_with_ladder_matching_contract(tmp_path):
+    service = _service(tmp_path)
+    _bundle(tmp_path, time_control="600+0", minimum=400, maximum=600)
+    service.set_mode("manual")
+    eligibility = service.evaluate_eligibility(
+        routing_source="ordinary_corpus_play",
+        bundle_available=True,
+        time_control_id="600+0",
+        bundle_rating_band="400-600",
+        required_turns=3,
+        good_accepted=True,
+        catalog_root=str(tmp_path),
+    )
+    assert eligibility.eligible is False
+    assert "Manual mode" in eligibility.reason
+    service.apply_eligible_result(eligibility, passed=True, bundle_time_control_id="600+0", bundle_rating_band="400-600")
+    state = service.state.get_track_state("rapid", "600+0")
+    assert state.eligible_games_played == 0
+
+
+def test_selected_time_control_drives_expected_bundle_resolution(tmp_path):
+    service = _service(tmp_path)
+    first = _bundle(tmp_path, time_control="600+0", minimum=400, maximum=600)
+    second = _bundle(tmp_path, time_control="600+1", minimum=400, maximum=600)
+    assert first != second
+
+    assert service.set_selected_time_control("600+1") is True
+    resolution = service.resolve_expected_bundle(str(tmp_path))
+
+    assert resolution.category_id == "600+1"
+    assert resolution.resolved_entry is not None
+    assert str(resolution.resolved_entry.bundle_dir).endswith("bundle_600_1")

@@ -19,6 +19,7 @@ class TrainerSettings:
     smart_profile_enabled: bool = True
     training_mode: str = ''
     selected_smart_track: str = 'rapid'
+    selected_time_control_id: str = '600+0'
     side_panel_visible: bool = False
     move_list_visible: bool = True
     last_bundle_path: str | None = None
@@ -35,12 +36,16 @@ class TrainerSettings:
         selected_track = str(self.selected_smart_track).strip().lower()
         if selected_track not in {'rapid', 'blitz', 'bullet'}:
             selected_track = 'rapid'
+        selected_time_control = str(self.selected_time_control_id).strip() if self.selected_time_control_id is not None else ''
+        if not selected_time_control:
+            selected_time_control = '600+0'
         return TrainerSettings(
             good_moves_acceptable=bool(self.good_moves_acceptable),
             active_training_ply_depth=clamped_depth,
             smart_profile_enabled=bool(mode == SMART_PROFILE_MODE),
             training_mode=mode,
             selected_smart_track=selected_track,
+            selected_time_control_id=selected_time_control,
             side_panel_visible=bool(self.side_panel_visible),
             move_list_visible=bool(self.move_list_visible),
             last_bundle_path=bundle_path,
@@ -67,6 +72,7 @@ class TrainerSettingsStore:
             smart_profile_enabled=bool(payload.get('smart_profile_enabled', True)),
             training_mode=str(payload.get('training_mode') or ('smart_profile' if bool(payload.get('smart_profile_enabled', True)) else 'manual')),
             selected_smart_track=str(payload.get('selected_smart_track', 'rapid')),
+            selected_time_control_id=str(payload.get('selected_time_control_id', '600+0')),
             side_panel_visible=bool(payload.get('side_panel_visible', False)),
             move_list_visible=bool(payload.get('move_list_visible', True)),
             last_bundle_path=payload.get('last_bundle_path') or None,
