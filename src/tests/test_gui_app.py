@@ -525,6 +525,18 @@ def test_drag_release_reports_drop_square_and_active_state():
     assert board_view.drag_state is None
 
 
+def test_start_drag_immediately_detaches_piece_and_preserves_click_path():
+    board_view = BoardView.__new__(BoardView)
+    board_view.settle_animation = object()
+
+    BoardView.start_drag(board_view, chess.E2, "P", 100, 120)
+
+    assert board_view.settle_animation is None
+    assert board_view.drag_state is not None
+    assert board_view.drag_state.source_square == chess.E2
+    assert board_view.drag_state.moved is False
+
+
 def test_captured_material_logic_tracks_delta_and_strips():
     board = chess.Board()
     board.remove_piece_at(chess.D8)
@@ -1239,6 +1251,44 @@ def test_cancel_pending_opponent_callback_cancels_after_handle():
     assert gui.root.cancelled == ['h5']
     assert gui._pending_opponent_after_handle is None
     assert cancelled['count'] == 1
+
+
+def test_clear_board_transients_cancels_animation_and_clears_board_view():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = {'h9'}
+    gui._board_animation_after_handle = 'h9'
+    cleared = {'count': 0}
+    gui.board_view = type('BoardViewStub', (), {'clear_transient_state': lambda self=None: cleared.__setitem__('count', cleared['count'] + 1)})()
+
+    OpeningTrainerGUI._clear_board_transients(gui)
+
+    assert gui.root.cancelled == ['h9']
+    assert gui._board_animation_after_handle is None
+    assert cleared['count'] == 1
+
+
+def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._board_animation_after_handle = None
+    refreshes = {'count': 0}
+    gui._refresh_view = lambda: refreshes.__setitem__('count', refreshes['count'] + 1)
+    states = iter([True, False])
+    gui.board_view = type('BoardViewStub', (), {'animation_in_progress': lambda self=None: next(states)})()
+
+    OpeningTrainerGUI._schedule_board_animation_refresh(gui)
+
+    assert len(gui.root.after_calls) == 1
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+    assert refreshes['count'] == 1
+    assert len(gui.root.after_calls) == 1
+    _delay2, callback2, _handle2 = gui.root.after_calls.pop(0)
+    callback2()
+    assert refreshes['count'] == 1
 
 
 def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):
