@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from tkinter import filedialog, messagebox, simpledialog
@@ -48,6 +49,17 @@ ANIMATION_IMPL_MARKER = 'committed_move_anim_v2'
 ANIMATION_LOG_PREFIX = 'GUI_ANIM'
 PLAYER_COMMITTED_MOVE_DURATION_MS = 240
 OPPONENT_COMMITTED_MOVE_DURATION_MS = 220
+
+
+@dataclass(frozen=True)
+class PremoveIntent:
+    from_square: chess.Square
+    to_square: chess.Square
+    promotion: int | None = None
+
+    @property
+    def uci(self) -> str:
+        return chess.Move(self.from_square, self.to_square, promotion=self.promotion).uci()
 
 
 class OpeningTrainerGUI:
@@ -106,6 +118,7 @@ class OpeningTrainerGUI:
         self._supporting_refresh_pending_after_first_tick = False
         self._deferred_outcome_view = None
         self._child_windows: list[tk.Toplevel] = []
+        self.premove_queue: list[PremoveIntent] = []
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(3, weight=1)
@@ -1109,6 +1122,9 @@ class OpeningTrainerGUI:
         if self.selected_square is not None and view.awaiting_user_input:
             legal_targets = [move.to_square for move in self.session.legal_moves_from(self.selected_square)]
         self.board_view.set_selection(self.selected_square, legal_targets)
+        if hasattr(self.board_view, 'set_premove_queue'):
+            queue = getattr(self, 'premove_queue', [])
+            self.board_view.set_premove_queue([intent.uci for intent in queue])
         self.board_view.render(board, view.player_color)
 
     def _schedule_supporting_surface_refresh(self) -> None:
@@ -1203,9 +1219,6 @@ class OpeningTrainerGUI:
 
     def _on_board_press(self, event: tk.Event) -> None:
         view = self.session.get_view()
-        if not view.awaiting_user_input:
-            self._refresh_board_local('Wait for your turn.', repaint_board=False)
-            return
         square = self.board_view.square_at_xy(event.x, event.y, view.player_color)
         if square is None:
             return
@@ -1215,9 +1228,15 @@ class OpeningTrainerGUI:
             if self.selected_square is None:
                 self._refresh_board_local('Select one of your own pieces.', repaint_board=False)
             return
-        legal_moves = self.session.legal_moves_from(square)
+        if view.awaiting_user_input:
+            legal_moves = self.session.legal_moves_from(square)
+        else:
+            preview_board = board.copy(stack=False)
+            preview_board.turn = view.player_color
+            legal_moves = [move for move in preview_board.legal_moves if move.from_square == square]
         if not legal_moves:
-            self._refresh_board_local('That piece has no legal moves.', repaint_board=False)
+            message = 'That piece has no legal moves.' if view.awaiting_user_input else 'No premove available from that square.'
+            self._refresh_board_local(message, repaint_board=False)
             return
         self.selected_square = square
         self.board_view.start_drag(square, piece.symbol(), event.x, event.y)
@@ -1225,14 +1244,14 @@ class OpeningTrainerGUI:
 
     def _on_board_drag(self, event: tk.Event) -> None:
         view = self.session.get_view()
-        if self.selected_square is None or not view.awaiting_user_input:
+        if self.selected_square is None:
             return
         self.board_view.update_drag(event.x, event.y, view.player_color)
         self._refresh_board_canvas()
 
     def _on_board_release(self, event: tk.Event) -> None:
         view = self.session.get_view()
-        if self.selected_square is None or not view.awaiting_user_input:
+        if self.selected_square is None:
             return
         released = self.board_view.release_drag(event.x, event.y, view.player_color)
         if released is None:
@@ -1256,10 +1275,19 @@ class OpeningTrainerGUI:
             self.selected_square = None
             self._refresh_board_local('Move cancelled.')
             return
-        move = self._build_move(from_square, to_square, board)
+        if view.awaiting_user_input:
+            move = self._build_move(from_square, to_square, board)
+        else:
+            move = self._build_premove_move(from_square, to_square, board, view.player_color)
         self.selected_square = None
         if move is None:
-            self._refresh_board_local('Illegal move selection.')
+            message = 'Illegal move selection.' if view.awaiting_user_input else 'Premove not possible from this position.'
+            self._refresh_board_local(message)
+            return
+        if not view.awaiting_user_input:
+            self.board_view.cancel_drag()
+            self._queue_premove(move)
+            self._refresh_board_local('Premove queued.')
             return
         moved_piece = board.piece_at(from_square)
         self.board_view.cancel_drag()
@@ -1292,6 +1320,78 @@ class OpeningTrainerGUI:
         if self._handle_player_terminal_outcome(post_submit_view):
             return
         self._schedule_pending_opponent_commit()
+
+    def _build_premove_move(
+        self,
+        from_square: chess.Square,
+        to_square: chess.Square,
+        board: chess.Board,
+        player_color: chess.Color,
+    ) -> chess.Move | None:
+        preview_board = board.copy(stack=False)
+        preview_board.turn = player_color
+        return self._build_move(from_square, to_square, preview_board)
+
+    def _queue_premove(self, move: chess.Move) -> None:
+        if not hasattr(self, 'premove_queue'):
+            self.premove_queue = []
+        intent = PremoveIntent(move.from_square, move.to_square, promotion=move.promotion)
+        self.premove_queue.append(intent)
+        log_line(
+            f'GUI_PREMOVE_QUEUED: move={intent.uci}; queue_len={len(self.premove_queue)}; appended=yes',
+            tag='timing',
+        )
+
+    def _clear_premove_queue(self, *, reason: str) -> None:
+        if not hasattr(self, 'premove_queue'):
+            self.premove_queue = []
+        cleared = len(self.premove_queue)
+        if cleared == 0:
+            return
+        self.premove_queue.clear()
+        log_line(f'GUI_PREMOVE_CLEARED: reason={reason}; cleared={cleared}', tag='timing')
+
+    def _attempt_execute_next_premove(self) -> bool:
+        if not hasattr(self, 'premove_queue'):
+            self.premove_queue = []
+        if self.session.state != SessionState.PLAYER_TURN or not self.premove_queue:
+            return False
+        next_intent = self.premove_queue[0]
+        log_line(f'GUI_PREMOVE_EXEC_ATTEMPT: move={next_intent.uci}; queue_len={len(self.premove_queue)}', tag='timing')
+        board = self.session.current_board()
+        move = chess.Move(next_intent.from_square, next_intent.to_square, promotion=next_intent.promotion)
+        moved_piece = board.piece_at(next_intent.from_square)
+        if moved_piece is None:
+            cleared = len(self.premove_queue)
+            log_line(f'GUI_PREMOVE_INVALIDATED: move={next_intent.uci}; reason=impossible; cleared={cleared}', tag='timing')
+            self._clear_premove_queue(reason='invalidated_impossible')
+            self._refresh_view()
+            return False
+        if move not in board.legal_moves:
+            cleared = len(self.premove_queue)
+            log_line(f'GUI_PREMOVE_INVALIDATED: move={next_intent.uci}; reason=illegal; cleared={cleared}', tag='timing')
+            self._clear_premove_queue(reason='invalidated_illegal')
+            self._refresh_view()
+            return False
+        self.premove_queue.pop(0)
+        self.session.submit_user_move_uci(move.uci())
+        self.board_view.start_committed_move_animation(
+            piece_symbol=moved_piece.symbol(),
+            source_square=move.from_square,
+            destination_square=move.to_square,
+            player_color=self.session.get_view().player_color,
+            duration_ms=PLAYER_COMMITTED_MOVE_DURATION_MS,
+        )
+        self._refresh_post_animation_start(actor='PREMOVE')
+        log_line(f'GUI_PREMOVE_EXECUTED: move={next_intent.uci}; remaining={len(self.premove_queue)}', tag='timing')
+        post_submit_view = self.session.get_view()
+        if self._handle_player_terminal_outcome(post_submit_view):
+            return True
+        if self.session.state == SessionState.OPPONENT_TURN:
+            self._schedule_pending_opponent_commit()
+        else:
+            self._refresh_view()
+        return True
 
     def _handle_player_terminal_outcome(self, view) -> bool:
         if getattr(view, 'state', None) != SessionState.RESTART_PENDING or getattr(view, 'last_outcome', None) is None:
@@ -1560,6 +1660,8 @@ class OpeningTrainerGUI:
             )
         if self.session.state == SessionState.OPPONENT_TURN:
             self._schedule_pending_opponent_commit()
+        elif self.session.state == SessionState.PLAYER_TURN:
+            self._attempt_execute_next_premove()
 
     def _cancel_pending_opponent_callback(self) -> None:
         handle = getattr(self, '_pending_opponent_after_handle', None)
@@ -1596,6 +1698,7 @@ class OpeningTrainerGUI:
 
     def _clear_board_transients(self, *, reason: str = 'unspecified') -> None:
         self._log_animation_event('CLEAR_TRANSIENTS', reason=reason)
+        self._clear_premove_queue(reason=reason)
         self._cancel_board_animation_callback()
         self._supporting_refresh_pending_after_first_tick = False
         self._deferred_outcome_view = None

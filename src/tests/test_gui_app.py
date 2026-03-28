@@ -1430,6 +1430,46 @@ def test_on_board_release_cancelled_drag_uses_board_local_refresh_only():
     assert full_refresh_calls['count'] == 0
 
 
+def test_off_turn_release_queues_premove_instead_of_rejecting():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    view = type('View', (), {'awaiting_user_input': False, 'player_color': chess.WHITE})()
+    gui.session = type('Session', (), {'get_view': lambda self=None: view, 'current_board': lambda self=None: chess.Board()})()
+    gui.selected_square = chess.E2
+    gui.premove_queue = []
+    gui._refresh_board_local = lambda *args, **kwargs: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
+            'cancel_drag': lambda self: None,
+        },
+    )()
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert [intent.uci for intent in gui.premove_queue] == ['e2e4']
+
+
+def test_off_turn_release_can_append_multiple_premoves_in_order():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    view = type('View', (), {'awaiting_user_input': False, 'player_color': chess.WHITE})()
+    board = chess.Board()
+    gui.session = type('Session', (), {'get_view': lambda self=None: view, 'current_board': lambda self=None: board})()
+    gui._refresh_board_local = lambda *args, **kwargs: None
+    gui.board_view = type('BoardViewStub', (), {'cancel_drag': lambda self: None})()
+    gui.premove_queue = []
+
+    gui.selected_square = chess.E2
+    gui.board_view.release_drag = lambda x, y, player_color: (chess.E2, chess.E4, True)
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+    gui.selected_square = chess.G1
+    gui.board_view.release_drag = lambda x, y, player_color: (chess.G1, chess.F3, True)
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert [intent.uci for intent in gui.premove_queue] == ['e2e4', 'g1f3']
+
+
 def test_on_board_release_committed_move_still_uses_full_refresh():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
@@ -1487,6 +1527,31 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     assert animation_calls['kwargs']['start_x'] == 30.0
     assert animation_calls['kwargs']['start_y'] == 40.0
     assert animation_calls['kwargs']['duration_ms'] == PLAYER_COMMITTED_MOVE_DURATION_MS
+
+
+def test_premove_queue_renders_through_board_view_state():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.selected_square = None
+    gui.premove_queue = [
+        type('Intent', (), {'uci': 'e2e4'})(),
+        type('Intent', (), {'uci': 'g1f3'})(),
+    ]
+    view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.PLAYER_TURN, 0, 1, None, None, None)
+    calls = {'queue': None}
+    gui.session = type('Session', (), {'get_view': lambda self=None: view, 'legal_moves_from': lambda self, sq: []})()
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'set_selection': lambda self, selected, targets: None,
+            'set_premove_queue': lambda self, queue: calls.__setitem__('queue', queue),
+            'render': lambda self, board, player_color: None,
+        },
+    )()
+
+    OpeningTrainerGUI._refresh_board_canvas(gui)
+
+    assert calls['queue'] == ['e2e4', 'g1f3']
 
 
 def test_on_board_release_logs_player_animation_start(monkeypatch):
@@ -2014,6 +2079,73 @@ def test_clear_board_transients_logs_reason(monkeypatch):
     OpeningTrainerGUI._clear_board_transients(gui, reason='restart')
 
     assert any(line.startswith('GUI_ANIM_CLEAR_TRANSIENTS') and 'reason=restart' in line for line in lines)
+
+
+def test_clear_board_transients_clears_premove_queue():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._board_animation_after_handle = None
+    gui.premove_queue = [type('Intent', (), {'uci': 'e2e4'})()]
+    gui.board_view = type('BoardViewStub', (), {'clear_transient_state': lambda self=None: None})()
+
+    OpeningTrainerGUI._clear_board_transients(gui, reason='new_game_start')
+
+    assert gui.premove_queue == []
+
+
+def test_attempt_execute_next_premove_executes_when_legal():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    submitted = {'uci': None}
+    scheduled = {'count': 0}
+    refreshed = {'count': 0}
+    class Session:
+        state = SessionState.PLAYER_TURN
+
+        def current_board(self):
+            return chess.Board()
+
+        def submit_user_move_uci(self, uci):
+            submitted['uci'] = uci
+            self.state = SessionState.OPPONENT_TURN
+
+        def get_view(self):
+            return SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.OPPONENT_TURN, 1, 1, None, None, None)
+
+    gui.session = Session()
+    gui.premove_queue = [type('Intent', (), {'from_square': chess.E2, 'to_square': chess.E4, 'promotion': None, 'uci': 'e2e4'})()]
+    gui.board_view = type('BoardViewStub', (), {'start_committed_move_animation': lambda self, **kwargs: None})()
+    gui._refresh_post_animation_start = lambda **kwargs: None
+    gui._handle_player_terminal_outcome = lambda _view: False
+    gui._schedule_pending_opponent_commit = lambda: scheduled.__setitem__('count', scheduled['count'] + 1)
+    gui._refresh_view = lambda: refreshed.__setitem__('count', refreshed['count'] + 1)
+
+    executed = OpeningTrainerGUI._attempt_execute_next_premove(gui)
+
+    assert executed is True
+    assert submitted['uci'] == 'e2e4'
+    assert gui.premove_queue == []
+    assert scheduled['count'] == 1
+    assert refreshed['count'] == 0
+
+
+def test_attempt_execute_next_premove_invalidates_entire_queue_when_next_is_illegal():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    board = chess.Board()
+    board.push(chess.Move.from_uci('e2e4'))
+    gui.session = type('Session', (), {'state': SessionState.PLAYER_TURN, 'current_board': lambda self=None: board})()
+    gui.premove_queue = [
+        type('Intent', (), {'from_square': chess.E2, 'to_square': chess.E4, 'promotion': None, 'uci': 'e2e4'})(),
+        type('Intent', (), {'from_square': chess.G1, 'to_square': chess.F3, 'promotion': None, 'uci': 'g1f3'})(),
+    ]
+    refreshed = {'count': 0}
+    gui._refresh_view = lambda: refreshed.__setitem__('count', refreshed['count'] + 1)
+
+    executed = OpeningTrainerGUI._attempt_execute_next_premove(gui)
+
+    assert executed is False
+    assert gui.premove_queue == []
+    assert refreshed['count'] == 1
 
 
 def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
