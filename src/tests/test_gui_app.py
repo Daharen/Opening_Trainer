@@ -608,6 +608,28 @@ def test_start_committed_move_animation_uses_square_centers():
     assert board_view.settle_animation.end_y == end_y
 
 
+def test_start_committed_move_animation_uses_explicit_release_start_coordinates():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view.settle_animation = None
+
+    BoardView.start_committed_move_animation(
+        board_view,
+        piece_symbol="P",
+        source_square=chess.E2,
+        destination_square=chess.E4,
+        player_color=chess.WHITE,
+        start_x=121.0,
+        start_y=247.0,
+        duration_ms=95,
+    )
+
+    assert board_view.settle_animation is not None
+    assert board_view.settle_animation.start_x == 121.0
+    assert board_view.settle_animation.start_y == 247.0
+
+
 def test_animation_status_query_does_not_clear_animation_state():
     board_view = BoardView.__new__(BoardView)
     board_view.settle_animation = SettleAnimationState("P", 10.0, 20.0, 80.0, 120.0, chess.E4, start_time=10.0, duration_seconds=0.1)
@@ -632,6 +654,27 @@ def test_start_committed_move_animation_biases_start_time_for_immediate_motion()
 
     assert board_view.settle_animation is not None
     assert board_view.settle_animation.start_time <= time.monotonic() - (ANIMATION_START_LEAD_SECONDS * 0.8)
+
+
+def test_force_immediate_visible_frame_advances_animation_progress():
+    board_view = BoardView.__new__(BoardView)
+    board_view.settle_animation = SettleAnimationState(
+        "P",
+        10.0,
+        15.0,
+        50.0,
+        95.0,
+        chess.E4,
+        start_time=time.monotonic(),
+        duration_seconds=0.1,
+    )
+
+    progress = BoardView.force_immediate_visible_frame(board_view, min_progress=0.2)
+
+    assert progress is not None
+    assert progress >= 0.2
+    assert board_view.settle_animation is not None
+    assert board_view.settle_animation.start_time <= time.monotonic() - 0.018
 
 
 def test_board_resize_coalesces_redraw_and_refreshes_latest_board():
@@ -1384,14 +1427,18 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     gui._schedule_supporting_surface_refresh = lambda: deferred_supporting_calls.__setitem__('count', deferred_supporting_calls['count'] + 1)
     gui._log_animation_event = lambda *args, **kwargs: None
     gui._schedule_pending_opponent_commit = lambda: None
-    animation_calls = {'count': 0}
+    animation_calls = {'count': 0, 'kwargs': None}
     gui.board_view = type(
         'BoardViewStub',
         (),
         {
             'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
             'cancel_drag': lambda self: None,
-            'start_committed_move_animation': lambda self, **kwargs: animation_calls.__setitem__('count', animation_calls['count'] + 1),
+            'start_committed_move_animation': lambda self, **kwargs: (
+                animation_calls.__setitem__('count', animation_calls['count'] + 1),
+                animation_calls.__setitem__('kwargs', kwargs),
+            ),
+            'force_immediate_visible_frame': lambda self: 0.2,
         },
     )()
     gui._build_move = lambda from_square, to_square, current_board: chess.Move(from_square, to_square)
@@ -1404,6 +1451,9 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     assert board_canvas_calls['count'] == 1
     assert deferred_supporting_calls['count'] == 1
     assert board_local_calls['count'] == 0
+    assert animation_calls['kwargs'] is not None
+    assert animation_calls['kwargs']['start_x'] == 30.0
+    assert animation_calls['kwargs']['start_y'] == 40.0
 
 
 def test_on_board_release_logs_player_animation_start(monkeypatch):
@@ -1433,6 +1483,7 @@ def test_on_board_release_logs_player_animation_start(monkeypatch):
             'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
             'cancel_drag': lambda self: None,
             'start_committed_move_animation': lambda self, **kwargs: None,
+            'force_immediate_visible_frame': lambda self: 0.23,
             'settle_animation': None,
         },
     )()
@@ -1443,8 +1494,10 @@ def test_on_board_release_logs_player_animation_start(monkeypatch):
     OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
 
     assert any(line.startswith('GUI_ANIM_PLAYER_START') for line in lines)
+    assert any('start_mode=release_xy' in line for line in lines if line.startswith('GUI_ANIM_PLAYER_START'))
     assert any(line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT') for line in lines)
     assert any('supporting_refresh=deferred' in line for line in lines if line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT'))
+    assert any('immediate_frame=yes' in line for line in lines if line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT'))
 
 
 def test_on_board_release_terminal_restart_pending_defers_modal_when_animation_active():
@@ -1686,13 +1739,17 @@ def test_commit_scheduled_opponent_action_uses_deferred_supporting_refresh_after
             return type('View', (), {'player_color': chess.WHITE})()
 
     gui.session = Session()
-    animation_calls = {'count': 0}
+    animation_calls = {'count': 0, 'kwargs': None}
     gui.board_view = type(
         'BoardViewStub',
         (),
         {
-            'start_committed_move_animation': lambda self, **kwargs: animation_calls.__setitem__('count', animation_calls['count'] + 1),
+            'start_committed_move_animation': lambda self, **kwargs: (
+                animation_calls.__setitem__('count', animation_calls['count'] + 1),
+                animation_calls.__setitem__('kwargs', kwargs),
+            ),
             'animation_in_progress': lambda self: False,
+            'force_immediate_visible_frame': lambda self: 0.22,
         },
     )()
 
@@ -1703,6 +1760,9 @@ def test_commit_scheduled_opponent_action_uses_deferred_supporting_refresh_after
     assert board_canvas_calls['count'] == 1
     assert deferred_supporting_calls['count'] == 1
     assert animation_calls['count'] == 1
+    assert animation_calls['kwargs'] is not None
+    assert animation_calls['kwargs'].get('start_x') is None
+    assert animation_calls['kwargs'].get('start_y') is None
     assert animation_schedule_calls['count'] == 1
 
 
@@ -1984,6 +2044,30 @@ def test_schedule_board_animation_refresh_logs_first_tick_elapsed(monkeypatch):
 
     tick_line = next(line for line in lines if line.startswith('GUI_ANIM_TICK'))
     assert 'first_tick_elapsed_ms=' in tick_line
+
+
+def test_refresh_post_animation_start_forces_immediate_visible_frame(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._refresh_board_canvas = lambda: None
+    gui._schedule_board_animation_refresh = lambda: None
+    gui._schedule_supporting_surface_refresh = lambda: None
+    start = time.monotonic()
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'force_immediate_visible_frame': lambda self=None: 0.27,
+            'settle_animation': type('Anim', (), {'start_time': start})(),
+        },
+    )()
+    lines: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag='timing': lines.append(message))
+
+    OpeningTrainerGUI._refresh_post_animation_start(gui, actor='PLAYER')
+
+    repaint_line = next(line for line in lines if line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT'))
+    assert 'immediate_frame=yes' in repaint_line
+    assert 'initial_progress=0.270' in repaint_line
 
 
 def test_schedule_supporting_surface_refresh_coalesces_callbacks():
