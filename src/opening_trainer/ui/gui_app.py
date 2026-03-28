@@ -101,6 +101,7 @@ class OpeningTrainerGUI:
         self._pending_opponent_after_handle = None
         self._board_animation_after_handle = None
         self._supporting_surfaces_after_handle = None
+        self._supporting_refresh_pending_after_first_tick = False
         self._deferred_outcome_view = None
         self._child_windows: list[tk.Toplevel] = []
 
@@ -1134,13 +1135,20 @@ class OpeningTrainerGUI:
             board_repaint_elapsed_ms = max(0, int(round((monotonic() - start_time) * 1000)))
         self._refresh_board_canvas()
         self._schedule_board_animation_refresh()
-        self._schedule_supporting_surface_refresh()
+        animation_in_progress = getattr(self.board_view, 'animation_in_progress', None)
+        animation_active = callable(animation_in_progress) and animation_in_progress()
+        supporting_refresh = 'deferred'
+        if animation_active:
+            self._supporting_refresh_pending_after_first_tick = True
+            supporting_refresh = 'deferred_until_first_tick'
+        else:
+            self._schedule_supporting_surface_refresh()
         self._log_animation_event(
             f'{actor}_POST_START_REPAINT',
             board_repaint='yes',
             board_repaint_elapsed_ms=board_repaint_elapsed_ms,
             animation_refresh='scheduled',
-            supporting_refresh='deferred',
+            supporting_refresh=supporting_refresh,
             immediate_frame='yes' if initial_progress is not None else 'no',
             initial_progress='n/a' if initial_progress is None else f'{initial_progress:.3f}',
         )
@@ -1435,9 +1443,25 @@ class OpeningTrainerGUI:
                 deferred_modal='yes' if getattr(self, '_deferred_outcome_view', None) is not None else 'no',
             )
             if active:
+                if getattr(self, '_supporting_refresh_pending_after_first_tick', False):
+                    self._supporting_refresh_pending_after_first_tick = False
+                    self._schedule_supporting_surface_refresh()
+                    self._log_animation_event(
+                        'SUPPORTING_REFRESH_RELEASED',
+                        phase='first_tick',
+                        elapsed_ms=elapsed_ms,
+                    )
                 self._refresh_board_canvas()
                 self._board_animation_after_handle = self._schedule_after(16, tick)
             else:
+                if getattr(self, '_supporting_refresh_pending_after_first_tick', False):
+                    self._supporting_refresh_pending_after_first_tick = False
+                    self._schedule_supporting_surface_refresh()
+                    self._log_animation_event(
+                        'SUPPORTING_REFRESH_RELEASED',
+                        phase='finalize_fallback',
+                        elapsed_ms=elapsed_ms,
+                    )
                 self._finalize_board_animation_if_complete()
                 self._refresh_board_canvas()
                 self._show_deferred_outcome_modal_if_ready()
@@ -1578,6 +1602,7 @@ class OpeningTrainerGUI:
     def _clear_board_transients(self, *, reason: str = 'unspecified') -> None:
         self._log_animation_event('CLEAR_TRANSIENTS', reason=reason)
         self._cancel_board_animation_callback()
+        self._supporting_refresh_pending_after_first_tick = False
         self._deferred_outcome_view = None
         board_view = getattr(self, 'board_view', None)
         if board_view is None:
