@@ -1176,6 +1176,117 @@ def test_start_loading_job_shows_loading_and_polls_without_touching_widgets_from
     assert gui.start_button.state == 'normal'
 
 
+def test_on_board_press_selects_piece_with_board_local_refresh_only():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    gui.session = type(
+        'Session',
+        (),
+        {
+            'get_view': lambda self=None: view,
+            'current_board': lambda self=None: chess.Board(),
+            'legal_moves_from': lambda self, square: [chess.Move(chess.E2, chess.E4)] if square == chess.E2 else [],
+        },
+    )()
+    gui.selected_square = None
+    board_local_calls = {'count': 0}
+    full_refresh_calls = {'count': 0}
+    gui._refresh_board_local = lambda *args, **kwargs: board_local_calls.__setitem__('count', board_local_calls['count'] + 1)
+    gui._refresh_view = lambda *args, **kwargs: full_refresh_calls.__setitem__('count', full_refresh_calls['count'] + 1)
+    drag_calls = {'count': 0}
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'square_at_xy': lambda self, x, y, player_color: chess.E2,
+            'start_drag': lambda self, square, symbol, x, y: drag_calls.__setitem__('count', drag_calls['count'] + 1),
+        },
+    )()
+
+    OpeningTrainerGUI._on_board_press(gui, type('Event', (), {'x': 10, 'y': 20})())
+
+    assert gui.selected_square == chess.E2
+    assert drag_calls['count'] == 1
+    assert board_local_calls['count'] == 1
+    assert full_refresh_calls['count'] == 0
+
+
+def test_on_board_release_reselects_friendly_piece_with_board_local_refresh_only():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    board = chess.Board()
+    gui.session = type('Session', (), {'get_view': lambda self=None: view, 'current_board': lambda self=None: board})()
+    gui.selected_square = chess.E2
+    board_local_calls = {'count': 0}
+    full_refresh_calls = {'count': 0}
+    gui._refresh_board_local = lambda *args, **kwargs: board_local_calls.__setitem__('count', board_local_calls['count'] + 1)
+    gui._refresh_view = lambda *args, **kwargs: full_refresh_calls.__setitem__('count', full_refresh_calls['count'] + 1)
+    gui.board_view = type('BoardViewStub', (), {'release_drag': lambda self, x, y, player_color: (chess.E2, chess.G1, False)})()
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert gui.selected_square == chess.G1
+    assert board_local_calls['count'] == 1
+    assert full_refresh_calls['count'] == 0
+
+
+def test_on_board_release_cancelled_drag_uses_board_local_refresh_only():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    gui.session = type('Session', (), {'get_view': lambda self=None: view, 'current_board': lambda self=None: chess.Board()})()
+    gui.selected_square = chess.E2
+    board_local_calls = {'count': 0}
+    full_refresh_calls = {'count': 0}
+    gui._refresh_board_local = lambda *args, **kwargs: board_local_calls.__setitem__('count', board_local_calls['count'] + 1)
+    gui._refresh_view = lambda *args, **kwargs: full_refresh_calls.__setitem__('count', full_refresh_calls['count'] + 1)
+    gui.board_view = type('BoardViewStub', (), {'release_drag': lambda self, x, y, player_color: (chess.E2, None, True)})()
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert gui.selected_square is None
+    assert board_local_calls['count'] == 1
+    assert full_refresh_calls['count'] == 0
+
+
+def test_on_board_release_committed_move_still_uses_full_refresh():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    board = chess.Board()
+    submitted = {'uci': None}
+    gui.session = type(
+        'Session',
+        (),
+        {
+            'get_view': lambda self=None: view,
+            'current_board': lambda self=None: board,
+            'submit_user_move_uci': lambda self, uci: submitted.__setitem__('uci', uci),
+        },
+    )()
+    gui.selected_square = chess.E2
+    board_local_calls = {'count': 0}
+    full_refresh_calls = {'count': 0}
+    gui._refresh_board_local = lambda *args, **kwargs: board_local_calls.__setitem__('count', board_local_calls['count'] + 1)
+    gui._refresh_view = lambda *args, **kwargs: full_refresh_calls.__setitem__('count', full_refresh_calls['count'] + 1)
+    gui._schedule_board_animation_refresh = lambda: None
+    gui._schedule_pending_opponent_commit = lambda: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
+            'cancel_drag': lambda self: None,
+            'start_settle_animation': lambda self, **kwargs: None,
+        },
+    )()
+    gui._build_move = lambda from_square, to_square, current_board: chess.Move(from_square, to_square)
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert submitted['uci'] == 'e2e4'
+    assert full_refresh_calls['count'] == 1
+    assert board_local_calls['count'] == 0
+
+
 def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.root = FakeRoot()
@@ -1218,6 +1329,29 @@ def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
     callback()
     assert committed['count'] == 1
     assert gui.session.pending_opponent_action is None
+
+
+def test_commit_scheduled_opponent_action_uses_full_refresh():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._pending_opponent_after_handle = 'h7'
+    gui._is_shutting_down = False
+    refresh_calls = {'count': 0}
+    gui._refresh_view = lambda: refresh_calls.__setitem__('count', refresh_calls['count'] + 1)
+    gui._schedule_pending_opponent_commit = lambda: None
+
+    class Session:
+        state = SessionState.PLAYER_TURN
+        pending_opponent_action = object()
+
+        def commit_pending_opponent_action(self):
+            self.pending_opponent_action = None
+
+    gui.session = Session()
+
+    OpeningTrainerGUI._commit_scheduled_opponent_action(gui)
+
+    assert gui._pending_opponent_after_handle is None
+    assert refresh_calls['count'] == 1
 
 
 def test_schedule_pending_opponent_commit_old_order_would_clear_new_pending_action():

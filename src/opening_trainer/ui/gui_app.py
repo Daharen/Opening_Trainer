@@ -1057,11 +1057,17 @@ class OpeningTrainerGUI:
         self._refresh_board_canvas()
         self._refresh_supporting_surfaces()
         if transient_status:
-            self.recent_var.set(transient_status + '\n\n' + self.recent_var.get())
+            self._prepend_recent_status(transient_status)
         view = self.session.get_view()
         if view.state == SessionState.RESTART_PENDING and view.last_outcome is not None and not self.pending_restart:
             self.pending_restart = True
             self._show_outcome_modal(view)
+
+    def _refresh_board_local(self, transient_status: str | None = None, *, repaint_board: bool = True) -> None:
+        if repaint_board:
+            self._refresh_board_canvas()
+        if transient_status:
+            self._prepend_recent_status(transient_status)
 
     def _refresh_board_canvas(self) -> None:
         view = self.session.get_view()
@@ -1120,7 +1126,7 @@ class OpeningTrainerGUI:
     def _on_board_press(self, event: tk.Event) -> None:
         view = self.session.get_view()
         if not view.awaiting_user_input:
-            self._refresh_view('Wait for your turn.')
+            self._refresh_board_local('Wait for your turn.', repaint_board=False)
             return
         square = self.board_view.square_at_xy(event.x, event.y, view.player_color)
         if square is None:
@@ -1129,15 +1135,15 @@ class OpeningTrainerGUI:
         piece = board.piece_at(square)
         if piece is None or piece.color != view.player_color:
             if self.selected_square is None:
-                self._refresh_view('Select one of your own pieces.')
+                self._refresh_board_local('Select one of your own pieces.', repaint_board=False)
             return
         legal_moves = self.session.legal_moves_from(square)
         if not legal_moves:
-            self._refresh_view('That piece has no legal moves.')
+            self._refresh_board_local('That piece has no legal moves.', repaint_board=False)
             return
         self.selected_square = square
         self.board_view.start_drag(square, piece.symbol(), event.x, event.y)
-        self._refresh_view()
+        self._refresh_board_local()
 
     def _on_board_drag(self, event: tk.Event) -> None:
         view = self.session.get_view()
@@ -1157,25 +1163,25 @@ class OpeningTrainerGUI:
         board = self.session.current_board()
         if not was_drag:
             if to_square == self.selected_square:
-                self._refresh_view()
+                self._refresh_board_local()
                 return
             if to_square is None:
                 self.selected_square = None
-                self._refresh_view('Selection cleared.')
+                self._refresh_board_local('Selection cleared.')
                 return
             destination_piece = board.piece_at(to_square)
             if destination_piece is not None and destination_piece.color == view.player_color:
                 self.selected_square = to_square
-                self._refresh_view()
+                self._refresh_board_local()
                 return
         if to_square is None:
             self.selected_square = None
-            self._refresh_view('Move cancelled.')
+            self._refresh_board_local('Move cancelled.')
             return
         move = self._build_move(from_square, to_square, board)
         self.selected_square = None
         if move is None:
-            self._refresh_view('Illegal move selection.')
+            self._refresh_board_local('Illegal move selection.')
             return
         moved_piece = board.piece_at(from_square)
         self.board_view.cancel_drag()
