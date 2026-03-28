@@ -439,67 +439,106 @@ class OpeningTrainerGUI:
         return 'Other'
 
     def _on_top_mode_toggle(self) -> None:
-        mode = 'smart_profile' if self.smart_mode_var.get() else 'manual'
-        settings = self.session.settings
-        self.session.update_settings(
-            TrainerSettings(
-                good_moves_acceptable=settings.good_moves_acceptable,
-                active_training_ply_depth=settings.active_training_ply_depth,
-                smart_profile_enabled=mode == 'smart_profile',
-                training_mode=mode,
-                selected_smart_track=settings.selected_smart_track,
-                selected_time_control_id=self.top_time_control_var.get().strip() or settings.selected_time_control_id,
-                side_panel_visible=self.panel_visible,
-                move_list_visible=self.move_list_visible,
-                last_bundle_path=self._remembered_bundle_path(),
-                last_corpus_catalog_root=self._catalog_root_setting(),
-            )
-        )
-        self._refresh_top_control_strip()
-        self._refresh_supporting_surfaces()
+        self._apply_top_contract_change(reason='mode toggle')
 
     def _on_top_time_control_selected(self, _event=None) -> None:
         selected = self.top_time_control_var.get().strip()
         if not selected:
             return
-        track = self._derive_track_label(selected).lower()
-        settings = self.session.settings
-        self.session.update_settings(
-            TrainerSettings(
-                good_moves_acceptable=settings.good_moves_acceptable,
-                active_training_ply_depth=settings.active_training_ply_depth,
-                smart_profile_enabled=settings.training_mode == 'smart_profile',
-                training_mode=settings.training_mode,
-                selected_smart_track=track if track in {'rapid', 'blitz', 'bullet'} else settings.selected_smart_track,
-                selected_time_control_id=selected,
-                side_panel_visible=self.panel_visible,
-                move_list_visible=self.move_list_visible,
-                last_bundle_path=self._remembered_bundle_path(),
-                last_corpus_catalog_root=self._catalog_root_setting(),
-            )
-        )
-        self._refresh_top_control_strip()
-        self._refresh_supporting_surfaces()
+        self._apply_top_contract_change(reason='time control changed')
 
     def _on_manual_contract_changed(self, _event=None) -> None:
         if self.smart_mode_var.get():
             return
+        self._apply_top_contract_change(reason='manual contract changed')
+
+    def _apply_top_contract_change(self, *, reason: str) -> None:
         settings = self.session.settings
-        self.session.update_settings(
+        selected_time_control_id = self.top_time_control_var.get().strip() or settings.selected_time_control_id
+        selected_track = self._derive_track_label(selected_time_control_id).lower()
+        if selected_track not in {'rapid', 'blitz', 'bullet'}:
+            selected_track = settings.selected_smart_track
+        mode = 'smart_profile' if self.smart_mode_var.get() else 'manual'
+        updated = self.session.update_settings(
             TrainerSettings(
-                good_moves_acceptable=self.manual_good_var.get().strip().lower() == 'yes',
-                active_training_ply_depth=int(self.manual_depth_var.get()),
-                smart_profile_enabled=False,
-                training_mode='manual',
-                selected_smart_track=settings.selected_smart_track,
-                selected_time_control_id=self.top_time_control_var.get().strip() or settings.selected_time_control_id,
+                good_moves_acceptable=self.manual_good_var.get().strip().lower() == 'yes' if mode == 'manual' else settings.good_moves_acceptable,
+                active_training_ply_depth=int(self.manual_depth_var.get()) if mode == 'manual' else settings.active_training_ply_depth,
+                smart_profile_enabled=mode == 'smart_profile',
+                training_mode=mode,
+                selected_smart_track=selected_track,
+                selected_time_control_id=selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
             )
         )
+        self.top_time_control_var.set(updated.selected_time_control_id)
         self._refresh_top_control_strip()
+        resolved_bundle_path, blocked_message = self._resolve_bundle_for_top_contract(updated)
+        remembered_path = self._remembered_bundle_path()
+        if resolved_bundle_path:
+            if self._bundle_token(remembered_path) == self._bundle_token(resolved_bundle_path):
+                self._refresh_supporting_surfaces()
+                self._prepend_recent_status(f'Training contract updated ({reason}); resolved bundle already active.')
+                return
+            self._prepend_recent_status(
+                f'Training contract updated ({reason}); loading resolved bundle {Path(resolved_bundle_path).name}.'
+            )
+            self._load_selected_bundle(resolved_bundle_path)
+            return
+        self._refresh_supporting_surfaces()
+        self._prepend_recent_status(blocked_message or f'Training contract updated ({reason}); corpus unchanged.')
+
+    def _resolve_bundle_for_top_contract(self, settings: TrainerSettings) -> tuple[str | None, str | None]:
+        if settings.training_mode == 'smart_profile':
+            resolution = self.session.smart_profile.resolve_expected_bundle(settings.last_corpus_catalog_root)
+            if resolution.resolved_entry is not None:
+                return str(resolution.resolved_entry.bundle_dir), None
+            return None, (
+                f'Expected bundle unavailable for {resolution.category_id} / {resolution.expected_rating_band}; '
+                'ladder blocked until matching bundle is available.'
+            )
+        entry = self._resolve_manual_bundle_entry(
+            time_control_id=settings.selected_time_control_id,
+            rating_band=self.manual_elo_var.get().strip(),
+        )
+        if entry is not None:
+            return str(entry.bundle_dir), None
+        return None, (
+            f'No discovered bundle matches {settings.selected_time_control_id} / {self.manual_elo_var.get().strip() or "n/a"}; '
+            'contract fields updated, corpus unchanged.'
+        )
+
+    def _resolve_manual_bundle_entry(self, *, time_control_id: str, rating_band: str):
+        if not time_control_id or not rating_band:
+            return None
+        if self.catalog is None:
+            self.catalog = discover_corpus_catalog(self._catalog_root_setting())
+            self.catalog_grouped = self.catalog.grouped()
+        grouped = self.catalog.grouped()
+        for category in grouped.values():
+            by_band = category.get(time_control_id, {})
+            variants = by_band.get(rating_band)
+            if variants:
+                return variants[0]
+        return None
+
+    def _bundle_token(self, bundle_path: str | Path | None) -> str | None:
+        if not bundle_path:
+            return None
+        return str(Path(bundle_path).expanduser())
+
+    def _prepend_recent_status(self, message: str) -> None:
+        if not message.strip():
+            return
+        if not hasattr(self, 'recent_var'):
+            return
+        current = self.recent_var.get()
+        if current:
+            self.recent_var.set(message + '\n\n' + current)
+            return
+        self.recent_var.set(message)
 
     def _refresh_top_control_strip(self) -> None:
         controls = self._all_discovered_time_controls()

@@ -186,6 +186,7 @@ class TrainingSession:
     def _apply_settings(self, settings: TrainerSettings) -> None:
         self.settings = settings.normalized(maximum_depth=self.max_supported_training_depth())
         self.smart_profile.set_mode(self.settings.training_mode)
+        self.smart_profile.set_selected_track(self.settings.selected_smart_track)
         if not self.smart_profile.set_selected_time_control(self.settings.selected_time_control_id):
             self.smart_profile.set_selected_track(self.settings.selected_smart_track)
         if self.settings.training_mode == SMART_PROFILE_MODE:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.runtime import RuntimeOverrides, load_runtime_config
+from opening_trainer.settings import TrainerSettings
 from opening_trainer.session import TrainingSession
 from opening_trainer.smart_profile import (
     HIGHEST_CORPUS_BACKED_LEVEL,
@@ -251,3 +252,53 @@ def test_selected_time_control_drives_expected_bundle_resolution(tmp_path):
     assert resolution.category_id == "600+1"
     assert resolution.resolved_entry is not None
     assert str(resolution.resolved_entry.bundle_dir).endswith("bundle_600_1")
+
+
+def test_apply_settings_propagates_selected_exact_time_control_before_contract_enforcement():
+    session = TrainingSession.__new__(TrainingSession)
+    session.max_supported_training_depth = lambda: 10
+    session.config = type(
+        "Config",
+        (),
+        {
+            "__init__": lambda self, **kwargs: self.__dict__.update(kwargs),
+            "snapshot": lambda self: {"active_envelope_player_moves": 5, "good_moves_acceptable": True},
+        },
+    )(active_envelope_player_moves=5, good_moves_acceptable=True)
+    session.evaluator = type(
+        "Evaluator",
+        (),
+        {
+            "config": None,
+            "overlay_classifier": type("Overlay", (), {"config": None})(),
+            "engine_authority": type("Authority", (), {"config": None})(),
+        },
+    )()
+    calls: list[str] = []
+
+    class SmartProfileSpy:
+        def __init__(self):
+            self.selected_time_control = None
+
+        def set_mode(self, mode):
+            calls.append(f"mode:{mode}")
+
+        def set_selected_track(self, track):
+            calls.append(f"track:{track}")
+
+        def set_selected_time_control(self, time_control):
+            calls.append(f"time:{time_control}")
+            self.selected_time_control = time_control
+            return True
+
+        def enforce_runtime_contract(self, *, fallback_turns, fallback_good_accepted):
+            calls.append(f"enforce:{self.selected_time_control}")
+            assert self.selected_time_control == "300+0"
+            return fallback_turns, fallback_good_accepted
+
+    session.smart_profile = SmartProfileSpy()
+    settings = TrainerSettings(training_mode="smart_profile", selected_smart_track="blitz", selected_time_control_id="300+0")
+
+    TrainingSession._apply_settings(session, settings)
+
+    assert calls[:4] == ["mode:smart_profile", "track:blitz", "time:300+0", "enforce:300+0"]
