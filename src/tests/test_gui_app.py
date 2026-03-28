@@ -12,12 +12,17 @@ from opening_trainer.session_contracts import OutcomeBoardContract, OutcomeModal
 from opening_trainer.ui.board_view import (
     ANIMATION_START_LEAD_SECONDS,
     BoardView,
+    DEFAULT_IMMEDIATE_FRAME_MIN_PROGRESS,
     DragState,
     PIECE_GLYPHS,
     SettleAnimationState,
 )
 from opening_trainer.ui.captured_material_panel import captured_pieces_and_material
-from opening_trainer.ui.gui_app import OpeningTrainerGUI
+from opening_trainer.ui.gui_app import (
+    OPPONENT_COMMITTED_MOVE_DURATION_MS,
+    PLAYER_COMMITTED_MOVE_DURATION_MS,
+    OpeningTrainerGUI,
+)
 
 
 class FakeButton:
@@ -675,6 +680,25 @@ def test_force_immediate_visible_frame_advances_animation_progress():
     assert progress >= 0.2
     assert board_view.settle_animation is not None
     assert board_view.settle_animation.start_time <= time.monotonic() - 0.018
+
+
+def test_force_immediate_visible_frame_uses_default_min_progress_window():
+    board_view = BoardView.__new__(BoardView)
+    board_view.settle_animation = SettleAnimationState(
+        "P",
+        10.0,
+        15.0,
+        50.0,
+        95.0,
+        chess.E4,
+        start_time=time.monotonic(),
+        duration_seconds=0.2,
+    )
+
+    progress = BoardView.force_immediate_visible_frame(board_view)
+
+    assert progress is not None
+    assert progress >= DEFAULT_IMMEDIATE_FRAME_MIN_PROGRESS
 
 
 def test_board_resize_coalesces_redraw_and_refreshes_latest_board():
@@ -1457,6 +1481,7 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     assert animation_calls['kwargs'] is not None
     assert animation_calls['kwargs']['start_x'] == 30.0
     assert animation_calls['kwargs']['start_y'] == 40.0
+    assert animation_calls['kwargs']['duration_ms'] == PLAYER_COMMITTED_MOVE_DURATION_MS
 
 
 def test_on_board_release_logs_player_animation_start(monkeypatch):
@@ -1768,6 +1793,7 @@ def test_commit_scheduled_opponent_action_uses_deferred_supporting_refresh_after
     assert animation_calls['kwargs'] is not None
     assert animation_calls['kwargs'].get('start_x') is None
     assert animation_calls['kwargs'].get('start_y') is None
+    assert animation_calls['kwargs'].get('duration_ms') == OPPONENT_COMMITTED_MOVE_DURATION_MS
     assert animation_schedule_calls['count'] == 1
 
 
