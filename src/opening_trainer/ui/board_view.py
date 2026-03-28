@@ -7,6 +7,7 @@ from time import monotonic
 
 import chess
 
+from ..session_logging import log_line
 from .square_mapping import display_to_square, square_to_display
 
 PIECE_GLYPHS = {
@@ -138,6 +139,11 @@ class BoardView(tk.Canvas):
             start_time=monotonic() - ANIMATION_START_LEAD_SECONDS,
             duration_seconds=max(0.01, duration_ms / 1000),
         )
+        log_line(
+            'GUI_ANIM_HELPER_START_SETTLE: '
+            f'piece={piece_symbol}; to_sq={chess.square_name(destination_square)}; duration_ms={duration_ms}',
+            tag='timing',
+        )
 
     def start_committed_move_animation(
         self,
@@ -159,6 +165,12 @@ class BoardView(tk.Canvas):
             destination_square=destination_square,
             start_time=monotonic() - ANIMATION_START_LEAD_SECONDS,
             duration_seconds=max(0.01, duration_ms / 1000),
+        )
+        log_line(
+            'GUI_ANIM_HELPER_START_COMMITTED: '
+            f'piece={piece_symbol}; from_sq={chess.square_name(source_square)}; '
+            f'to_sq={chess.square_name(destination_square)}; duration_ms={duration_ms}',
+            tag='timing',
         )
 
     def animation_in_progress(self) -> bool:
