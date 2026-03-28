@@ -173,7 +173,7 @@ class BoardView(tk.Canvas):
             piece = board.piece_at(square)
             if piece is None:
                 continue
-            if self.drag_state is not None and square == self.drag_state.source_square:
+            if self.drag_state is not None and self.drag_state.moved and square == self.drag_state.source_square:
                 continue
             if self.settle_animation is not None and square == self.settle_animation.destination_square:
                 continue
@@ -188,6 +188,7 @@ class BoardView(tk.Canvas):
         self._draw_coordinates(player_color)
         self._draw_arrow(player_color)
         self._draw_drag_piece()
+        self._draw_settle_piece()
 
     def _draw_coordinates(self, player_color: chess.Color) -> None:
         origin_x, origin_y = self.board_origin
@@ -201,7 +202,7 @@ class BoardView(tk.Canvas):
             self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill='#333333')
 
     def _draw_drag_piece(self) -> None:
-        if not self.drag_state:
+        if not self.drag_state or not self.drag_state.moved:
             return
         self.create_text(
             self.drag_state.cursor_x,
@@ -210,6 +211,8 @@ class BoardView(tk.Canvas):
             font=('Arial Unicode MS', int(self.square_size * 0.62)),
             fill='#111111',
         )
+
+    def _draw_settle_piece(self) -> None:
         settle_position = self._settle_piece_position()
         if settle_position is None:
             return

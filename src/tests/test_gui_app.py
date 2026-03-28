@@ -8,7 +8,7 @@ from opening_trainer.models import MoveHistoryEntry, SessionOutcome, SessionStat
 from opening_trainer.settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from opening_trainer.session import TrainingSession
 from opening_trainer.session_contracts import OutcomeBoardContract, OutcomeModalContract
-from opening_trainer.ui.board_view import BoardView, DragState
+from opening_trainer.ui.board_view import BoardView, DragState, PIECE_GLYPHS, SettleAnimationState
 from opening_trainer.ui.captured_material_panel import captured_pieces_and_material
 from opening_trainer.ui.gui_app import OpeningTrainerGUI
 
@@ -525,7 +525,7 @@ def test_drag_release_reports_drop_square_and_active_state():
     assert board_view.drag_state is None
 
 
-def test_start_drag_immediately_detaches_piece_and_preserves_click_path():
+def test_start_drag_preserves_piece_attachment_until_threshold_crossed():
     board_view = BoardView.__new__(BoardView)
     board_view.settle_animation = object()
 
@@ -535,6 +535,80 @@ def test_start_drag_immediately_detaches_piece_and_preserves_click_path():
     assert board_view.drag_state is not None
     assert board_view.drag_state.source_square == chess.E2
     assert board_view.drag_state.moved is False
+
+
+def test_render_draws_settle_piece_without_drag_state():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view.selected_square = None
+    board_view.highlight_squares = set()
+    board_view.arrow_move_uci = None
+    board_view.drag_state = None
+    board_view.settle_animation = SettleAnimationState("P", 120.0, 120.0, 220.0, 220.0, chess.E4, start_time=0.0, duration_seconds=0.1)
+    board_view.delete = lambda *_args, **_kwargs: None
+    board_view.create_rectangle = lambda *_args, **_kwargs: None
+    drawn: list[tuple[float, float, str]] = []
+    board_view.create_text = lambda x, y, **kwargs: drawn.append((x, y, kwargs["text"]))
+    board_view.create_line = lambda *_args, **_kwargs: None
+    board_view._draw_coordinates = lambda _player_color: None
+    board_view._draw_arrow = lambda _player_color: None
+    board_view._settle_piece_position = lambda: (200.0, 190.0)
+    board = chess.Board("4k3/8/8/8/4P3/8/8/4K3 w - - 0 1")
+
+    BoardView.render(board_view, board, chess.WHITE)
+
+    assert (200.0, 190.0, PIECE_GLYPHS["P"]) in drawn
+
+
+def test_render_keeps_origin_piece_visible_before_drag_threshold():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view.selected_square = None
+    board_view.highlight_squares = set()
+    board_view.arrow_move_uci = None
+    board_view.settle_animation = None
+    board_view.drag_state = DragState(chess.E2, chess.E2, "P", 310, 315, moved=False)
+    board_view.delete = lambda *_args, **_kwargs: None
+    board_view.create_rectangle = lambda *_args, **_kwargs: None
+    drawn: list[tuple[float, float, str]] = []
+    board_view.create_text = lambda x, y, **kwargs: drawn.append((x, y, kwargs["text"]))
+    board_view.create_line = lambda *_args, **_kwargs: None
+    board_view._draw_coordinates = lambda _player_color: None
+    board_view._draw_arrow = lambda _player_color: None
+    board = chess.Board("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")
+    source_x, source_y = BoardView._square_center(board_view, chess.E2, chess.WHITE)
+
+    BoardView.render(board_view, board, chess.WHITE)
+
+    assert (source_x, source_y, PIECE_GLYPHS["P"]) in drawn
+    assert (310, 315, PIECE_GLYPHS["P"]) not in drawn
+
+
+def test_render_suppresses_origin_piece_after_drag_threshold_crossed():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view.selected_square = None
+    board_view.highlight_squares = set()
+    board_view.arrow_move_uci = None
+    board_view.settle_animation = None
+    board_view.drag_state = DragState(chess.E2, chess.E2, "P", 310, 315, moved=True)
+    board_view.delete = lambda *_args, **_kwargs: None
+    board_view.create_rectangle = lambda *_args, **_kwargs: None
+    drawn: list[tuple[float, float, str]] = []
+    board_view.create_text = lambda x, y, **kwargs: drawn.append((x, y, kwargs["text"]))
+    board_view.create_line = lambda *_args, **_kwargs: None
+    board_view._draw_coordinates = lambda _player_color: None
+    board_view._draw_arrow = lambda _player_color: None
+    board = chess.Board("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")
+    source_x, source_y = BoardView._square_center(board_view, chess.E2, chess.WHITE)
+
+    BoardView.render(board_view, board, chess.WHITE)
+
+    assert (source_x, source_y, PIECE_GLYPHS["P"]) not in drawn
+    assert (310, 315, PIECE_GLYPHS["P"]) in drawn
 
 
 def test_captured_material_logic_tracks_delta_and_strips():
@@ -1275,7 +1349,7 @@ def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
     gui._is_shutting_down = False
     gui._board_animation_after_handle = None
     refreshes = {'count': 0}
-    gui._refresh_view = lambda: refreshes.__setitem__('count', refreshes['count'] + 1)
+    gui._refresh_board_canvas = lambda: refreshes.__setitem__('count', refreshes['count'] + 1)
     states = iter([True, False])
     gui.board_view = type('BoardViewStub', (), {'animation_in_progress': lambda self=None: next(states)})()
 
@@ -1288,7 +1362,7 @@ def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
     assert len(gui.root.after_calls) == 1
     _delay2, callback2, _handle2 = gui.root.after_calls.pop(0)
     callback2()
-    assert refreshes['count'] == 1
+    assert refreshes['count'] == 2
 
 
 def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):

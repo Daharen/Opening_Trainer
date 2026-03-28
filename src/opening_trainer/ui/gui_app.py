@@ -1054,6 +1054,16 @@ class OpeningTrainerGUI:
         ttk.Button(frame, text='Cancel', command=window.destroy).pack(side='left', padx=(8, 0))
 
     def _refresh_view(self, transient_status: str | None = None) -> None:
+        self._refresh_board_canvas()
+        self._refresh_supporting_surfaces()
+        if transient_status:
+            self.recent_var.set(transient_status + '\n\n' + self.recent_var.get())
+        view = self.session.get_view()
+        if view.state == SessionState.RESTART_PENDING and view.last_outcome is not None and not self.pending_restart:
+            self.pending_restart = True
+            self._show_outcome_modal(view)
+
+    def _refresh_board_canvas(self) -> None:
         view = self.session.get_view()
         board = chess.Board(view.board_fen)
         legal_targets = []
@@ -1061,12 +1071,6 @@ class OpeningTrainerGUI:
             legal_targets = [move.to_square for move in self.session.legal_moves_from(self.selected_square)]
         self.board_view.set_selection(self.selected_square, legal_targets)
         self.board_view.render(board, view.player_color)
-        self._refresh_supporting_surfaces()
-        if transient_status:
-            self.recent_var.set(transient_status + '\n\n' + self.recent_var.get())
-        if view.state == SessionState.RESTART_PENDING and view.last_outcome is not None and not self.pending_restart:
-            self.pending_restart = True
-            self._show_outcome_modal(view)
 
     def _show_outcome_modal(self, view):
         outcome = view.last_outcome
@@ -1140,7 +1144,7 @@ class OpeningTrainerGUI:
         if self.selected_square is None or not view.awaiting_user_input:
             return
         self.board_view.update_drag(event.x, event.y, view.player_color)
-        self.board_view.render(chess.Board(view.board_fen), view.player_color)
+        self._refresh_board_canvas()
 
     def _on_board_release(self, event: tk.Event) -> None:
         view = self.session.get_view()
@@ -1293,8 +1297,10 @@ class OpeningTrainerGUI:
             if getattr(self, '_is_shutting_down', False):
                 return
             if self.board_view.animation_in_progress():
-                self._refresh_view()
+                self._refresh_board_canvas()
                 self._board_animation_after_handle = self._schedule_after(16, tick)
+            else:
+                self._refresh_board_canvas()
 
         self._board_animation_after_handle = self._schedule_after(16, tick)
 
