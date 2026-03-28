@@ -172,6 +172,17 @@ class FakeCombo:
         raise KeyError(name)
 
 
+class FakeBoolVar:
+    def __init__(self, value: bool = False):
+        self._value = bool(value)
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = bool(value)
+
+
 def _build_gui(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.panel_visible = False
@@ -619,6 +630,8 @@ class _FakeComboStrip(FakeGridWidget):
 
 def _build_control_strip_gui():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.panel_visible = False
+    gui.move_list_visible = True
     gui.catalog = type("Catalog", (), {"entries": ()})()
     gui.catalog_grouped = {"Rapid": {"600+0": {"400-600": ()}}}
     gui.session = type(
@@ -658,6 +671,10 @@ def _build_control_strip_gui():
     gui.top_elo_label = FakeGridWidget()
     gui.top_depth_label = FakeGridWidget()
     gui.top_good_label = FakeGridWidget()
+    gui.recent_var = FakeStringVar("")
+    gui._remembered_bundle_path = lambda: None
+    gui._catalog_root_setting = lambda: str(getattr(gui, "catalog_root", "catalog-root"))
+    gui._refresh_supporting_surfaces = lambda: None
     return gui
 
 
@@ -707,6 +724,144 @@ def test_track_label_is_derived_from_selected_exact_time_control():
     gui._refresh_top_control_strip()
 
     assert gui.top_track_var.get() == "Bullet"
+
+
+def test_top_strip_smart_time_control_change_autoloads_expected_bundle():
+    gui = _build_control_strip_gui()
+    gui.smart_mode_var = FakeBoolVar(True)
+    gui.top_time_control_var = FakeStringVar("600+1")
+    gui.catalog_grouped = {"Rapid": {"600+1": {"400-600": ()}}}
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "settings": TrainerSettings(training_mode="smart_profile", selected_time_control_id="600+0"),
+            "update_settings": lambda self, settings: settings,
+            "smart_profile": type(
+                "SmartProfile",
+                (),
+                {
+                    "resolve_expected_bundle": lambda self, _root: type(
+                        "Resolution", (), {"resolved_entry": type("Entry", (), {"bundle_dir": "/tmp/smart_600_1_400_600"})(), "category_id": "600+1", "expected_rating_band": "400-600"}
+                    )()
+                },
+            )(),
+            "smart_profile_status": lambda self: type(
+                "Status",
+                (),
+                {"active": True, "level": 1, "expected_rating_band": "400-600", "contract_turns": 3, "contract_good_accepted": True},
+            )(),
+            "max_supported_training_depth": lambda self: 6,
+        },
+    )()
+    loaded: list[str] = []
+    gui._load_selected_bundle = lambda path: loaded.append(path)
+    gui._remembered_bundle_path = lambda: "/tmp/old_bundle"
+
+    gui._apply_top_contract_change(reason="time control changed")
+
+    assert loaded == ["/tmp/smart_600_1_400_600"]
+
+
+def test_top_strip_manual_contract_change_autoloads_matching_bundle():
+    gui = _build_control_strip_gui()
+    gui.smart_mode_var = FakeBoolVar(False)
+    gui.top_time_control_var = FakeStringVar("600+0")
+    gui.manual_elo_var = FakeStringVar("1200-1400")
+    gui.catalog = type("Catalog", (), {"entries": ()})()
+    manual_entry = type("Entry", (), {"bundle_dir": "/tmp/manual_600_0_1200_1400"})()
+    gui.catalog.grouped = lambda: {"Rapid": {"600+0": {"1200-1400": (manual_entry,)}}}
+    gui.catalog_grouped = gui.catalog.grouped()
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "settings": TrainerSettings(training_mode="manual", selected_time_control_id="600+0", smart_profile_enabled=False),
+            "update_settings": lambda self, settings: settings,
+            "smart_profile_status": lambda self: type(
+                "Status",
+                (),
+                {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None},
+            )(),
+            "max_supported_training_depth": lambda self: 6,
+        },
+    )()
+    loaded: list[str] = []
+    gui._load_selected_bundle = lambda path: loaded.append(path)
+    gui._remembered_bundle_path = lambda: "/tmp/old_bundle"
+
+    gui._apply_top_contract_change(reason="manual contract changed")
+
+    assert loaded == ["/tmp/manual_600_0_1200_1400"]
+
+
+def test_top_strip_contract_change_skips_reload_when_resolved_bundle_is_active():
+    gui = _build_control_strip_gui()
+    gui.smart_mode_var = FakeBoolVar(True)
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "settings": TrainerSettings(training_mode="smart_profile", selected_time_control_id="600+0"),
+            "update_settings": lambda self, settings: settings,
+            "smart_profile": type(
+                "SmartProfile",
+                (),
+                {
+                    "resolve_expected_bundle": lambda self, _root: type(
+                        "Resolution", (), {"resolved_entry": type("Entry", (), {"bundle_dir": "/tmp/already_active"})(), "category_id": "600+0", "expected_rating_band": "400-600"}
+                    )()
+                },
+            )(),
+            "smart_profile_status": lambda self: type(
+                "Status",
+                (),
+                {"active": True, "level": 1, "expected_rating_band": "400-600", "contract_turns": 3, "contract_good_accepted": True},
+            )(),
+            "max_supported_training_depth": lambda self: 6,
+        },
+    )()
+    calls = {"loads": 0, "refreshes": 0}
+    gui._load_selected_bundle = lambda _path: calls.__setitem__("loads", calls["loads"] + 1)
+    gui._refresh_supporting_surfaces = lambda: calls.__setitem__("refreshes", calls["refreshes"] + 1)
+    gui._remembered_bundle_path = lambda: "/tmp/already_active"
+
+    gui._apply_top_contract_change(reason="time control changed")
+
+    assert calls["loads"] == 0
+    assert calls["refreshes"] == 1
+    assert "resolved bundle already active" in gui.recent_var.get()
+
+
+def test_top_strip_contract_change_surfaces_missing_bundle_status():
+    gui = _build_control_strip_gui()
+    gui.smart_mode_var = FakeBoolVar(False)
+    gui.top_time_control_var = FakeStringVar("600+0")
+    gui.manual_elo_var = FakeStringVar("1400-1600")
+    gui.catalog = type("Catalog", (), {"entries": ()})()
+    gui.catalog.grouped = lambda: {"Rapid": {"600+0": {"1200-1400": (type("Entry", (), {"bundle_dir": "/tmp/x"})(),)}}}
+    gui.catalog_grouped = gui.catalog.grouped()
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "settings": TrainerSettings(training_mode="manual", selected_time_control_id="600+0", smart_profile_enabled=False),
+            "update_settings": lambda self, settings: settings,
+            "smart_profile_status": lambda self: type(
+                "Status",
+                (),
+                {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None},
+            )(),
+            "max_supported_training_depth": lambda self: 6,
+        },
+    )()
+    loaded: list[str] = []
+    gui._load_selected_bundle = lambda path: loaded.append(path)
+
+    gui._apply_top_contract_change(reason="manual contract changed")
+
+    assert loaded == []
+    assert "No discovered bundle matches 600+0 / 1400-1600" in gui.recent_var.get()
 
 
 
