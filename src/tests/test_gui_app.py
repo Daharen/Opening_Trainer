@@ -1427,6 +1427,7 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     gui._schedule_supporting_surface_refresh = lambda: deferred_supporting_calls.__setitem__('count', deferred_supporting_calls['count'] + 1)
     gui._log_animation_event = lambda *args, **kwargs: None
     gui._schedule_pending_opponent_commit = lambda: None
+    gui._supporting_refresh_pending_after_first_tick = False
     animation_calls = {'count': 0, 'kwargs': None}
     gui.board_view = type(
         'BoardViewStub',
@@ -1438,6 +1439,7 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
                 animation_calls.__setitem__('count', animation_calls['count'] + 1),
                 animation_calls.__setitem__('kwargs', kwargs),
             ),
+            'animation_in_progress': lambda self: True,
             'force_immediate_visible_frame': lambda self: 0.2,
         },
     )()
@@ -1449,7 +1451,8 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     assert animation_calls['count'] == 1
     assert full_refresh_calls['count'] == 0
     assert board_canvas_calls['count'] == 1
-    assert deferred_supporting_calls['count'] == 1
+    assert deferred_supporting_calls['count'] == 0
+    assert gui._supporting_refresh_pending_after_first_tick is True
     assert board_local_calls['count'] == 0
     assert animation_calls['kwargs'] is not None
     assert animation_calls['kwargs']['start_x'] == 30.0
@@ -1720,6 +1723,7 @@ def test_commit_scheduled_opponent_action_uses_deferred_supporting_refresh_after
     gui._schedule_board_animation_refresh = lambda: animation_schedule_calls.__setitem__('count', animation_schedule_calls['count'] + 1)
     gui._log_animation_event = lambda *args, **kwargs: None
     gui._schedule_pending_opponent_commit = lambda: None
+    gui._supporting_refresh_pending_after_first_tick = False
 
     class Session:
         state = SessionState.PLAYER_TURN
@@ -1748,7 +1752,7 @@ def test_commit_scheduled_opponent_action_uses_deferred_supporting_refresh_after
                 animation_calls.__setitem__('count', animation_calls['count'] + 1),
                 animation_calls.__setitem__('kwargs', kwargs),
             ),
-            'animation_in_progress': lambda self: False,
+            'animation_in_progress': lambda self: True,
             'force_immediate_visible_frame': lambda self: 0.22,
         },
     )()
@@ -1758,7 +1762,8 @@ def test_commit_scheduled_opponent_action_uses_deferred_supporting_refresh_after
     assert gui._pending_opponent_after_handle is None
     assert refresh_calls['count'] == 0
     assert board_canvas_calls['count'] == 1
-    assert deferred_supporting_calls['count'] == 1
+    assert deferred_supporting_calls['count'] == 0
+    assert gui._supporting_refresh_pending_after_first_tick is True
     assert animation_calls['count'] == 1
     assert animation_calls['kwargs'] is not None
     assert animation_calls['kwargs'].get('start_x') is None
@@ -2050,13 +2055,16 @@ def test_refresh_post_animation_start_forces_immediate_visible_frame(monkeypatch
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui._refresh_board_canvas = lambda: None
     gui._schedule_board_animation_refresh = lambda: None
-    gui._schedule_supporting_surface_refresh = lambda: None
+    supporting = {'count': 0}
+    gui._schedule_supporting_surface_refresh = lambda: supporting.__setitem__('count', supporting['count'] + 1)
+    gui._supporting_refresh_pending_after_first_tick = False
     start = time.monotonic()
     gui.board_view = type(
         'BoardViewStub',
         (),
         {
             'force_immediate_visible_frame': lambda self=None: 0.27,
+            'animation_in_progress': lambda self=None: True,
             'settle_animation': type('Anim', (), {'start_time': start})(),
         },
     )()
@@ -2068,6 +2076,32 @@ def test_refresh_post_animation_start_forces_immediate_visible_frame(monkeypatch
     repaint_line = next(line for line in lines if line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT'))
     assert 'immediate_frame=yes' in repaint_line
     assert 'initial_progress=0.270' in repaint_line
+    assert 'supporting_refresh=deferred_until_first_tick' in repaint_line
+    assert supporting['count'] == 0
+    assert gui._supporting_refresh_pending_after_first_tick is True
+
+
+def test_refresh_post_animation_start_schedules_supporting_refresh_when_animation_inactive():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._refresh_board_canvas = lambda: None
+    gui._schedule_board_animation_refresh = lambda: None
+    supporting = {'count': 0}
+    gui._schedule_supporting_surface_refresh = lambda: supporting.__setitem__('count', supporting['count'] + 1)
+    gui._supporting_refresh_pending_after_first_tick = False
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'force_immediate_visible_frame': lambda self=None: None,
+            'animation_in_progress': lambda self=None: False,
+            'settle_animation': None,
+        },
+    )()
+
+    OpeningTrainerGUI._refresh_post_animation_start(gui, actor='PLAYER')
+
+    assert supporting['count'] == 1
+    assert gui._supporting_refresh_pending_after_first_tick is False
 
 
 def test_schedule_supporting_surface_refresh_coalesces_callbacks():
@@ -2099,6 +2133,7 @@ def test_schedule_board_animation_refresh_finalizes_then_shows_deferred_modal():
     gui._refresh_board_canvas = lambda: events.append('refresh')
     gui._deferred_outcome_view = object()
     gui._show_deferred_outcome_modal_if_ready = lambda: events.append('modal')
+    gui._supporting_refresh_pending_after_first_tick = False
     gui.board_view = type(
         'BoardViewStub',
         (),
@@ -2114,6 +2149,70 @@ def test_schedule_board_animation_refresh_finalizes_then_shows_deferred_modal():
     callback()
 
     assert events == ['finalize', 'refresh', 'modal']
+
+
+def test_schedule_board_animation_refresh_releases_supporting_refresh_on_first_tick():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._board_animation_after_handle = None
+    gui._deferred_outcome_view = None
+    gui._supporting_refresh_pending_after_first_tick = True
+    refreshes = {'count': 0}
+    supporting = {'count': 0}
+    gui._refresh_board_canvas = lambda: refreshes.__setitem__('count', refreshes['count'] + 1)
+    gui._schedule_supporting_surface_refresh = lambda: supporting.__setitem__('count', supporting['count'] + 1)
+    gui._show_deferred_outcome_modal_if_ready = lambda: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'animation_in_progress': lambda self=None: True,
+            'sample_animation_position': lambda self=None: None,
+            'settle_animation': None,
+        },
+    )()
+
+    OpeningTrainerGUI._schedule_board_animation_refresh(gui)
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+
+    assert supporting['count'] == 1
+    assert gui._supporting_refresh_pending_after_first_tick is False
+    assert refreshes['count'] == 1
+
+
+def test_schedule_board_animation_refresh_releases_supporting_refresh_on_finalize_fallback():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._board_animation_after_handle = None
+    gui._deferred_outcome_view = None
+    gui._supporting_refresh_pending_after_first_tick = True
+    supporting = {'count': 0}
+    gui._refresh_board_canvas = lambda: None
+    gui._schedule_supporting_surface_refresh = lambda: supporting.__setitem__('count', supporting['count'] + 1)
+    gui._show_deferred_outcome_modal_if_ready = lambda: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'animation_in_progress': lambda self=None: False,
+            'animation_complete': lambda self=None: True,
+            'finalize_animation': lambda self=None: True,
+            'sample_animation_position': lambda self=None: None,
+            'settle_animation': None,
+        },
+    )()
+
+    OpeningTrainerGUI._schedule_board_animation_refresh(gui)
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+
+    assert supporting['count'] == 1
+    assert gui._supporting_refresh_pending_after_first_tick is False
 
 
 def test_show_deferred_outcome_modal_if_ready_clears_deferred_after_animation_finalize():
