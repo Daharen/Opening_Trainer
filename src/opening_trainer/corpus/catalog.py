@@ -53,7 +53,7 @@ class CorpusCatalog:
         return {
             category: {
                 tc: {band: tuple(sorted(items, key=_variant_sort_key)) for band, items in bands.items()}
-                for tc, bands in sorted(time_controls.items(), key=lambda item: item[0])
+                for tc, bands in sorted(time_controls.items(), key=lambda item: sort_key_time_control(item[0]))
             }
             for category, time_controls in sorted(grouped.items(), key=lambda item: item[0])
         }
@@ -216,6 +216,35 @@ def _parse_time_control_id(time_control_id: str | None) -> tuple[float | None, f
     return _safe_float(initial), _safe_float(increment)
 
 
+def parse_rating_band(rating_band: str | None) -> tuple[int, int] | None:
+    if not rating_band:
+        return None
+    token = rating_band.strip()
+    if not token or "-" not in token:
+        return None
+    minimum_raw, maximum_raw = token.split("-", 1)
+    minimum = _safe_int(minimum_raw.strip())
+    maximum = _safe_int(maximum_raw.strip())
+    if minimum is None or maximum is None:
+        return None
+    return minimum, maximum
+
+
+def sort_key_rating_band(rating_band: str) -> tuple[int, int, int, str]:
+    parsed = parse_rating_band(rating_band)
+    if parsed is None:
+        return 1, 0, 0, rating_band.lower()
+    minimum, maximum = parsed
+    return 0, minimum, maximum, rating_band.lower()
+
+
+def sort_key_time_control(time_control_id: str) -> tuple[int, float, float, str]:
+    initial, increment = _parse_time_control_id(time_control_id)
+    if initial is None or increment is None:
+        return 1, 0.0, 0.0, time_control_id.lower()
+    return 0, initial, increment, time_control_id.lower()
+
+
 def _coerce_text(value: object) -> str | None:
     if value is None:
         return None
@@ -223,6 +252,8 @@ def _coerce_text(value: object) -> str | None:
     return text or None
 
 
-def _variant_sort_key(entry: BundleCatalogEntry) -> tuple[int, str, str]:
+def _variant_sort_key(entry: BundleCatalogEntry) -> tuple[int, int, int, str]:
     retained = entry.retained_ply_depth if entry.retained_ply_depth is not None else -1
-    return retained, entry.rating_policy or "", str(entry.bundle_dir)
+    canonical_present = 1 if entry.canonical_exact_payload_exists else 0
+    overlay_present = 1 if entry.timing_overlay_exists else 0
+    return -retained, -canonical_present, -overlay_present, str(entry.bundle_dir)

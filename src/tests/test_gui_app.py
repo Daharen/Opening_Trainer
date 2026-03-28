@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import chess
 
 from opening_trainer.models import MoveHistoryEntry, SessionOutcome, SessionState, SessionView
@@ -143,6 +145,31 @@ class BoardViewStub:
 
     def render(self, *args, **kwargs):
         return None
+
+
+class FakeStringVar:
+    def __init__(self, value: str = ""):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value
+
+
+class FakeCombo:
+    def __init__(self, values=()):
+        self._values = tuple(values)
+
+    def configure(self, **kwargs):
+        if "values" in kwargs:
+            self._values = tuple(kwargs["values"])
+
+    def cget(self, name):
+        if name == "values":
+            return self._values
+        raise KeyError(name)
 
 
 def _build_gui(tmp_path):
@@ -357,13 +384,113 @@ def test_acknowledge_outcome_starts_next_game_only_after_modal_callback(tmp_path
     gui.selected_square = chess.E2
     refresh_calls = {'count': 0}
     gui._refresh_view = lambda transient_status=None: refresh_calls.__setitem__('count', refresh_calls['count'] + 1)
-
     gui._acknowledge_outcome()
 
     assert gui.pending_restart is False
     assert gui.selected_square is None
     assert gui.session.start_calls == 1
     assert refresh_calls['count'] == 1
+
+
+def test_toolbar_has_single_corpus_selection_entrypoint():
+    source = inspect.getsource(OpeningTrainerGUI.__init__)
+
+    assert "text='Corpus Selection'" in source
+    assert "Back to Corpus Selection" not in source
+    assert "text='Corpus bundle', command=self._open_bundle_picker" not in source
+
+
+def test_smart_mode_prefills_expected_catalog_coordinates_and_variant():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.catalog_grouped = {
+        "Rapid": {
+            "600+0": {
+                "400-600": (),
+            }
+        }
+    }
+    expected_entry = type(
+        "Entry",
+        (),
+        {
+            "bundle_dir": "/tmp/expected",
+            "retained_ply_depth": None,
+            "rating_policy": None,
+            "max_supported_player_moves": None,
+        },
+    )()
+    gui.catalog_leaf_variants = [expected_entry]
+    gui.catalog_category_var = FakeStringVar("Rapid")
+    gui.catalog_time_control_var = FakeStringVar("600+0")
+    gui.catalog_rating_band_var = FakeStringVar("400-600")
+    gui.catalog_variant_var = FakeStringVar("")
+    gui.catalog_time_control_combo = FakeCombo(values=("600+0",))
+    gui.catalog_rating_band_combo = FakeCombo(values=("400-600",))
+    gui._refresh_catalog_time_controls = lambda: None
+    gui._refresh_catalog_rating_bands = lambda: None
+    gui._refresh_catalog_variants = lambda: None
+    gui._update_catalog_summary = lambda: None
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "smart_profile_status": lambda self: type(
+                "Status",
+                (),
+                {
+                    "active": True,
+                    "category_id": "600+0",
+                    "expected_bundle_summary": "Expected: 600+0 / 400-600 -> /tmp/expected",
+                },
+            )(),
+            "smart_profile_expected_bundle_path": lambda self: "/tmp/expected",
+        },
+    )()
+
+    gui._prefill_catalog_for_mode()
+
+    assert gui.catalog_category_var.get() == "Rapid"
+    assert gui.catalog_time_control_var.get() == "600+0"
+    assert gui.catalog_rating_band_var.get() == "400-600"
+    assert gui.catalog_variant_var.get() == "Default"
+
+
+def test_load_expected_bundle_action_loads_bundle_when_present():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    loaded = {"path": None}
+    gui._load_selected_bundle = lambda path: loaded.__setitem__("path", path)
+    gui.root = object()
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "smart_profile_status": lambda self: type("Status", (), {"active": True, "expected_bundle_summary": "Expected: 600+0 / 400-600 -> /tmp/expected"})(),
+            "smart_profile_expected_bundle_path": lambda self: "/tmp/expected",
+        },
+    )()
+
+    gui._load_expected_smart_profile_bundle()
+
+    assert loaded["path"] == "/tmp/expected"
+
+
+def test_load_expected_bundle_action_shows_clear_message_when_missing(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = object()
+    errors: list[str] = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.messagebox.showerror", lambda _title, message, parent=None: errors.append(message))
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "smart_profile_status": lambda self: type("Status", (), {"active": True, "expected_bundle_summary": "Expected: 600+0 / 400-600 -> unavailable"})(),
+            "smart_profile_expected_bundle_path": lambda self: None,
+        },
+    )()
+
+    gui._load_expected_smart_profile_bundle()
+
+    assert errors == ["Expected bundle missing. Expected: 600+0 / 400-600 -> unavailable"]
 
 
 def test_board_coordinate_labels_invert_by_perspective():

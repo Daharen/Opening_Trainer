@@ -319,7 +319,15 @@ class SmartProfileService:
                 None,
                 f"Required bundle {track_state.time_control_category_id} / {expected_band} was not found in discovered catalog.",
             )
-        selected = sorted(matches, key=lambda e: (-(e.retained_ply_depth or -1), -(1 if e.canonical_exact_payload_exists and e.timing_overlay_exists else 0), str(e.bundle_dir)))[0]
+        selected = sorted(
+            matches,
+            key=lambda e: (
+                -(e.retained_ply_depth or -1),
+                -(1 if e.canonical_exact_payload_exists else 0),
+                -(1 if e.timing_overlay_exists else 0),
+                str(e.bundle_dir),
+            ),
+        )[0]
         return SmartProfileBundleResolution(track_state.track_id, track_state.time_control_category_id, expected_band, track_state.current_level, selected, None)
 
     def enforce_runtime_contract(self, *, fallback_turns: int, fallback_good_accepted: bool) -> tuple[int, bool]:
