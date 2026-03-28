@@ -69,7 +69,7 @@ class FakeSession:
         self.config = type('Config', (), {'good_moves_acceptable': True})()
         self.saved_settings = None
         self.settings_store = self
-        self.smart_profile = type('SmartProfile', (), {'reset_all': lambda self: None, 'set_level_for_current_track': lambda self, **kwargs: True})()
+        self.smart_profile = type('SmartProfile', (), {'reset_all': lambda self: None, 'set_level_for_current_track': lambda self, **kwargs: True, 'resolve_expected_bundle': lambda self, _root: type('R', (), {'resolved_entry': None})()})()
 
     def start_new_game(self):
         self.start_calls += 1
@@ -101,8 +101,9 @@ class FakeSession:
                 'track_id': 'rapid',
                 'category_id': '600+0',
                 'level': 4,
-                'wins_toward_promotion': 2,
-                'losses_toward_demotion': 1,
+                'consecutive_eligible_successes': 2,
+                'consecutive_eligible_failures': 1,
+                'expected_bundle_summary': 'Expected: 600+0 / 1000-1200 -> /tmp/bundle',
                 'eligible_now': True,
                 'eligibility_reason': 'Eligible ordinary corpus ladder game.',
             },

@@ -22,7 +22,7 @@ class ReviewStorage:
         profile_dir.mkdir(parents=True, exist_ok=True)
         if meta is not None:
             (profile_dir / 'profile_meta.json').write_text(json.dumps(meta.to_dict(), indent=2), encoding='utf-8')
-        for name, payload in [('review_items.json', []), ('trainer_stats.json', TrainerStats().to_dict()), ('smart_profile_state.json', {'mode_enabled': True, 'tracks': {}})]:
+        for name, payload in [('review_items.json', []), ('trainer_stats.json', TrainerStats().to_dict()), ('smart_profile_state.json', {'mode': 'smart_profile', 'mode_enabled': True, 'selected_track_id': 'rapid', 'tracks': {}})]:
             path = profile_dir / name
             if not path.exists():
                 path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
@@ -69,7 +69,7 @@ class ReviewStorage:
         profile_dir = self._ensure_profile_files(profile_id)
         (profile_dir / 'review_items.json').write_text('[]', encoding='utf-8')
         (profile_dir / 'trainer_stats.json').write_text(json.dumps(TrainerStats().to_dict(), indent=2), encoding='utf-8')
-        (profile_dir / 'smart_profile_state.json').write_text(json.dumps({'mode_enabled': True, 'tracks': {}}, indent=2), encoding='utf-8')
+        (profile_dir / 'smart_profile_state.json').write_text(json.dumps({'mode': 'smart_profile', 'mode_enabled': True, 'selected_track_id': 'rapid', 'tracks': {}}, indent=2), encoding='utf-8')
         (profile_dir / 'session_history.jsonl').write_text('', encoding='utf-8')
 
     def load_profile_meta(self, profile_id: str) -> ProfileMeta:

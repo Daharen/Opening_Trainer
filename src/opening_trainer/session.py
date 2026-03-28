@@ -30,7 +30,7 @@ from .runtime import (
     load_runtime_config,
     max_supported_player_moves_from_retained_plies,
 )
-from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, TrainerSettings, TrainerSettingsStore
+from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, MANUAL_MODE, SMART_PROFILE_MODE, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
 from .session_logging import log_line
 from .smart_profile import SmartProfileService
@@ -186,9 +186,10 @@ class TrainingSession:
     def _apply_settings(self, settings: TrainerSettings) -> None:
         self.settings = settings.normalized(maximum_depth=self.max_supported_training_depth())
         time_control_id, _rating_band = self._timing_contract_metadata()
-        if self.settings.smart_profile_enabled:
+        self.smart_profile.set_mode(self.settings.training_mode)
+        self.smart_profile.set_selected_track(self.settings.selected_smart_track)
+        if self.settings.training_mode == SMART_PROFILE_MODE:
             required_moves, good_accepted = self.smart_profile.enforce_runtime_contract(
-                time_control_id=time_control_id,
                 fallback_turns=self.settings.active_training_ply_depth,
                 fallback_good_accepted=self.settings.good_moves_acceptable,
             )
@@ -540,6 +541,13 @@ class TrainingSession:
         self._resolve_fail()
         return True
 
+
+    def smart_profile_expected_bundle_path(self) -> str | None:
+        resolution = self.smart_profile.resolve_expected_bundle(self.settings.last_corpus_catalog_root)
+        if resolution.resolved_entry is None:
+            return None
+        return str(resolution.resolved_entry.bundle_dir)
+
     def smart_profile_status(self):
         time_control_id, rating_band = self._timing_contract_metadata()
         routing_source = self.current_routing.routing_source if self.current_routing else 'not_started'
@@ -550,10 +558,11 @@ class TrainingSession:
             bundle_rating_band=rating_band,
             required_turns=self.required_player_moves,
             good_accepted=self.config.good_moves_acceptable,
+            catalog_root=self.settings.last_corpus_catalog_root,
         )
 
     def _record_smart_profile_outcome(self, passed: bool) -> None:
-        if not self.settings.smart_profile_enabled:
+        if self.settings.training_mode != SMART_PROFILE_MODE:
             return
         time_control_id, rating_band = self._timing_contract_metadata()
         routing_source = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
@@ -564,6 +573,7 @@ class TrainingSession:
             bundle_rating_band=rating_band,
             required_turns=self.required_player_moves,
             good_accepted=self.config.good_moves_acceptable,
+            catalog_root=self.settings.last_corpus_catalog_root,
         )
         self.smart_profile.apply_eligible_result(
             eligibility,

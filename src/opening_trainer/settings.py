@@ -4,6 +4,9 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+MANUAL_MODE = 'manual'
+SMART_PROFILE_MODE = 'smart_profile'
+
 DEFAULT_SETTINGS_FILENAME = 'trainer_settings.json'
 MINIMUM_TRAINING_DEPTH = 2
 CONSERVATIVE_FALLBACK_MAX_DEPTH = 5
@@ -14,6 +17,8 @@ class TrainerSettings:
     good_moves_acceptable: bool = True
     active_training_ply_depth: int = CONSERVATIVE_FALLBACK_MAX_DEPTH
     smart_profile_enabled: bool = True
+    training_mode: str = ''
+    selected_smart_track: str = 'rapid'
     side_panel_visible: bool = False
     move_list_visible: bool = True
     last_bundle_path: str | None = None
@@ -24,10 +29,18 @@ class TrainerSettings:
         clamped_depth = max(MINIMUM_TRAINING_DEPTH, min(int(self.active_training_ply_depth), int(effective_maximum)))
         bundle_path = str(self.last_bundle_path).strip() if self.last_bundle_path is not None and str(self.last_bundle_path).strip() else None
         catalog_root = str(self.last_corpus_catalog_root).strip() if self.last_corpus_catalog_root is not None and str(self.last_corpus_catalog_root).strip() else None
+        mode = str(self.training_mode).strip().lower()
+        if mode not in {MANUAL_MODE, SMART_PROFILE_MODE}:
+            mode = SMART_PROFILE_MODE if bool(self.smart_profile_enabled) else MANUAL_MODE
+        selected_track = str(self.selected_smart_track).strip().lower()
+        if selected_track not in {'rapid', 'blitz', 'bullet'}:
+            selected_track = 'rapid'
         return TrainerSettings(
             good_moves_acceptable=bool(self.good_moves_acceptable),
             active_training_ply_depth=clamped_depth,
-            smart_profile_enabled=bool(self.smart_profile_enabled),
+            smart_profile_enabled=bool(mode == SMART_PROFILE_MODE),
+            training_mode=mode,
+            selected_smart_track=selected_track,
             side_panel_visible=bool(self.side_panel_visible),
             move_list_visible=bool(self.move_list_visible),
             last_bundle_path=bundle_path,
@@ -52,6 +65,8 @@ class TrainerSettingsStore:
             good_moves_acceptable=bool(payload.get('good_moves_acceptable', True)),
             active_training_ply_depth=int(payload.get('active_training_ply_depth', CONSERVATIVE_FALLBACK_MAX_DEPTH)),
             smart_profile_enabled=bool(payload.get('smart_profile_enabled', True)),
+            training_mode=str(payload.get('training_mode') or ('smart_profile' if bool(payload.get('smart_profile_enabled', True)) else 'manual')),
+            selected_smart_track=str(payload.get('selected_smart_track', 'rapid')),
             side_panel_visible=bool(payload.get('side_panel_visible', False)),
             move_list_visible=bool(payload.get('move_list_visible', True)),
             last_bundle_path=payload.get('last_bundle_path') or None,
