@@ -1447,6 +1447,167 @@ def test_on_board_release_logs_player_animation_start(monkeypatch):
     assert any('supporting_refresh=deferred' in line for line in lines if line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT'))
 
 
+def test_on_board_release_terminal_restart_pending_defers_modal_when_animation_active():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    start_view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    outcome = SessionOutcome(True, 'Solved.', 'e4', None, 'success', 'ordinary_corpus_play', 'next_line', 'Default', None)
+    terminal_view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
+    board = chess.Board()
+    submitted = {'uci': None}
+    scheduled = {'count': 0}
+    shows = {'count': 0}
+
+    class Session:
+        def __init__(self):
+            self._calls = 0
+
+        def get_view(self):
+            self._calls += 1
+            return start_view if self._calls == 1 else terminal_view
+
+        def current_board(self):
+            return board
+
+        def submit_user_move_uci(self, uci):
+            submitted['uci'] = uci
+
+    gui.session = Session()
+    gui.selected_square = chess.E2
+    gui.pending_restart = False
+    gui._deferred_outcome_view = None
+    gui._refresh_board_local = lambda *args, **kwargs: None
+    gui._refresh_post_animation_start = lambda **kwargs: None
+    gui._schedule_pending_opponent_commit = lambda: scheduled.__setitem__('count', scheduled['count'] + 1)
+    gui._show_outcome_modal = lambda _view: shows.__setitem__('count', shows['count'] + 1)
+    gui._schedule_board_animation_refresh = lambda: None
+    gui._log_animation_event = lambda *args, **kwargs: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
+            'cancel_drag': lambda self: None,
+            'start_committed_move_animation': lambda self, **kwargs: None,
+            'animation_in_progress': lambda self: True,
+            'settle_animation': None,
+        },
+    )()
+    gui._build_move = lambda from_square, to_square, current_board: chess.Move(from_square, to_square)
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert submitted['uci'] == 'e2e4'
+    assert gui.pending_restart is True
+    assert gui._deferred_outcome_view is terminal_view
+    assert shows['count'] == 0
+    assert scheduled['count'] == 0
+
+
+def test_on_board_release_terminal_restart_pending_shows_modal_immediately_without_animation():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    start_view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    outcome = SessionOutcome(True, 'Solved.', 'e4', None, 'success', 'ordinary_corpus_play', 'next_line', 'Default', None)
+    terminal_view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
+    board = chess.Board()
+    scheduled = {'count': 0}
+    shows = {'count': 0}
+
+    class Session:
+        def __init__(self):
+            self._calls = 0
+
+        def get_view(self):
+            self._calls += 1
+            return start_view if self._calls == 1 else terminal_view
+
+        def current_board(self):
+            return board
+
+        def submit_user_move_uci(self, _uci):
+            return None
+
+    gui.session = Session()
+    gui.selected_square = chess.E2
+    gui.pending_restart = False
+    gui._deferred_outcome_view = None
+    gui._refresh_board_local = lambda *args, **kwargs: None
+    gui._refresh_post_animation_start = lambda **kwargs: None
+    gui._schedule_pending_opponent_commit = lambda: scheduled.__setitem__('count', scheduled['count'] + 1)
+    gui._show_outcome_modal = lambda _view: shows.__setitem__('count', shows['count'] + 1)
+    gui._schedule_board_animation_refresh = lambda: None
+    gui._log_animation_event = lambda *args, **kwargs: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
+            'cancel_drag': lambda self: None,
+            'start_committed_move_animation': lambda self, **kwargs: None,
+            'animation_in_progress': lambda self: False,
+            'settle_animation': None,
+        },
+    )()
+    gui._build_move = lambda from_square, to_square, current_board: chess.Move(from_square, to_square)
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert gui.pending_restart is True
+    assert gui._deferred_outcome_view is None
+    assert shows['count'] == 1
+    assert scheduled['count'] == 0
+
+
+def test_on_board_release_non_terminal_state_still_schedules_pending_opponent_commit():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    start_view = type('View', (), {'awaiting_user_input': True, 'player_color': chess.WHITE})()
+    post_submit_view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.OPPONENT_TURN, 1, 1, None, None, None)
+    board = chess.Board()
+    scheduled = {'count': 0}
+
+    class Session:
+        def __init__(self):
+            self._calls = 0
+
+        def get_view(self):
+            self._calls += 1
+            return start_view if self._calls == 1 else post_submit_view
+
+        def current_board(self):
+            return board
+
+        def submit_user_move_uci(self, _uci):
+            return None
+
+    gui.session = Session()
+    gui.selected_square = chess.E2
+    gui.pending_restart = False
+    gui._deferred_outcome_view = None
+    gui._refresh_board_local = lambda *args, **kwargs: None
+    gui._refresh_post_animation_start = lambda **kwargs: None
+    gui._schedule_pending_opponent_commit = lambda: scheduled.__setitem__('count', scheduled['count'] + 1)
+    gui._show_outcome_modal = lambda _view: None
+    gui._schedule_board_animation_refresh = lambda: None
+    gui._log_animation_event = lambda *args, **kwargs: None
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
+            'cancel_drag': lambda self: None,
+            'start_committed_move_animation': lambda self, **kwargs: None,
+            'animation_in_progress': lambda self: True,
+            'settle_animation': None,
+        },
+    )()
+    gui._build_move = lambda from_square, to_square, current_board: chess.Move(from_square, to_square)
+
+    OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
+
+    assert gui.pending_restart is False
+    assert gui._deferred_outcome_view is None
+    assert scheduled['count'] == 1
+
+
 def test_schedule_pending_opponent_commit_defers_commit_until_after_callback():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.root = FakeRoot()

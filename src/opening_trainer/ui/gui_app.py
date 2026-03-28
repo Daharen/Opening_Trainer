@@ -1267,7 +1267,41 @@ class OpeningTrainerGUI:
                 prior_transient='yes' if prior_animation_exists else 'no',
             )
         self._refresh_post_animation_start(actor='PLAYER')
+        post_submit_view = self.session.get_view()
+        if self._handle_player_terminal_outcome(post_submit_view):
+            return
         self._schedule_pending_opponent_commit()
+
+    def _handle_player_terminal_outcome(self, view) -> bool:
+        if getattr(view, 'state', None) != SessionState.RESTART_PENDING or getattr(view, 'last_outcome', None) is None:
+            return False
+        outcome_kind = getattr(getattr(view, 'last_outcome', None), 'terminal_kind', 'unknown')
+        self.pending_restart = True
+        self._log_animation_event(
+            'PLAYER_TERMINAL_DETECTED',
+            outcome=outcome_kind,
+            state=getattr(SessionState.RESTART_PENDING, 'value', 'restart_pending'),
+        )
+        animation_in_progress = getattr(self.board_view, 'animation_in_progress', None)
+        if callable(animation_in_progress) and animation_in_progress():
+            self._deferred_outcome_view = view
+            self._log_animation_event(
+                'PLAYER_TERMINAL_DEFERRED',
+                outcome=outcome_kind,
+                reason='restart_pending_during_animation',
+                active='yes',
+            )
+            self._schedule_board_animation_refresh()
+            return True
+        self._deferred_outcome_view = None
+        self._log_animation_event(
+            'PLAYER_TERMINAL_IMMEDIATE_MODAL',
+            outcome=outcome_kind,
+            reason='restart_pending_without_animation',
+            active='no',
+        )
+        self._show_outcome_modal(view)
+        return True
 
     def _build_move(self, from_square: chess.Square, to_square: chess.Square, board: chess.Board) -> chess.Move | None:
         candidate = chess.Move(from_square, to_square)
