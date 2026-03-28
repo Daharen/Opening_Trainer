@@ -65,6 +65,8 @@ class BoardView(tk.Canvas):
         self.highlight_squares: set[chess.Square] = set()
         self.arrow_move_uci: str | None = None
         self.arrow_color: str = '#2e7d32'
+        self.premove_move_uci_queue: tuple[str, ...] = ()
+        self.premove_highlight_squares: set[chess.Square] = set()
         self.drag_state: DragState | None = None
         self.settle_animation: SettleAnimationState | None = None
         self._last_board_fen: str | None = None
@@ -90,6 +92,18 @@ class BoardView(tk.Canvas):
     def set_arrow(self, move_uci: str | None, color: str = '#2e7d32') -> None:
         self.arrow_move_uci = move_uci
         self.arrow_color = color
+
+    def set_premove_queue(self, move_uci_queue: list[str]) -> None:
+        self.premove_move_uci_queue = tuple(move_uci_queue)
+        squares: set[chess.Square] = set()
+        for move_uci in self.premove_move_uci_queue:
+            try:
+                move = chess.Move.from_uci(move_uci)
+            except ValueError:
+                continue
+            squares.add(move.from_square)
+            squares.add(move.to_square)
+        self.premove_highlight_squares = squares
 
     def start_drag(self, source_square: chess.Square, piece_symbol: str, cursor_x: int, cursor_y: int) -> None:
         self.settle_animation = None
@@ -257,6 +271,8 @@ class BoardView(tk.Canvas):
             y1 = y0 + self.square_size
             is_light = (chess.square_file(square) + chess.square_rank(square)) % 2 == 0
             fill = '#f0d9b5' if is_light else '#b58863'
+            if square in getattr(self, 'premove_highlight_squares', set()):
+                fill = '#efd6d6' if is_light else '#c69494'
             if square == self.selected_square:
                 fill = '#f6f669'
             elif square in self.highlight_squares:
@@ -278,6 +294,7 @@ class BoardView(tk.Canvas):
                 fill=text_fill,
             )
         self._draw_coordinates(player_color)
+        self._draw_premove_arrows(player_color)
         self._draw_arrow(player_color)
         self._draw_drag_piece()
         self._draw_settle_piece()
@@ -363,6 +380,37 @@ class BoardView(tk.Canvas):
             arrowshape=(max(12, self.square_size * 0.36), max(14, self.square_size * 0.42), max(6, self.square_size * 0.16)),
             capstyle=tk.ROUND,
         )
+
+    def _draw_premove_arrows(self, player_color: chess.Color) -> None:
+        premove_queue = getattr(self, 'premove_move_uci_queue', ())
+        if not premove_queue:
+            return
+        for move_uci in premove_queue:
+            try:
+                move = chess.Move.from_uci(move_uci)
+            except ValueError:
+                continue
+            start_x, start_y = self._square_center(move.from_square, player_color)
+            end_x, end_y = self._square_center(move.to_square, player_color)
+            dx = end_x - start_x
+            dy = end_y - start_y
+            distance = math.hypot(dx, dy)
+            if distance <= 0:
+                continue
+            inset = self.square_size * 0.24
+            ux = dx / distance
+            uy = dy / distance
+            self.create_line(
+                start_x + ux * inset,
+                start_y + uy * inset,
+                end_x - ux * inset,
+                end_y - uy * inset,
+                fill='#d66a6a',
+                width=max(2, self.square_size * 0.07),
+                arrow=tk.LAST,
+                arrowshape=(max(8, self.square_size * 0.24), max(10, self.square_size * 0.28), max(4, self.square_size * 0.12)),
+                capstyle=tk.ROUND,
+            )
 
     def _square_center(self, square: chess.Square, player_color: chess.Color) -> tuple[float, float]:
         row, col = square_to_display(square, player_color)
