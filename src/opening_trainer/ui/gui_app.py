@@ -1123,6 +1123,10 @@ class OpeningTrainerGUI:
         self._supporting_surfaces_after_handle = self._schedule_after(0, deferred_refresh)
 
     def _refresh_post_animation_start(self, *, actor: str) -> None:
+        force_immediate_visible_frame = getattr(self.board_view, 'force_immediate_visible_frame', None)
+        initial_progress = None
+        if callable(force_immediate_visible_frame):
+            initial_progress = force_immediate_visible_frame()
         settle = getattr(self.board_view, 'settle_animation', None)
         start_time = getattr(settle, 'start_time', None)
         board_repaint_elapsed_ms = 0
@@ -1137,6 +1141,8 @@ class OpeningTrainerGUI:
             board_repaint_elapsed_ms=board_repaint_elapsed_ms,
             animation_refresh='scheduled',
             supporting_refresh='deferred',
+            immediate_frame='yes' if initial_progress is not None else 'no',
+            initial_progress='n/a' if initial_progress is None else f'{initial_progress:.3f}',
         )
 
     def _show_outcome_modal(self, view):
@@ -1250,11 +1256,15 @@ class OpeningTrainerGUI:
         self.session.submit_user_move_uci(move.uci())
         if moved_piece is not None:
             prior_animation_exists = getattr(self.board_view, 'settle_animation', None) is not None
+            release_start_x = float(event.x) if was_drag else None
+            release_start_y = float(event.y) if was_drag else None
             self.board_view.start_committed_move_animation(
                 piece_symbol=moved_piece.symbol(),
                 source_square=from_square,
                 destination_square=move.to_square,
                 player_color=view.player_color,
+                start_x=release_start_x,
+                start_y=release_start_y,
                 duration_ms=95,
             )
             self._log_animation_event(
@@ -1265,6 +1275,7 @@ class OpeningTrainerGUI:
                 duration_ms=95,
                 color='white' if view.player_color == chess.WHITE else 'black',
                 prior_transient='yes' if prior_animation_exists else 'no',
+                start_mode='release_xy' if was_drag else 'source_center',
             )
         self._refresh_post_animation_start(actor='PLAYER')
         post_submit_view = self.session.get_view()

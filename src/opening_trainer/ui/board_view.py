@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
+from dataclasses import replace
 from dataclasses import dataclass
 from time import monotonic
 
@@ -155,14 +156,17 @@ class BoardView(tk.Canvas):
         source_square: chess.Square,
         destination_square: chess.Square,
         player_color: chess.Color,
+        start_x: float | None = None,
+        start_y: float | None = None,
         duration_ms: int = 90,
     ) -> None:
-        start_x, start_y = self._square_center(source_square, player_color)
+        if start_x is None or start_y is None:
+            start_x, start_y = self._square_center(source_square, player_color)
         end_x, end_y = self._square_center(destination_square, player_color)
         self.settle_animation = SettleAnimationState(
             piece_symbol=piece_symbol,
-            start_x=start_x,
-            start_y=start_y,
+            start_x=float(start_x),
+            start_y=float(start_y),
             end_x=end_x,
             end_y=end_y,
             destination_square=destination_square,
@@ -175,6 +179,22 @@ class BoardView(tk.Canvas):
             f'to_sq={chess.square_name(destination_square)}; duration_ms={duration_ms}',
             tag='timing',
         )
+
+    def force_immediate_visible_frame(self, *, min_progress: float = 0.18, max_progress: float = 0.92) -> float | None:
+        animation = self.settle_animation
+        if animation is None:
+            return None
+        clamped_max = max(0.01, min(1.0, max_progress))
+        clamped_min = max(0.0, min(clamped_max, min_progress))
+        now = monotonic()
+        current_elapsed = max(0.0, now - animation.start_time)
+        target_elapsed = max(current_elapsed, animation.duration_seconds * clamped_min)
+        capped_elapsed = min(target_elapsed, animation.duration_seconds * clamped_max)
+        if capped_elapsed > current_elapsed:
+            self.settle_animation = replace(animation, start_time=now - capped_elapsed)
+            animation = self.settle_animation
+        progress = max(0.0, min(1.0, capped_elapsed / animation.duration_seconds))
+        return progress
 
     def animation_in_progress(self) -> bool:
         return self.settle_animation is not None and not self.animation_complete()
