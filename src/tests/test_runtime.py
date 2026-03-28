@@ -345,7 +345,7 @@ def test_training_depth_controls_run_completion(tmp_path):
     session.current_routing = session.router.select(session.active_profile_id, [])
     session.player_color = chess.WHITE
     session.state = session.state.PLAYER_TURN
-    session.update_settings(session.settings.__class__(True, 2, True))
+    session.update_settings(session.settings.__class__(good_moves_acceptable=True, active_training_ply_depth=2, training_mode='manual'))
     session.evaluator = MoveEvaluator(
         book_authority=StubBookAuthority(BOOK_MISS),
         engine_authority=StubEngineAuthority(

@@ -170,7 +170,8 @@ class OpeningTrainerGUI:
         ttk.Label(catalog_frame, textvariable=self.catalog_summary_var, wraplength=360, justify='left').grid(
             row=4, column=0, columnspan=2, sticky='ew', padx=8, pady=(0, 8)
         )
-        ttk.Button(catalog_frame, text='Use catalog selection', command=self._apply_catalog_selection).grid(row=5, column=0, columnspan=2, sticky='w', padx=8, pady=(0, 8))
+        ttk.Button(catalog_frame, text='Use catalog selection', command=self._apply_catalog_selection).grid(row=5, column=0, sticky='w', padx=8, pady=(0, 8))
+        ttk.Button(catalog_frame, text='Load expected Smart Profile bundle', command=self._load_expected_smart_profile_bundle).grid(row=5, column=1, sticky='e', padx=8, pady=(0, 8))
         ttk.Separator(self.bundle_picker, orient='horizontal').grid(row=5, column=0, columnspan=4, sticky='ew', pady=(4, 8))
         ttk.Label(self.bundle_picker, text='Legacy direct bundle selection', justify='left').grid(row=6, column=0, columnspan=4, sticky='w')
         ttk.Label(self.bundle_picker, text='Choose a discovered bundle or browse to a custom bundle path.', wraplength=360, justify='left').grid(row=7, column=0, columnspan=4, sticky='w')
@@ -203,6 +204,12 @@ class OpeningTrainerGUI:
         self.root.mainloop()
 
     def _initialize_app_shell(self) -> None:
+        expected = None
+        if hasattr(self, "session") and hasattr(self.session, "smart_profile_expected_bundle_path"):
+            expected = self.session.smart_profile_expected_bundle_path()
+        if expected and self._bundle_path_is_valid(expected):
+            self._load_selected_bundle(expected)
+            return
         remembered = self._remembered_bundle_path()
         if remembered and self._bundle_path_is_valid(remembered):
             self._load_selected_bundle(remembered)
@@ -227,6 +234,8 @@ class OpeningTrainerGUI:
                 good_moves_acceptable=settings.good_moves_acceptable,
                 active_training_ply_depth=settings.active_training_ply_depth,
                 smart_profile_enabled=settings.smart_profile_enabled,
+                training_mode=settings.training_mode,
+                selected_smart_track=settings.selected_smart_track,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=self._remembered_bundle_path(),
@@ -241,6 +250,8 @@ class OpeningTrainerGUI:
                 good_moves_acceptable=settings.good_moves_acceptable,
                 active_training_ply_depth=settings.active_training_ply_depth,
                 smart_profile_enabled=settings.smart_profile_enabled,
+                training_mode=settings.training_mode,
+                selected_smart_track=settings.selected_smart_track,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=bundle_path,
@@ -259,6 +270,8 @@ class OpeningTrainerGUI:
                 good_moves_acceptable=settings.good_moves_acceptable,
                 active_training_ply_depth=settings.active_training_ply_depth,
                 smart_profile_enabled=settings.smart_profile_enabled,
+                training_mode=settings.training_mode,
+                selected_smart_track=settings.selected_smart_track,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 last_bundle_path=self._remembered_bundle_path(),
@@ -420,6 +433,14 @@ class OpeningTrainerGUI:
             f'Control: {entry.time_control_id} | Band: {entry.target_rating_band} | Retained depth: {retained} | '
             f'Rating policy: {policy} | Timing-conditioned metadata: {overlay} | Bundle path: {entry.bundle_dir}'
         )
+
+
+    def _load_expected_smart_profile_bundle(self) -> None:
+        expected = self.session.smart_profile_expected_bundle_path()
+        if not expected:
+            messagebox.showerror('Smart Profile', 'Expected Smart Profile bundle is unavailable in the discovered catalog.', parent=self.root)
+            return
+        self._load_selected_bundle(expected)
 
     def _apply_catalog_selection(self) -> None:
         entry = self._selected_catalog_entry()
@@ -633,7 +654,7 @@ class OpeningTrainerGUI:
         eligible = 'yes' if status.eligible_now else 'no'
         return (
             f'Smart Profile: {mode} | Track: {track} | Level: {level} | '
-            f'W:{status.wins_toward_promotion} L:{status.losses_toward_demotion} | Eligible now: {eligible} ({status.eligibility_reason})'
+            f'S:{status.consecutive_eligible_successes} F:{status.consecutive_eligible_failures} | Eligible now: {eligible} ({status.eligibility_reason}) | {status.expected_bundle_summary}'
         )
 
     def _build_recent_status_text(self, routing_summary: str) -> str:
@@ -680,9 +701,12 @@ class OpeningTrainerGUI:
         good_var = tk.BooleanVar(value=self.session.settings.good_moves_acceptable)
         panel_var = tk.BooleanVar(value=self.panel_visible)
         move_list_var = tk.BooleanVar(value=self.move_list_visible)
-        smart_profile_var = tk.BooleanVar(value=self.session.settings.smart_profile_enabled)
+        smart_profile_var = tk.BooleanVar(value=self.session.settings.training_mode == 'smart_profile')
+        track_var = tk.StringVar(value=self.session.settings.selected_smart_track)
         ttk.Checkbutton(frame, text='Accept Good moves (permissive mode)', variable=good_var).pack(anchor='w', pady=(0, 8))
         ttk.Checkbutton(frame, text='Enable Smart Profile contract mode', variable=smart_profile_var).pack(anchor='w')
+        ttk.Label(frame, text='Smart track').pack(anchor='w', pady=(6, 0))
+        ttk.Combobox(frame, state='readonly', textvariable=track_var, values=['rapid', 'blitz', 'bullet'], width=10).pack(anchor='w')
         ttk.Checkbutton(frame, text='Show training/review panel by default', variable=panel_var).pack(anchor='w')
         ttk.Checkbutton(frame, text='Show move list by default', variable=move_list_var).pack(anchor='w', pady=(0, 8))
         ttk.Label(frame, text='Training depth (player moves)').pack(anchor='w')
@@ -703,6 +727,8 @@ class OpeningTrainerGUI:
                     good_moves_acceptable=good_var.get(),
                     active_training_ply_depth=depth_var.get(),
                     smart_profile_enabled=smart_profile_var.get(),
+                    training_mode='smart_profile' if smart_profile_var.get() else 'manual',
+                    selected_smart_track=track_var.get(),
                     side_panel_visible=self.panel_visible,
                     move_list_visible=self.move_list_visible,
                     last_bundle_path=self._remembered_bundle_path(),

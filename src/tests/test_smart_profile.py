@@ -58,20 +58,21 @@ def test_track_state_is_independent_and_persistent(tmp_path):
     rapid = service.state.get_track_state("rapid", "600+0")
     blitz = service.state.get_track_state("blitz", "300+0")
     rapid.current_level = 6
-    rapid.wins_toward_promotion = 7
+    rapid.consecutive_eligible_successes = 7
     service.save()
 
     reloaded = _service(tmp_path)
     reloaded_rapid = reloaded.state.get_track_state("rapid", "600+0")
     reloaded_blitz = reloaded.state.get_track_state("blitz", "300+0")
     assert reloaded_rapid.current_level == 6
-    assert reloaded_rapid.wins_toward_promotion == 7
+    assert reloaded_rapid.consecutive_eligible_successes == 7
     assert reloaded_blitz.current_level == blitz.current_level
-    assert reloaded_blitz.wins_toward_promotion == 0
+    assert reloaded_blitz.consecutive_eligible_successes == 0
 
 
 def test_only_ordinary_corpus_counts_and_review_channels_do_not_count(tmp_path):
     service = _service(tmp_path)
+    _bundle(tmp_path, time_control="600+0", minimum=400, maximum=600)
     channels = ["scheduled_review", "boosted_review", "extreme_urgency_review", "immediate_retry", "srs_due_review", "stubborn_extreme_repeat"]
     for channel in channels:
         eligibility = service.evaluate_eligibility(
@@ -81,16 +82,18 @@ def test_only_ordinary_corpus_counts_and_review_channels_do_not_count(tmp_path):
             bundle_rating_band="400-600",
             required_turns=3,
             good_accepted=True,
+            catalog_root=str(tmp_path),
         )
         assert eligibility.eligible is False
         service.apply_eligible_result(eligibility, passed=True, bundle_time_control_id="600+0", bundle_rating_band="400-600")
     state = service.state.get_track_state("rapid", "600+0")
     assert state.eligible_games_played == 0
-    assert state.wins_toward_promotion == 0
+    assert state.consecutive_eligible_successes == 0
 
 
 def test_bundle_band_mismatch_marks_ineligible_without_counter_change(tmp_path):
     service = _service(tmp_path)
+    _bundle(tmp_path, time_control="600+0", minimum=400, maximum=600)
     eligibility = service.evaluate_eligibility(
         routing_source="ordinary_corpus_play",
         bundle_available=True,
@@ -98,6 +101,7 @@ def test_bundle_band_mismatch_marks_ineligible_without_counter_change(tmp_path):
         bundle_rating_band="1200-1400",
         required_turns=3,
         good_accepted=True,
+        catalog_root=str(tmp_path),
     )
     assert eligibility.eligible is False
     assert "mismatch" in eligibility.reason
@@ -108,6 +112,7 @@ def test_bundle_band_mismatch_marks_ineligible_without_counter_change(tmp_path):
 
 def test_promotion_demotion_thresholds_and_counter_reset(tmp_path):
     service = _service(tmp_path)
+    _bundle(tmp_path, time_control="600+0", minimum=1000, maximum=1200)
     state = service.state.get_track_state("rapid", "600+0")
     state.current_level = 4
     service.save()
@@ -120,16 +125,17 @@ def test_promotion_demotion_thresholds_and_counter_reset(tmp_path):
             bundle_rating_band="1000-1200",
             required_turns=5,
             good_accepted=True,
+            catalog_root=str(tmp_path),
         )
         service.apply_eligible_result(eligibility, passed=True, bundle_time_control_id="600+0", bundle_rating_band="1000-1200")
 
     promoted = service.state.get_track_state("rapid", "600+0")
     assert promoted.current_level == 5
-    assert promoted.wins_toward_promotion == 0
-    assert promoted.losses_toward_demotion == 0
+    assert promoted.consecutive_eligible_successes == 0
+    assert promoted.consecutive_eligible_failures == 0
 
     promoted.current_level = 5
-    promoted.losses_toward_demotion = 9
+    promoted.consecutive_eligible_failures = 9
     eligibility = service.evaluate_eligibility(
         routing_source="ordinary_corpus_play",
         bundle_available=True,
@@ -137,26 +143,29 @@ def test_promotion_demotion_thresholds_and_counter_reset(tmp_path):
         bundle_rating_band="1000-1200",
         required_turns=6,
         good_accepted=True,
+        catalog_root=str(tmp_path),
     )
     service.apply_eligible_result(eligibility, passed=False, bundle_time_control_id="600+0", bundle_rating_band="1000-1200")
     demoted = service.state.get_track_state("rapid", "600+0")
     assert demoted.current_level == 4
-    assert demoted.wins_toward_promotion == 0
-    assert demoted.losses_toward_demotion == 0
+    assert demoted.consecutive_eligible_successes == 0
+    assert demoted.consecutive_eligible_failures == 0
 
 
 def test_unsupported_time_control_is_ineligible(tmp_path):
     service = _service(tmp_path)
+    _bundle(tmp_path, time_control="600+0", minimum=400, maximum=600)
     eligibility = service.evaluate_eligibility(
         routing_source="ordinary_corpus_play",
         bundle_available=True,
         time_control_id="180+0",
-        bundle_rating_band="1000-1200",
-        required_turns=5,
+        bundle_rating_band="400-600",
+        required_turns=3,
         good_accepted=True,
+        catalog_root=str(tmp_path),
     )
     assert eligibility.eligible is False
-    assert "Unsupported time control" in eligibility.reason
+    assert "time control mismatch" in eligibility.reason
 
 
 def test_level_table_contains_stockfish_tiers_and_promotion_clamps_at_28(tmp_path):
@@ -165,9 +174,11 @@ def test_level_table_contains_stockfish_tiers_and_promotion_clamps_at_28(tmp_pat
     assert LEVEL_BY_INDEX[30].is_stockfish_tier is True
 
     service = _service(tmp_path)
+    _bundle(tmp_path, time_control="120+1", minimum=3000, maximum=3999)
+    service.set_selected_track("bullet")
     state = service.state.get_track_state("bullet", "120+1")
     state.current_level = 28
-    state.wins_toward_promotion = 49
+    state.consecutive_eligible_successes = 49
     service.save()
     eligibility = service.evaluate_eligibility(
         routing_source="ordinary_corpus_play",
@@ -176,6 +187,7 @@ def test_level_table_contains_stockfish_tiers_and_promotion_clamps_at_28(tmp_pat
         bundle_rating_band="3000-3999",
         required_turns=14,
         good_accepted=False,
+        catalog_root=str(tmp_path),
     )
     shift = service.apply_eligible_result(eligibility, passed=True, bundle_time_control_id="120+1", bundle_rating_band="3000-3999")
     state = service.state.get_track_state("bullet", "120+1")
@@ -187,6 +199,8 @@ def test_runtime_contract_applies_to_session_from_active_level(tmp_path):
     bundle_dir = _bundle(tmp_path, time_control="300+0", minimum=1400, maximum=1600)
     runtime = load_runtime_config(RuntimeOverrides(corpus_bundle_dir=str(bundle_dir)))
     session = TrainingSession(runtime_context=runtime, review_storage=ReviewStorage(tmp_path / "profiles"))
+    session.update_settings(session.settings.__class__(training_mode="smart_profile", selected_smart_track="blitz"))
+    session.smart_profile.set_selected_track("blitz")
     state = session.smart_profile.state.get_track_state("blitz", "300+0")
     state.current_level = 9
     session.smart_profile.save()
@@ -201,4 +215,5 @@ def test_smart_profile_state_file_created_for_profile(tmp_path):
     storage = ReviewStorage(tmp_path / "runtime" / "profiles")
     assert (tmp_path / "runtime" / "profiles" / "default" / "smart_profile_state.json").exists()
     payload = storage.load_smart_profile_state("default")
-    assert payload["mode_enabled"] is True
+    assert payload["mode"] == "smart_profile"
+    assert payload["selected_track_id"] == "rapid"
