@@ -138,6 +138,28 @@ class BoardView(tk.Canvas):
             duration_seconds=max(0.01, duration_ms / 1000),
         )
 
+    def start_committed_move_animation(
+        self,
+        *,
+        piece_symbol: str,
+        source_square: chess.Square,
+        destination_square: chess.Square,
+        player_color: chess.Color,
+        duration_ms: int = 90,
+    ) -> None:
+        start_x, start_y = self._square_center(source_square, player_color)
+        end_x, end_y = self._square_center(destination_square, player_color)
+        self.settle_animation = SettleAnimationState(
+            piece_symbol=piece_symbol,
+            start_x=start_x,
+            start_y=start_y,
+            end_x=end_x,
+            end_y=end_y,
+            destination_square=destination_square,
+            start_time=monotonic(),
+            duration_seconds=max(0.01, duration_ms / 1000),
+        )
+
     def animation_in_progress(self) -> bool:
         return self._settle_piece_position() is not None
 

@@ -561,6 +561,32 @@ def test_render_draws_settle_piece_without_drag_state():
     assert (200.0, 190.0, PIECE_GLYPHS["P"]) in drawn
 
 
+def test_start_committed_move_animation_uses_square_centers():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view.settle_animation = None
+
+    BoardView.start_committed_move_animation(
+        board_view,
+        piece_symbol="n",
+        source_square=chess.G8,
+        destination_square=chess.F6,
+        player_color=chess.WHITE,
+        duration_ms=70,
+    )
+
+    assert board_view.settle_animation is not None
+    assert board_view.settle_animation.piece_symbol == "n"
+    assert board_view.settle_animation.destination_square == chess.F6
+    start_x, start_y = BoardView._square_center(board_view, chess.G8, chess.WHITE)
+    end_x, end_y = BoardView._square_center(board_view, chess.F6, chess.WHITE)
+    assert board_view.settle_animation.start_x == start_x
+    assert board_view.settle_animation.start_y == start_y
+    assert board_view.settle_animation.end_x == end_x
+    assert board_view.settle_animation.end_y == end_y
+
+
 def test_render_keeps_origin_piece_visible_before_drag_threshold():
     board_view = BoardView.__new__(BoardView)
     board_view.board_size = 480
@@ -1335,23 +1361,84 @@ def test_commit_scheduled_opponent_action_uses_full_refresh():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui._pending_opponent_after_handle = 'h7'
     gui._is_shutting_down = False
+    gui._deferred_outcome_view = None
     refresh_calls = {'count': 0}
     gui._refresh_view = lambda: refresh_calls.__setitem__('count', refresh_calls['count'] + 1)
+    animation_schedule_calls = {'count': 0}
+    gui._schedule_board_animation_refresh = lambda: animation_schedule_calls.__setitem__('count', animation_schedule_calls['count'] + 1)
     gui._schedule_pending_opponent_commit = lambda: None
 
     class Session:
         state = SessionState.PLAYER_TURN
-        pending_opponent_action = object()
+        pending_opponent_action = type(
+            'Pending',
+            (),
+            {
+                'choice': type('Choice', (), {'move': chess.Move.from_uci('e7e5')})(),
+                'board_before': chess.Board(),
+            },
+        )()
 
         def commit_pending_opponent_action(self):
             self.pending_opponent_action = None
 
+        def get_view(self):
+            return type('View', (), {'player_color': chess.WHITE})()
+
     gui.session = Session()
+    animation_calls = {'count': 0}
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'start_committed_move_animation': lambda self, **kwargs: animation_calls.__setitem__('count', animation_calls['count'] + 1),
+            'animation_in_progress': lambda self: False,
+        },
+    )()
 
     OpeningTrainerGUI._commit_scheduled_opponent_action(gui)
 
     assert gui._pending_opponent_after_handle is None
     assert refresh_calls['count'] == 1
+    assert animation_calls['count'] == 1
+    assert animation_schedule_calls['count'] == 1
+
+
+def test_refresh_view_defers_outcome_modal_until_animation_finishes():
+    outcome = SessionOutcome(False, 'Rejected by engine.', 'd4', None, 'fail', 'ordinary_corpus_play', 'immediate_retry', 'Default', 'Created new review item.')
+    view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeViewSession(view)
+    gui.pending_restart = False
+    gui._deferred_outcome_view = None
+    gui._refresh_board_canvas = lambda: None
+    gui._refresh_supporting_surfaces = lambda: None
+    gui._schedule_board_animation_refresh = lambda: None
+    calls = {'count': 0}
+    gui._show_outcome_modal = lambda current_view: calls.__setitem__('count', calls['count'] + 1)
+    gui.board_view = type('BoardViewStub', (), {'animation_in_progress': lambda self: True})()
+
+    OpeningTrainerGUI._refresh_view(gui)
+
+    assert calls['count'] == 0
+    assert gui.pending_restart is True
+    assert gui._deferred_outcome_view is view
+
+
+def test_show_deferred_outcome_modal_if_ready_runs_after_animation_settles():
+    outcome = SessionOutcome(False, 'Rejected by engine.', 'd4', None, 'fail', 'ordinary_corpus_play', 'immediate_retry', 'Default', 'Created new review item.')
+    view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._is_shutting_down = False
+    gui._deferred_outcome_view = view
+    calls = {'count': 0}
+    gui._show_outcome_modal = lambda current_view: calls.__setitem__('count', calls['count'] + 1)
+    gui.board_view = type('BoardViewStub', (), {'animation_in_progress': lambda self: False})()
+
+    OpeningTrainerGUI._show_deferred_outcome_modal_if_ready(gui)
+
+    assert calls['count'] == 1
+    assert gui._deferred_outcome_view is None
 
 
 def test_schedule_pending_opponent_commit_old_order_would_clear_new_pending_action():
