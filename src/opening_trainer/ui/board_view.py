@@ -63,6 +63,9 @@ class BoardView(tk.Canvas):
         self.arrow_color: str = '#2e7d32'
         self.drag_state: DragState | None = None
         self.settle_animation: SettleAnimationState | None = None
+        self._last_board_fen: str | None = None
+        self._last_player_color: chess.Color | None = None
+        self._resize_refresh_after_handle: str | None = None
         self.bind('<Configure>', self._on_resize)
         self.configure(width=board_size, height=board_size)
 
@@ -214,6 +217,8 @@ class BoardView(tk.Canvas):
         return list('hgfedcba'), [str(rank) for rank in range(1, 9)]
 
     def render(self, board: chess.Board, player_color: chess.Color) -> None:
+        self._last_board_fen = board.fen()
+        self._last_player_color = player_color
         self.delete('all')
         origin_x, origin_y = self.board_origin
         for square in chess.SQUARES:
@@ -292,6 +297,18 @@ class BoardView(tk.Canvas):
         self.board_size = new_size
         self.square_size = max(1, (new_size - BOARD_PADDING * 2) // 8)
         self.configure(width=new_size, height=new_size)
+        if self._resize_refresh_after_handle is not None:
+            try:
+                self.after_cancel(self._resize_refresh_after_handle)
+            except Exception:
+                pass
+        self._resize_refresh_after_handle = self.after_idle(self._refresh_after_resize)
+
+    def _refresh_after_resize(self) -> None:
+        self._resize_refresh_after_handle = None
+        if self._last_board_fen is None or self._last_player_color is None:
+            return
+        self.render(chess.Board(self._last_board_fen), self._last_player_color)
 
     def _draw_arrow(self, player_color: chess.Color) -> None:
         if not self.arrow_move_uci:
