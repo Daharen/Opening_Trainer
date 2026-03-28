@@ -96,6 +96,7 @@ class OpeningTrainerGUI:
         self._after_handles: set[str] = set()
         self._pending_opponent_after_handle = None
         self._board_animation_after_handle = None
+        self._deferred_outcome_view = None
         self._child_windows: list[tk.Toplevel] = []
 
         self.root.columnconfigure(0, weight=1)
@@ -808,6 +809,7 @@ class OpeningTrainerGUI:
         self._hide_bundle_picker()
         self.selected_square = None
         self.pending_restart = False
+        self._deferred_outcome_view = None
         self._clear_board_transients()
         self._refresh_view()
 
@@ -837,6 +839,7 @@ class OpeningTrainerGUI:
             self.session.start_new_game()
             self.selected_square = None
             self.pending_restart = False
+            self._deferred_outcome_view = None
             self._clear_board_transients()
             self._refresh_view()
             return
@@ -854,6 +857,7 @@ class OpeningTrainerGUI:
     def _apply_started_game(self) -> None:
         self.selected_square = None
         self.pending_restart = False
+        self._deferred_outcome_view = None
         self._clear_board_transients()
         self._refresh_view()
 
@@ -1059,9 +1063,17 @@ class OpeningTrainerGUI:
         if transient_status:
             self._prepend_recent_status(transient_status)
         view = self.session.get_view()
-        if view.state == SessionState.RESTART_PENDING and view.last_outcome is not None and not self.pending_restart:
-            self.pending_restart = True
-            self._show_outcome_modal(view)
+        if view.state == SessionState.RESTART_PENDING and view.last_outcome is not None:
+            if not self.pending_restart:
+                self.pending_restart = True
+                animation_in_progress = getattr(self.board_view, 'animation_in_progress', None)
+                if callable(animation_in_progress) and animation_in_progress():
+                    self._deferred_outcome_view = view
+                    self._schedule_board_animation_refresh()
+                else:
+                    self._show_outcome_modal(view)
+            return
+        self._deferred_outcome_view = None
 
     def _refresh_board_local(self, transient_status: str | None = None, *, repaint_board: bool = True) -> None:
         if repaint_board:
@@ -1118,6 +1130,7 @@ class OpeningTrainerGUI:
     def _acknowledge_outcome(self):
         self._cancel_pending_opponent_callback()
         self.pending_restart = False
+        self._deferred_outcome_view = None
         self.selected_square = None
         self._clear_board_transients()
         self.session.start_new_game()
@@ -1193,6 +1206,7 @@ class OpeningTrainerGUI:
                 release_y=event.y,
                 destination_square=move.to_square,
                 player_color=view.player_color,
+                duration_ms=85,
             )
         self._refresh_view()
         self._schedule_board_animation_refresh()
@@ -1295,7 +1309,7 @@ class OpeningTrainerGUI:
     def _schedule_board_animation_refresh(self) -> None:
         if getattr(self, '_is_shutting_down', False):
             return
-        if self._board_animation_after_handle is not None:
+        if getattr(self, '_board_animation_after_handle', None) is not None:
             return
 
         def tick() -> None:
@@ -1307,6 +1321,7 @@ class OpeningTrainerGUI:
                 self._board_animation_after_handle = self._schedule_after(16, tick)
             else:
                 self._refresh_board_canvas()
+                self._show_deferred_outcome_modal_if_ready()
 
         self._board_animation_after_handle = self._schedule_after(16, tick)
 
@@ -1332,12 +1347,33 @@ class OpeningTrainerGUI:
         if getattr(self, '_is_shutting_down', False):
             log_line('GUI_OPPONENT_COMMIT_SKIPPED: app shutting down', tag='timing')
             return
-        if self.session.pending_opponent_action is None:
+        pending = self.session.pending_opponent_action
+        if pending is None:
             log_line('GUI_OPPONENT_COMMIT_SKIPPED: no pending action', tag='timing')
             return
+        committed_choice = getattr(pending, 'choice', None)
+        committed_move = getattr(committed_choice, 'move', None)
+        board_before = getattr(pending, 'board_before', None)
+        moved_piece = None
+        if committed_move is not None and board_before is not None:
+            moved_piece = board_before.piece_at(committed_move.from_square)
         self.session.commit_pending_opponent_action()
         log_line('GUI_OPPONENT_COMMIT_EXECUTED', tag='timing')
+        if moved_piece is not None and committed_move is not None:
+            get_view = getattr(self.session, 'get_view', None)
+            if not callable(get_view):
+                view = None
+            else:
+                view = get_view()
+            player_color = getattr(view, 'player_color', chess.WHITE)
+            self.board_view.start_committed_move_animation(
+                piece_symbol=moved_piece.symbol(),
+                source_square=committed_move.from_square,
+                destination_square=committed_move.to_square,
+                player_color=player_color,
+            )
         self._refresh_view()
+        self._schedule_board_animation_refresh()
         if self.session.state == SessionState.OPPONENT_TURN:
             self._schedule_pending_opponent_commit()
 
@@ -1376,6 +1412,7 @@ class OpeningTrainerGUI:
 
     def _clear_board_transients(self) -> None:
         self._cancel_board_animation_callback()
+        self._deferred_outcome_view = None
         board_view = getattr(self, 'board_view', None)
         if board_view is None:
             return
@@ -1383,6 +1420,18 @@ class OpeningTrainerGUI:
             board_view.clear_transient_state()
         else:
             board_view.cancel_drag()
+
+    def _show_deferred_outcome_modal_if_ready(self) -> None:
+        deferred = getattr(self, '_deferred_outcome_view', None)
+        if deferred is None:
+            return
+        if getattr(self, '_is_shutting_down', False):
+            return
+        animation_in_progress = getattr(self.board_view, 'animation_in_progress', None)
+        if callable(animation_in_progress) and animation_in_progress():
+            return
+        self._deferred_outcome_view = None
+        self._show_outcome_modal(deferred)
 
     def _cancel_after_handles(self) -> None:
         handles = list(getattr(self, '_after_handles', set()))
