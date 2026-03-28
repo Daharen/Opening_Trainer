@@ -28,6 +28,9 @@ PIECE_GLYPHS = {
 BOARD_PADDING = 28
 DRAG_THRESHOLD = 10
 ANIMATION_START_LEAD_SECONDS = 1 / 120
+DEFAULT_COMMITTED_MOVE_DURATION_MS = 140
+DEFAULT_IMMEDIATE_FRAME_MIN_PROGRESS = 0.12
+DEFAULT_IMMEDIATE_FRAME_MAX_PROGRESS = 0.92
 
 
 @dataclass(frozen=True)
@@ -158,7 +161,7 @@ class BoardView(tk.Canvas):
         player_color: chess.Color,
         start_x: float | None = None,
         start_y: float | None = None,
-        duration_ms: int = 90,
+        duration_ms: int = DEFAULT_COMMITTED_MOVE_DURATION_MS,
     ) -> None:
         if start_x is None or start_y is None:
             start_x, start_y = self._square_center(source_square, player_color)
@@ -180,7 +183,12 @@ class BoardView(tk.Canvas):
             tag='timing',
         )
 
-    def force_immediate_visible_frame(self, *, min_progress: float = 0.18, max_progress: float = 0.92) -> float | None:
+    def force_immediate_visible_frame(
+        self,
+        *,
+        min_progress: float = DEFAULT_IMMEDIATE_FRAME_MIN_PROGRESS,
+        max_progress: float = DEFAULT_IMMEDIATE_FRAME_MAX_PROGRESS,
+    ) -> float | None:
         animation = self.settle_animation
         if animation is None:
             return None

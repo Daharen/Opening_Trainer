@@ -46,6 +46,8 @@ PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': 
 DEFAULT_BUNDLE_SEARCH_ROOTS = (Path('artifacts'),)
 ANIMATION_IMPL_MARKER = 'committed_move_anim_v2'
 ANIMATION_LOG_PREFIX = 'GUI_ANIM'
+PLAYER_COMMITTED_MOVE_DURATION_MS = 150
+OPPONENT_COMMITTED_MOVE_DURATION_MS = 140
 
 
 class OpeningTrainerGUI:
@@ -1273,14 +1275,14 @@ class OpeningTrainerGUI:
                 player_color=view.player_color,
                 start_x=release_start_x,
                 start_y=release_start_y,
-                duration_ms=95,
+                duration_ms=PLAYER_COMMITTED_MOVE_DURATION_MS,
             )
             self._log_animation_event(
                 'PLAYER_START',
                 piece=moved_piece.symbol(),
                 from_sq=chess.square_name(from_square),
                 to_sq=chess.square_name(move.to_square),
-                duration_ms=95,
+                duration_ms=PLAYER_COMMITTED_MOVE_DURATION_MS,
                 color='white' if view.player_color == chess.WHITE else 'black',
                 prior_transient='yes' if prior_animation_exists else 'no',
                 start_mode='release_xy' if was_drag else 'source_center',
@@ -1538,6 +1540,7 @@ class OpeningTrainerGUI:
                 source_square=committed_move.from_square,
                 destination_square=committed_move.to_square,
                 player_color=player_color,
+                duration_ms=OPPONENT_COMMITTED_MOVE_DURATION_MS,
             )
             animation_started = True
             self._log_animation_event(
@@ -1545,7 +1548,7 @@ class OpeningTrainerGUI:
                 piece=moved_piece.symbol(),
                 from_sq=chess.square_name(committed_move.from_square),
                 to_sq=chess.square_name(committed_move.to_square),
-                duration_ms=90,
+                duration_ms=OPPONENT_COMMITTED_MOVE_DURATION_MS,
                 color='white' if player_color == chess.WHITE else 'black',
                 metadata_complete='yes',
             )
