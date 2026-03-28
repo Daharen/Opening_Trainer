@@ -701,6 +701,11 @@ def test_force_immediate_visible_frame_uses_default_min_progress_window():
     assert progress >= DEFAULT_IMMEDIATE_FRAME_MIN_PROGRESS
 
 
+def test_probe_animation_duration_constants_are_applied():
+    assert PLAYER_COMMITTED_MOVE_DURATION_MS == 240
+    assert OPPONENT_COMMITTED_MOVE_DURATION_MS == 220
+
+
 def test_board_resize_coalesces_redraw_and_refreshes_latest_board():
     board_view = BoardView.__new__(BoardView)
     board_view.min_board_size = 360
@@ -2102,7 +2107,7 @@ def test_refresh_post_animation_start_forces_immediate_visible_frame(monkeypatch
     repaint_line = next(line for line in lines if line.startswith('GUI_ANIM_PLAYER_POST_START_REPAINT'))
     assert 'immediate_frame=yes' in repaint_line
     assert 'initial_progress=0.270' in repaint_line
-    assert 'supporting_refresh=deferred_until_first_tick' in repaint_line
+    assert 'supporting_refresh=deferred_until_finalize' in repaint_line
     assert supporting['count'] == 0
     assert gui._supporting_refresh_pending_after_first_tick is True
 
@@ -2177,7 +2182,7 @@ def test_schedule_board_animation_refresh_finalizes_then_shows_deferred_modal():
     assert events == ['finalize', 'refresh', 'modal']
 
 
-def test_schedule_board_animation_refresh_releases_supporting_refresh_on_first_tick():
+def test_schedule_board_animation_refresh_defers_supporting_refresh_until_finalize():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.root = FakeRoot()
     gui._after_handles = set()
@@ -2204,12 +2209,12 @@ def test_schedule_board_animation_refresh_releases_supporting_refresh_on_first_t
     _delay, callback, _handle = gui.root.after_calls.pop(0)
     callback()
 
-    assert supporting['count'] == 1
-    assert gui._supporting_refresh_pending_after_first_tick is False
+    assert supporting['count'] == 0
+    assert gui._supporting_refresh_pending_after_first_tick is True
     assert refreshes['count'] == 1
 
 
-def test_schedule_board_animation_refresh_releases_supporting_refresh_on_finalize_fallback():
+def test_schedule_board_animation_refresh_releases_supporting_refresh_on_finalize():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.root = FakeRoot()
     gui._after_handles = set()
