@@ -25,6 +25,7 @@ PIECE_GLYPHS = {
 }
 BOARD_PADDING = 28
 DRAG_THRESHOLD = 10
+ANIMATION_START_LEAD_SECONDS = 1 / 120
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,7 @@ class BoardView(tk.Canvas):
             end_x=end_x,
             end_y=end_y,
             destination_square=destination_square,
-            start_time=monotonic(),
+            start_time=monotonic() - ANIMATION_START_LEAD_SECONDS,
             duration_seconds=max(0.01, duration_ms / 1000),
         )
 
@@ -156,12 +157,36 @@ class BoardView(tk.Canvas):
             end_x=end_x,
             end_y=end_y,
             destination_square=destination_square,
-            start_time=monotonic(),
+            start_time=monotonic() - ANIMATION_START_LEAD_SECONDS,
             duration_seconds=max(0.01, duration_ms / 1000),
         )
 
     def animation_in_progress(self) -> bool:
-        return self._settle_piece_position() is not None
+        return self.settle_animation is not None and not self.animation_complete()
+
+    def animation_complete(self, now: float | None = None) -> bool:
+        animation = self.settle_animation
+        if animation is None:
+            return False
+        current_time = monotonic() if now is None else now
+        return (current_time - animation.start_time) >= animation.duration_seconds
+
+    def sample_animation_position(self, now: float | None = None) -> tuple[float, float] | None:
+        animation = self.settle_animation
+        if animation is None:
+            return None
+        current_time = monotonic() if now is None else now
+        elapsed = max(0.0, current_time - animation.start_time)
+        progress = max(0.0, min(1.0, elapsed / animation.duration_seconds))
+        x = animation.start_x + (animation.end_x - animation.start_x) * progress
+        y = animation.start_y + (animation.end_y - animation.start_y) * progress
+        return x, y
+
+    def finalize_animation(self) -> bool:
+        if self.settle_animation is None:
+            return False
+        self.settle_animation = None
+        return True
 
     def square_at_xy(self, x: int, y: int, player_color: chess.Color) -> chess.Square | None:
         origin_x, origin_y = self.board_origin
@@ -235,7 +260,7 @@ class BoardView(tk.Canvas):
         )
 
     def _draw_settle_piece(self) -> None:
-        settle_position = self._settle_piece_position()
+        settle_position = self.sample_animation_position()
         if settle_position is None:
             return
         settle_x, settle_y = settle_position
@@ -289,15 +314,3 @@ class BoardView(tk.Canvas):
             origin_x + col * self.square_size + self.square_size / 2,
             origin_y + row * self.square_size + self.square_size / 2,
         )
-
-    def _settle_piece_position(self) -> tuple[float, float] | None:
-        if self.settle_animation is None:
-            return None
-        elapsed = monotonic() - self.settle_animation.start_time
-        if elapsed >= self.settle_animation.duration_seconds:
-            self.settle_animation = None
-            return None
-        progress = max(0.0, min(1.0, elapsed / self.settle_animation.duration_seconds))
-        x = self.settle_animation.start_x + (self.settle_animation.end_x - self.settle_animation.start_x) * progress
-        y = self.settle_animation.start_y + (self.settle_animation.end_y - self.settle_animation.start_y) * progress
-        return x, y

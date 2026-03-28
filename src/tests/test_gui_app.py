@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import time
 
 import chess
 
@@ -8,7 +9,13 @@ from opening_trainer.models import MoveHistoryEntry, SessionOutcome, SessionStat
 from opening_trainer.settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from opening_trainer.session import TrainingSession
 from opening_trainer.session_contracts import OutcomeBoardContract, OutcomeModalContract
-from opening_trainer.ui.board_view import BoardView, DragState, PIECE_GLYPHS, SettleAnimationState
+from opening_trainer.ui.board_view import (
+    ANIMATION_START_LEAD_SECONDS,
+    BoardView,
+    DragState,
+    PIECE_GLYPHS,
+    SettleAnimationState,
+)
 from opening_trainer.ui.captured_material_panel import captured_pieces_and_material
 from opening_trainer.ui.gui_app import OpeningTrainerGUI
 
@@ -553,7 +560,7 @@ def test_render_draws_settle_piece_without_drag_state():
     board_view.create_line = lambda *_args, **_kwargs: None
     board_view._draw_coordinates = lambda _player_color: None
     board_view._draw_arrow = lambda _player_color: None
-    board_view._settle_piece_position = lambda: (200.0, 190.0)
+    board_view.sample_animation_position = lambda: (200.0, 190.0)
     board = chess.Board("4k3/8/8/8/4P3/8/8/4K3 w - - 0 1")
 
     BoardView.render(board_view, board, chess.WHITE)
@@ -585,6 +592,32 @@ def test_start_committed_move_animation_uses_square_centers():
     assert board_view.settle_animation.start_y == start_y
     assert board_view.settle_animation.end_x == end_x
     assert board_view.settle_animation.end_y == end_y
+
+
+def test_animation_status_query_does_not_clear_animation_state():
+    board_view = BoardView.__new__(BoardView)
+    board_view.settle_animation = SettleAnimationState("P", 10.0, 20.0, 80.0, 120.0, chess.E4, start_time=10.0, duration_seconds=0.1)
+
+    assert BoardView.animation_in_progress(board_view) is False
+    assert board_view.settle_animation is not None
+
+
+def test_start_committed_move_animation_biases_start_time_for_immediate_motion():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view.settle_animation = None
+
+    BoardView.start_committed_move_animation(
+        board_view,
+        piece_symbol="P",
+        source_square=chess.E2,
+        destination_square=chess.E4,
+        player_color=chess.WHITE,
+    )
+
+    assert board_view.settle_animation is not None
+    assert board_view.settle_animation.start_time <= time.monotonic() - (ANIMATION_START_LEAD_SECONDS * 0.8)
 
 
 def test_render_keeps_origin_piece_visible_before_drag_threshold():
@@ -1295,13 +1328,14 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     gui._refresh_view = lambda *args, **kwargs: full_refresh_calls.__setitem__('count', full_refresh_calls['count'] + 1)
     gui._schedule_board_animation_refresh = lambda: None
     gui._schedule_pending_opponent_commit = lambda: None
+    animation_calls = {'count': 0}
     gui.board_view = type(
         'BoardViewStub',
         (),
         {
             'release_drag': lambda self, x, y, player_color: (chess.E2, chess.E4, True),
             'cancel_drag': lambda self: None,
-            'start_settle_animation': lambda self, **kwargs: None,
+            'start_committed_move_animation': lambda self, **kwargs: animation_calls.__setitem__('count', animation_calls['count'] + 1),
         },
     )()
     gui._build_move = lambda from_square, to_square, current_board: chess.Move(from_square, to_square)
@@ -1309,6 +1343,7 @@ def test_on_board_release_committed_move_still_uses_full_refresh():
     OpeningTrainerGUI._on_board_release(gui, type('Event', (), {'x': 30, 'y': 40})())
 
     assert submitted['uci'] == 'e2e4'
+    assert animation_calls['count'] == 1
     assert full_refresh_calls['count'] == 1
     assert board_local_calls['count'] == 0
 
@@ -1571,8 +1606,18 @@ def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
     gui._board_animation_after_handle = None
     refreshes = {'count': 0}
     gui._refresh_board_canvas = lambda: refreshes.__setitem__('count', refreshes['count'] + 1)
+    gui._show_deferred_outcome_modal_if_ready = lambda: None
     states = iter([True, False])
-    gui.board_view = type('BoardViewStub', (), {'animation_in_progress': lambda self=None: next(states)})()
+    finalized = {'count': 0}
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'animation_in_progress': lambda self=None: next(states),
+            'animation_complete': lambda self=None: True,
+            'finalize_animation': lambda self=None: finalized.__setitem__('count', finalized['count'] + 1) or True,
+        },
+    )()
 
     OpeningTrainerGUI._schedule_board_animation_refresh(gui)
 
@@ -1584,6 +1629,58 @@ def test_schedule_board_animation_refresh_requeues_until_animation_finishes():
     _delay2, callback2, _handle2 = gui.root.after_calls.pop(0)
     callback2()
     assert refreshes['count'] == 2
+    assert finalized['count'] == 1
+
+
+def test_schedule_board_animation_refresh_finalizes_then_shows_deferred_modal():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._board_animation_after_handle = None
+    events: list[str] = []
+    gui._refresh_board_canvas = lambda: events.append('refresh')
+    gui._deferred_outcome_view = object()
+    gui._show_deferred_outcome_modal_if_ready = lambda: events.append('modal')
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'animation_in_progress': lambda self=None: False,
+            'animation_complete': lambda self=None: True,
+            'finalize_animation': lambda self=None: events.append('finalize') or True,
+        },
+    )()
+
+    OpeningTrainerGUI._schedule_board_animation_refresh(gui)
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+
+    assert events == ['finalize', 'refresh', 'modal']
+
+
+def test_show_deferred_outcome_modal_if_ready_clears_deferred_after_animation_finalize():
+    outcome = SessionOutcome(False, 'Rejected by engine.', 'd4', None, 'fail', 'ordinary_corpus_play', 'immediate_retry', 'Default', 'Created new review item.')
+    view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._is_shutting_down = False
+    gui._deferred_outcome_view = view
+    calls = {'count': 0}
+    gui._show_outcome_modal = lambda current_view: calls.__setitem__('count', calls['count'] + 1)
+    gui.board_view = type(
+        'BoardViewStub',
+        (),
+        {
+            'animation_complete': lambda self: True,
+            'finalize_animation': lambda self: True,
+            'animation_in_progress': lambda self: False,
+        },
+    )()
+
+    OpeningTrainerGUI._show_deferred_outcome_modal_if_ready(gui)
+
+    assert calls['count'] == 1
+    assert gui._deferred_outcome_view is None
 
 
 def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):

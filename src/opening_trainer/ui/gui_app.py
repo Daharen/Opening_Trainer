@@ -1200,13 +1200,12 @@ class OpeningTrainerGUI:
         self.board_view.cancel_drag()
         self.session.submit_user_move_uci(move.uci())
         if moved_piece is not None:
-            self.board_view.start_settle_animation(
+            self.board_view.start_committed_move_animation(
                 piece_symbol=moved_piece.symbol(),
-                release_x=event.x,
-                release_y=event.y,
+                source_square=from_square,
                 destination_square=move.to_square,
                 player_color=view.player_color,
-                duration_ms=85,
+                duration_ms=95,
             )
         self._refresh_view()
         self._schedule_board_animation_refresh()
@@ -1320,10 +1319,23 @@ class OpeningTrainerGUI:
                 self._refresh_board_canvas()
                 self._board_animation_after_handle = self._schedule_after(16, tick)
             else:
+                self._finalize_board_animation_if_complete()
                 self._refresh_board_canvas()
                 self._show_deferred_outcome_modal_if_ready()
 
         self._board_animation_after_handle = self._schedule_after(16, tick)
+
+    def _finalize_board_animation_if_complete(self) -> bool:
+        board_view = getattr(self, 'board_view', None)
+        if board_view is None:
+            return False
+        animation_complete = getattr(board_view, 'animation_complete', None)
+        finalize_animation = getattr(board_view, 'finalize_animation', None)
+        if not callable(animation_complete) or not callable(finalize_animation):
+            return False
+        if not animation_complete():
+            return False
+        return bool(finalize_animation())
 
     def _schedule_pending_opponent_commit(self) -> None:
         if self.session.state != SessionState.OPPONENT_TURN:
@@ -1427,6 +1439,7 @@ class OpeningTrainerGUI:
             return
         if getattr(self, '_is_shutting_down', False):
             return
+        self._finalize_board_animation_if_complete()
         animation_in_progress = getattr(self.board_view, 'animation_in_progress', None)
         if callable(animation_in_progress) and animation_in_progress():
             return
