@@ -3,6 +3,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from ..review.models import ManualPresentationMode
+from .board_setup_editor import BoardSetupEditorDialog
 from .manual_target_dialog import ManualTargetDialog
 
 
@@ -43,6 +45,7 @@ class ReviewInspector(ttk.Frame):
         self.refresh_callback = refresh_callback
         self.filter_var = tk.StringVar(value='all')
         self.visible_columns = tuple(column for column in (visible_columns or self.columns) if column in self.columns) or self.columns
+        self._focused_column_id: str | None = None
 
         ttk.Combobox(
             self,
@@ -63,12 +66,85 @@ class ReviewInspector(ttk.Frame):
         self.tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
 
+        self.tree.bind('<ButtonRelease-1>', self._handle_cell_focus)
+        self.tree.bind('<Button-3>', self._open_context_menu)
+        self.tree.bind('<Control-c>', self._copy_with_shortcut)
+
         button_row = ttk.Frame(self)
         button_row.pack(fill='x', pady=4)
         ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
         ttk.Button(button_row, text='Edit item', command=self._edit_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
+
+    def _handle_cell_focus(self, event: tk.Event) -> None:
+        column_token = self.tree.identify_column(event.x)
+        if column_token.startswith('#'):
+            try:
+                idx = int(column_token[1:]) - 1
+            except ValueError:
+                self._focused_column_id = None
+                return
+            self._focused_column_id = self.visible_columns[idx] if 0 <= idx < len(self.visible_columns) else None
+
+    def _open_context_menu(self, event: tk.Event) -> None:
+        row = self.tree.identify_row(event.y)
+        if row:
+            self.tree.selection_set(row)
+            self.tree.focus(row)
+        self._handle_cell_focus(event)
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label='Copy Position', command=self._copy_position)
+        menu.add_command(label='Copy Cell', command=self._copy_cell)
+        menu.add_command(label='Copy Row', command=self._copy_row)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _copy_with_shortcut(self, _event=None):
+        if self._focused_column_id:
+            self._copy_cell()
+        else:
+            self._copy_position()
+        return 'break'
+
+    def _focused_item_and_values(self):
+        item_id = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else None)
+        if not item_id:
+            return None, None
+        values = self.tree.item(item_id, 'values')
+        return item_id, list(values)
+
+    def _copy_text(self, text: str) -> None:
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update_idletasks()
+
+    def _copy_position(self) -> None:
+        item_id, values = self._focused_item_and_values()
+        if not item_id or values is None:
+            return
+        position_idx = self.columns.index('position')
+        self._copy_text(str(values[position_idx]))
+
+    def _copy_cell(self) -> None:
+        item_id, values = self._focused_item_and_values()
+        if not item_id or values is None:
+            return
+        column = self._focused_column_id or 'position'
+        if column not in self.columns:
+            return
+        self._copy_text(str(values[self.columns.index(column)]))
+
+    def _copy_row(self) -> None:
+        item_id, values = self._focused_item_and_values()
+        if not item_id or values is None:
+            return
+        parts = []
+        for column in self.visible_columns:
+            value = values[self.columns.index(column)]
+            parts.append(f'{column}={value}')
+        self._copy_text('\t'.join(parts))
 
     def set_visible_columns(self, columns: tuple[str, ...] | list[str]) -> None:
         normalized = tuple(column for column in columns if column in self.columns) or self.columns
@@ -169,6 +245,18 @@ class ReviewInspector(ttk.Frame):
 
         ManualTargetDialog(self, _save_manual_target, title='Add Manual Target')
 
+    def open_board_setup_editor(self):
+        def _save_manual_target(**payload):
+            try:
+                self.session.add_manual_target(**payload)
+            except ValueError as exc:
+                messagebox.showerror('Manual target validation', str(exc))
+                return
+            self.refresh_callback()
+            messagebox.showinfo('Manual setup', 'Manual setup item saved.')
+
+        BoardSetupEditorDialog(self, _save_manual_target, title='Create Manual Position')
+
     def _edit_item(self):
         item_id = self.tree.focus()
         if not item_id:
@@ -201,4 +289,7 @@ class ReviewInspector(ttk.Frame):
                 message = 'Review item updated and converted to manual-managed semantics.'
             messagebox.showinfo('Edit review item', message)
 
+        if item.manual_presentation_mode == ManualPresentationMode.MANUAL_SETUP_START.value:
+            BoardSetupEditorDialog(self, _save_edit, title='Edit Manual Setup', initial=initial)
+            return
         ManualTargetDialog(self, _save_edit, title='Edit Review Item', initial=initial)

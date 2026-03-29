@@ -7,6 +7,7 @@ import chess
 
 from ..review.manual_target import validate_manual_target
 from ..review.models import ManualForcedPlayerColor, ManualPresentationMode, UrgencyTier
+from .board_setup_editor import BoardSetupEditorDialog
 
 
 class ManualTargetDialog(tk.Toplevel):
@@ -33,7 +34,8 @@ class ManualTargetDialog(tk.Toplevel):
         frame.grid(row=0, column=0, sticky='nsew')
 
         ttk.Label(frame, text='Target FEN').grid(row=0, column=0, sticky='w')
-        ttk.Entry(frame, textvariable=self.fen_var, width=80).grid(row=1, column=0, columnspan=2, sticky='ew', pady=(2, 8))
+        ttk.Entry(frame, textvariable=self.fen_var, width=80).grid(row=1, column=0, sticky='ew', pady=(2, 8))
+        ttk.Button(frame, text='Open Board Setup Editor', command=self._open_board_setup_editor).grid(row=1, column=1, sticky='e', padx=(8, 0), pady=(2, 8))
         ttk.Label(frame, text='Side to move').grid(row=2, column=0, sticky='w')
         ttk.Label(frame, textvariable=self.side_to_move_var).grid(row=2, column=1, sticky='w')
 
@@ -90,6 +92,8 @@ class ManualTargetDialog(tk.Toplevel):
 
         self.fen_var.trace_add('write', lambda *_: self._update_side_to_move())
         self.predecessor_var.trace_add('write', lambda *_: self._clear_error())
+        self.presentation_mode_var.trace_add('write', lambda *_: self._handle_presentation_mode_changed())
+        self._setup_editor_opened_by_mode_switch = False
         self._update_side_to_move()
 
     def _clear_error(self) -> None:
@@ -107,6 +111,36 @@ class ManualTargetDialog(tk.Toplevel):
             self.side_to_move_var.set('invalid FEN')
             return
         self.side_to_move_var.set('white' if board.turn == chess.WHITE else 'black')
+
+
+    def _handle_presentation_mode_changed(self) -> None:
+        mode = self.presentation_mode_var.get().strip()
+        if mode != ManualPresentationMode.MANUAL_SETUP_START.value:
+            self._setup_editor_opened_by_mode_switch = False
+            return
+        if self._setup_editor_opened_by_mode_switch:
+            return
+        self._setup_editor_opened_by_mode_switch = True
+        self._open_board_setup_editor()
+
+    def _open_board_setup_editor(self) -> None:
+        initial = {
+            'target_fen': self.fen_var.get().strip(),
+            'manual_forced_player_color': self.forced_color_var.get().strip(),
+            'urgency_tier': self.urgency_var.get().strip(),
+            'operator_note': self.note_var.get().strip(),
+        }
+
+        def _save_setup(**payload):
+            self.fen_var.set(payload.get('target_fen', self.fen_var.get()))
+            self.presentation_mode_var.set(ManualPresentationMode.MANUAL_SETUP_START.value)
+            self.predecessor_var.set(payload.get('predecessor_line_uci') or '')
+            self.urgency_var.set(payload.get('urgency_tier', self.urgency_var.get()))
+            self.forced_color_var.set(payload.get('manual_forced_player_color', self.forced_color_var.get()))
+            self.note_var.set(payload.get('operator_note') or '')
+            self.allow_below_var.set(bool(payload.get('allow_below_threshold_reach', self.allow_below_var.get())))
+
+        BoardSetupEditorDialog(self, _save_setup, title='Board Setup Editor', initial=initial, save_label='Use Position')
 
     def _save(self) -> None:
         fen = self.fen_var.get().strip()
