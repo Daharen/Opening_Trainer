@@ -2786,3 +2786,75 @@ def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):
 
     assert 'App max: 15 player moves' in summary
     assert 'Bundle max: 15 player moves' in summary
+
+
+def test_apply_post_boot_live_gate_shows_ready_overlay_on_first_timed_opponent_start():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.first_boot_ready_required = True
+    gui.paused = False
+    gui.ready_overlay_visible = False
+    gui.session = type('Session', (), {'timed_state': object(), 'state': SessionState.OPPONENT_TURN})()
+    calls: list[str] = []
+    gui._show_ready_overlay = lambda: calls.append('ready')
+    gui._schedule_pending_opponent_commit = lambda: calls.append('schedule')
+
+    gui._apply_post_boot_live_gate()
+
+    assert calls == ['ready']
+    assert gui.first_boot_ready_required is True
+
+
+def test_apply_post_boot_live_gate_consumes_first_boot_for_player_start():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.first_boot_ready_required = True
+    gui.paused = False
+    gui.ready_overlay_visible = False
+    gui.session = type('Session', (), {'timed_state': object(), 'state': SessionState.PLAYER_TURN})()
+    gui._show_ready_overlay = lambda: None
+    gui._schedule_pending_opponent_commit = lambda: None
+
+    gui._apply_post_boot_live_gate()
+
+    assert gui.first_boot_ready_required is False
+
+
+def test_acknowledge_ready_overlay_consumes_gate_and_schedules_opponent(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag=None: seen.append(message))
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.ready_overlay_visible = True
+    gui.first_boot_ready_required = True
+    gui.session = type(
+        'Session',
+        (),
+        {
+            'board': chess.Board(),
+            'player_color': chess.WHITE,
+            'state': SessionState.OPPONENT_TURN,
+        },
+    )()
+    gui._ready_overlay_frame = None
+    gui._leave_time_freeze = lambda **kwargs: None
+    scheduled = {'count': 0}
+    gui._schedule_pending_opponent_commit = lambda: scheduled.__setitem__('count', scheduled['count'] + 1)
+    gui._refresh_view = lambda transient_status=None: None
+
+    gui._acknowledge_ready_overlay()
+
+    assert gui.ready_overlay_visible is False
+    assert gui.first_boot_ready_required is False
+    assert scheduled['count'] == 1
+    assert any('GUI_READY_OVERLAY_ACKNOWLEDGED' in line for line in seen)
+
+
+def test_cancel_pending_opponent_callback_can_keep_session_pending():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui._pending_opponent_after_handle = None
+    gui._pending_opponent_scheduled_at_monotonic = 10.0
+    cancelled = {'count': 0}
+    gui.session = type('Session', (), {'cancel_pending_opponent_action': lambda self: cancelled.__setitem__('count', cancelled['count'] + 1)})()
+
+    gui._cancel_pending_opponent_callback(keep_session_pending=True)
+
+    assert cancelled['count'] == 0
+    assert gui._pending_opponent_scheduled_at_monotonic is None

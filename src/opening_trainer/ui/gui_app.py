@@ -50,6 +50,8 @@ ANIMATION_LOG_PREFIX = 'GUI_ANIM'
 PLAYER_COMMITTED_MOVE_DURATION_MS = 240
 OPPONENT_COMMITTED_MOVE_DURATION_MS = 220
 LIVE_CLOCK_REFRESH_INTERVAL_MS = 150
+PAUSE_OVERLAY_BG = '#111111'
+PAUSE_OVERLAY_FG = '#f5f5f5'
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,15 @@ class OpeningTrainerGUI:
         self._child_windows: list[tk.Toplevel] = []
         self.premove_queue: list[PremoveIntent] = []
         self._clock_refresh_after_handle = None
+        self.first_boot_ready_required = True
+        self.ready_overlay_visible = False
+        self.paused = False
+        self.pause_started_at_monotonic: float | None = None
+        self._clock_suspend_started_at_monotonic: float | None = None
+        self._frozen_pending_opponent_remaining_delay_seconds: float | None = None
+        self._pending_opponent_scheduled_at_monotonic: float | None = None
+        self._pause_overlay_window: tk.Toplevel | None = None
+        self._ready_overlay_frame = None
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(3, weight=1)
@@ -269,6 +280,7 @@ class OpeningTrainerGUI:
         self._update_bundle_summary()
         self._refresh_top_control_strip()
         self._start_live_clock_refresh()
+        self._bind_pause_hotkeys()
         self.root.protocol('WM_DELETE_WINDOW', self._request_shutdown)
 
     def _log_animation_event(self, event: str, **fields: object) -> None:
@@ -895,6 +907,9 @@ class OpeningTrainerGUI:
 
     def _start_game(self, loading_message: str | None = None):
         self._cancel_pending_opponent_callback()
+        self._destroy_pause_surface()
+        self.paused = False
+        self.pause_started_at_monotonic = None
         if loading_message is None:
             self.session.start_new_game()
             self.selected_square = None
@@ -902,6 +917,7 @@ class OpeningTrainerGUI:
             self._deferred_outcome_view = None
             self._clear_board_transients(reason='new_game_start')
             self._refresh_view()
+            self._apply_post_boot_live_gate()
             return
         self._start_loading_job(
             initial_message=loading_message,
@@ -920,6 +936,19 @@ class OpeningTrainerGUI:
         self._deferred_outcome_view = None
         self._clear_board_transients(reason='new_game_started_worker')
         self._refresh_view()
+        self._apply_post_boot_live_gate()
+
+    def _apply_post_boot_live_gate(self) -> None:
+        timed = getattr(self.session, 'timed_state', None) is not None
+        opponent_starts = getattr(self.session, 'state', None) == SessionState.OPPONENT_TURN
+        first_boot_ready_required = getattr(self, 'first_boot_ready_required', True)
+        if timed and opponent_starts and first_boot_ready_required:
+            self._show_ready_overlay()
+            return
+        if first_boot_ready_required:
+            self.first_boot_ready_required = False
+        if opponent_starts and not self.paused and not self.ready_overlay_visible:
+            self._schedule_pending_opponent_commit()
 
     def _set_loading_message(self, message: str) -> None:
         self.loading_var.set(message)
@@ -1053,7 +1082,11 @@ class OpeningTrainerGUI:
         resolved_board = chess.Board(resolved_view.board_fen) if board is None else board
         displayed_clock_seconds = getattr(self.session, 'displayed_clock_seconds', None)
         if callable(displayed_clock_seconds):
-            white_clock_seconds, black_clock_seconds = displayed_clock_seconds()
+            frozen_now = self._clock_suspend_started_at_monotonic
+            if frozen_now is not None and resolved_view.state == SessionState.PLAYER_TURN:
+                white_clock_seconds, black_clock_seconds = displayed_clock_seconds(now=frozen_now)
+            else:
+                white_clock_seconds, black_clock_seconds = displayed_clock_seconds()
         else:
             timed_state = getattr(self.session, 'timed_state', None)
             white_clock_seconds = timed_state.white_remaining_ms / 1000.0 if timed_state is not None else None
@@ -1126,6 +1159,157 @@ class OpeningTrainerGUI:
 
         ttk.Button(frame, text='Save', command=save).pack(side='left')
         ttk.Button(frame, text='Cancel', command=window.destroy).pack(side='left', padx=(8, 0))
+
+    def _bind_pause_hotkeys(self) -> None:
+        self.root.bind_all('<KeyPress-p>', lambda event: self._on_pause_hotkey(event, source='key_p'))
+        self.root.bind_all('<Escape>', lambda event: self._on_pause_hotkey(event, source='key_escape'))
+
+    def _on_pause_hotkey(self, event: tk.Event, *, source: str) -> str | None:
+        widget = getattr(event, 'widget', None)
+        if isinstance(widget, (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox)):
+            return None
+        if self._loading_job_active or getattr(self, '_is_shutting_down', False):
+            return None
+        if self.session.state not in {SessionState.PLAYER_TURN, SessionState.OPPONENT_TURN}:
+            return None
+        self._open_pause_surface(source=source)
+        return 'break'
+
+    def _open_pause_surface(self, *, source: str) -> None:
+        if self.paused:
+            if self._pause_overlay_window is not None and self._pause_overlay_window.winfo_exists():
+                self._pause_overlay_window.lift()
+                self._pause_overlay_window.focus_set()
+            return
+        self.paused = True
+        self.pause_started_at_monotonic = monotonic()
+        self._enter_time_freeze(reason='pause')
+        log_line(f'GUI_PAUSE_OPENED source={source}', tag='timing')
+        overlay = tk.Toplevel(self.root)
+        self._pause_overlay_window = overlay
+        self._child_windows.append(overlay)
+        overlay.title('Paused')
+        overlay.transient(self.root)
+        overlay.configure(bg=PAUSE_OVERLAY_BG)
+        overlay.resizable(False, False)
+        frame = ttk.Frame(overlay, padding=16)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text='Paused', font=('TkDefaultFont', 14, 'bold')).pack(anchor='center', pady=(0, 4))
+        ttk.Label(frame, text='Game time is suspended.', justify='center').pack(anchor='center', pady=(0, 12))
+        ttk.Button(frame, text='Resume', command=self._resume_from_pause).pack(fill='x')
+        ttk.Button(frame, text='Options', command=self._open_options).pack(fill='x', pady=(8, 0))
+        ttk.Button(frame, text='Corpus Selection', command=self._open_bundle_picker).pack(fill='x', pady=(8, 0))
+        ttk.Button(frame, text='Developer', command=self._open_dev_console).pack(fill='x', pady=(8, 0))
+        ttk.Button(frame, text='Profiles', command=self._open_profiles).pack(fill='x', pady=(8, 0))
+        ttk.Button(frame, text='Exit Game', command=self._exit_active_game_from_pause).pack(fill='x', pady=(8, 0))
+        overlay.protocol('WM_DELETE_WINDOW', self._resume_from_pause)
+
+    def _resume_from_pause(self) -> None:
+        if not self.paused:
+            return
+        pause_started = self.pause_started_at_monotonic
+        paused_for = max(0.0, monotonic() - pause_started) if pause_started is not None else 0.0
+        self.paused = False
+        self.pause_started_at_monotonic = None
+        self._leave_time_freeze(reason='pause', frozen_seconds=paused_for)
+        self._destroy_pause_surface()
+        log_line('GUI_PAUSE_RESUMED', tag='timing')
+        self._refresh_view()
+
+    def _destroy_pause_surface(self) -> None:
+        overlay = self._pause_overlay_window
+        self._pause_overlay_window = None
+        if overlay is None:
+            return
+        self._destroy_window(overlay)
+
+    def _exit_active_game_from_pause(self) -> None:
+        self._resume_from_pause()
+        self._cancel_pending_opponent_callback()
+        self.session.cancel_pending_opponent_action()
+        self.session.state = SessionState.IDLE
+        self.session._player_turn_started_at = None
+        self.pending_restart = False
+        self.selected_square = None
+        self._clear_board_transients(reason='exit_game')
+        self._refresh_view(transient_status='Game exited. Start drill when ready.')
+
+    def _show_ready_overlay(self) -> None:
+        if self.ready_overlay_visible:
+            return
+        self.ready_overlay_visible = True
+        self._enter_time_freeze(reason='ready_overlay')
+        log_line('GUI_READY_OVERLAY_SHOWN reason=first_boot_opponent_start', tag='timing')
+        frame = ttk.Frame(self.main_region, padding=16, style='Card.TFrame')
+        frame.place(relx=0.5, rely=0.5, anchor='center')
+        ttk.Label(frame, text='Ready?', font=('TkDefaultFont', 14, 'bold')).pack(anchor='center', pady=(0, 4))
+        ttk.Label(frame, text='Opponent starts. Click Begin to start live play.').pack(anchor='center', pady=(0, 12))
+        ttk.Button(frame, text='Begin', command=self._acknowledge_ready_overlay).pack(fill='x')
+        self._ready_overlay_frame = frame
+
+    def _acknowledge_ready_overlay(self) -> None:
+        if not self.ready_overlay_visible:
+            return
+        self.ready_overlay_visible = False
+        self.first_boot_ready_required = False
+        overlay = self._ready_overlay_frame
+        self._ready_overlay_frame = None
+        if overlay is not None:
+            overlay.place_forget()
+            overlay.destroy()
+        self._leave_time_freeze(reason='ready_overlay', frozen_seconds=0.0)
+        perspective = 'opponent' if self.session.board.turn != self.session.player_color else 'player'
+        log_line(f'GUI_READY_OVERLAY_ACKNOWLEDGED starts={perspective}', tag='timing')
+        if self.session.state == SessionState.OPPONENT_TURN:
+            self._schedule_pending_opponent_commit()
+        self._refresh_view()
+
+    def _enter_time_freeze(self, *, reason: str) -> None:
+        if self._clock_suspend_started_at_monotonic is not None:
+            return
+        self._clock_suspend_started_at_monotonic = monotonic()
+        log_line('GUI_CLOCK_PAUSED', tag='timing')
+        self._pause_pending_opponent_schedule(reason=reason)
+
+    def _leave_time_freeze(self, *, reason: str, frozen_seconds: float) -> None:
+        if self._clock_suspend_started_at_monotonic is None:
+            return
+        frozen_duration = frozen_seconds
+        if frozen_duration <= 0:
+            frozen_duration = max(0.0, monotonic() - self._clock_suspend_started_at_monotonic)
+        self._clock_suspend_started_at_monotonic = None
+        if self.session.state == SessionState.PLAYER_TURN and self.session._player_turn_started_at is not None:
+            self.session._player_turn_started_at += frozen_duration
+        self._resume_pending_opponent_schedule(reason=reason)
+        log_line('GUI_CLOCK_RESUMED', tag='timing')
+
+    def _pause_pending_opponent_schedule(self, *, reason: str) -> None:
+        if self._pending_opponent_after_handle is None:
+            return
+        remaining = 0.0
+        if self._pending_opponent_scheduled_at_monotonic is not None and self.session.pending_opponent_action is not None:
+            elapsed = max(0.0, monotonic() - self._pending_opponent_scheduled_at_monotonic)
+            remaining = max(0.0, self.session.pending_opponent_action.visible_delay_seconds - elapsed)
+        self._frozen_pending_opponent_remaining_delay_seconds = remaining
+        self._cancel_pending_opponent_callback(keep_session_pending=True)
+        log_line(f'GUI_PENDING_OPPONENT_PAUSED reason={reason} remaining_delay_seconds={remaining:.3f}', tag='timing')
+
+    def _resume_pending_opponent_schedule(self, *, reason: str) -> None:
+        if self._frozen_pending_opponent_remaining_delay_seconds is None:
+            return
+        remaining = max(0.0, self._frozen_pending_opponent_remaining_delay_seconds)
+        self._frozen_pending_opponent_remaining_delay_seconds = None
+        if self.session.state != SessionState.OPPONENT_TURN or self.session.pending_opponent_action is None:
+            return
+        if remaining <= 0:
+            self._commit_scheduled_opponent_action()
+            restored = 0.0
+        else:
+            self._pending_opponent_scheduled_at_monotonic = monotonic()
+            delay_ms = max(1, int(round(remaining * 1000)))
+            self._pending_opponent_after_handle = self._schedule_after(delay_ms, self._commit_scheduled_opponent_action)
+            restored = delay_ms / 1000.0
+        log_line(f'GUI_PENDING_OPPONENT_RESUMED reason={reason} restored_delay_seconds={restored:.3f}', tag='timing')
 
     def _refresh_view(self, transient_status: str | None = None) -> None:
         self._refresh_board_canvas()
@@ -1271,6 +1455,7 @@ class OpeningTrainerGUI:
         self.session.start_new_game()
         self._refresh_top_control_strip()
         self._refresh_view()
+        self._apply_post_boot_live_gate()
 
     def _reconcile_smart_profile_state(self, *, reason: str) -> None:
         if self.session.settings.training_mode != 'smart_profile':
@@ -1755,22 +1940,34 @@ class OpeningTrainerGUI:
     def _schedule_pending_opponent_commit(self) -> None:
         if self.session.state != SessionState.OPPONENT_TURN:
             return
+        if getattr(self, 'paused', False) or getattr(self, 'ready_overlay_visible', False):
+            return
         self._cancel_pending_opponent_callback()
-        pending = self.session.prepare_pending_opponent_action()
+        pending = self.session.pending_opponent_action or self.session.prepare_pending_opponent_action()
         if pending is None:
             log_line('GUI_OPPONENT_PENDING_PREPARE_SKIPPED: no pending action available', tag='timing')
             return
         log_line('GUI_OPPONENT_PENDING_PREPARED', tag='timing')
-        delay_ms = max(0, int(round(pending.visible_delay_seconds * 1000)))
+        frozen_delay_seconds = getattr(self, '_frozen_pending_opponent_remaining_delay_seconds', None)
+        if frozen_delay_seconds is not None:
+            delay_seconds = frozen_delay_seconds
+            self._frozen_pending_opponent_remaining_delay_seconds = None
+        else:
+            delay_seconds = pending.visible_delay_seconds
+        delay_ms = max(0, int(round(delay_seconds * 1000)))
         if delay_ms == 0:
             log_line('GUI_OPPONENT_COMMIT_SCHEDULED: delay_ms=0; committing immediately', tag='timing')
             self._commit_scheduled_opponent_action()
             return
+        self._pending_opponent_scheduled_at_monotonic = monotonic()
         self._pending_opponent_after_handle = self._schedule_after(delay_ms, self._commit_scheduled_opponent_action)
         log_line(f'GUI_OPPONENT_COMMIT_SCHEDULED: delay_ms={delay_ms}', tag='timing')
 
     def _commit_scheduled_opponent_action(self) -> None:
         self._pending_opponent_after_handle = None
+        self._pending_opponent_scheduled_at_monotonic = None
+        if getattr(self, 'paused', False) or getattr(self, 'ready_overlay_visible', False):
+            return
         if getattr(self, '_is_shutting_down', False):
             log_line('GUI_OPPONENT_COMMIT_SKIPPED: app shutting down', tag='timing')
             return
@@ -1832,9 +2029,10 @@ class OpeningTrainerGUI:
         elif self.session.state == SessionState.PLAYER_TURN:
             self._attempt_execute_next_premove()
 
-    def _cancel_pending_opponent_callback(self) -> None:
+    def _cancel_pending_opponent_callback(self, *, keep_session_pending: bool = False) -> None:
         handle = getattr(self, '_pending_opponent_after_handle', None)
         self._pending_opponent_after_handle = None
+        self._pending_opponent_scheduled_at_monotonic = None
         if handle is not None:
             root = getattr(self, 'root', None)
             try:
@@ -1847,7 +2045,7 @@ class OpeningTrainerGUI:
             log_line('GUI_OPPONENT_CALLBACK_CANCELLED: cancelled stale scheduled callback', tag='timing')
         session = getattr(self, 'session', None)
         cancel_pending = getattr(session, 'cancel_pending_opponent_action', None) if session is not None else None
-        if callable(cancel_pending):
+        if callable(cancel_pending) and not keep_session_pending:
             cancel_pending()
             log_line('GUI_OPPONENT_PENDING_DISCARDED', tag='timing')
 
@@ -1871,6 +2069,16 @@ class OpeningTrainerGUI:
         self._cancel_board_animation_callback()
         self._supporting_refresh_pending_after_first_tick = False
         self._deferred_outcome_view = None
+        ready_overlay_frame = getattr(self, '_ready_overlay_frame', None)
+        if ready_overlay_frame is not None:
+            ready_overlay_frame.place_forget()
+            ready_overlay_frame.destroy()
+            self._ready_overlay_frame = None
+        self.ready_overlay_visible = False
+        self.paused = False
+        self.pause_started_at_monotonic = None
+        self._clock_suspend_started_at_monotonic = None
+        self._frozen_pending_opponent_remaining_delay_seconds = None
         board_view = getattr(self, 'board_view', None)
         if board_view is None:
             return
@@ -1952,6 +2160,7 @@ class OpeningTrainerGUI:
         self._is_shutting_down = True
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
         self._stop_live_clock_refresh()
+        self._destroy_pause_surface()
         self._cancel_pending_opponent_callback()
         self._clear_board_transients(reason='shutdown')
         self._cancel_after_handles()

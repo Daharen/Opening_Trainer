@@ -1045,3 +1045,25 @@ def test_pending_opponent_action_commits_move_and_diagnostics(tmp_path):
     assert len(session.board.board.move_stack) == stack_before + 1
     assert session.last_opponent_choice is not None
     assert session.timing_diagnostics.visible_delay_reason in {"applied", "no_overlay_match", "sampled_think_time_missing", "review_predecessor_path"}
+
+
+def test_start_new_game_gui_player_start_does_not_start_clock(monkeypatch):
+    session = TrainingSession(mode='gui')
+    session.board.turn = lambda: chess.WHITE
+    session.player_color = chess.WHITE
+    monkeypatch.setattr('opening_trainer.session.random.choice', lambda choices: chess.WHITE)
+
+    session.start_new_game()
+
+    assert session.state == SessionState.PLAYER_TURN
+    assert session._player_turn_started_at is None
+
+
+def test_start_new_game_gui_opponent_start_does_not_auto_advance(monkeypatch):
+    session = TrainingSession(mode='gui')
+    monkeypatch.setattr('opening_trainer.session.random.choice', lambda choices: chess.BLACK)
+
+    session.start_new_game()
+
+    assert session.state == SessionState.OPPONENT_TURN
+    assert session.pending_opponent_action is None
