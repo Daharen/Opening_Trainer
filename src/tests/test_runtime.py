@@ -1198,6 +1198,37 @@ def test_terminal_player_checkmate_inside_envelope_is_success(tmp_path):
     assert 'terminal win' in view.last_outcome.reason.lower()
 
 
+def test_terminal_win_has_precedence_over_evaluator_rejection(tmp_path):
+    session = TrainingSession(review_storage=ReviewStorage(tmp_path / 'runtime' / 'profiles'))
+    session.current_routing = session.router.select(session.active_profile_id, [])
+    session.player_color = chess.WHITE
+    session.state = session.state.PLAYER_TURN
+    session.board.board = chess.Board('6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1')
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(
+                False,
+                True,
+                ReasonCode.ENGINE_FAIL,
+                'Rejected by engine.',
+                best_move_uci='f7g7',
+                best_move_san='Qg7#',
+                played_move_uci='f7g7',
+                played_move_san='Qg7#',
+                cp_loss=120,
+                metadata={'engine_available': True},
+            )
+        ),
+    )
+
+    view = session.submit_user_move_uci('f7g7')
+
+    assert view.run_passed is True
+    assert view.last_outcome is not None
+    assert view.last_outcome.terminal_kind == 'pass'
+
+
 def test_terminal_opponent_mate_does_not_loop_waiting_for_more_moves(tmp_path):
     session = TrainingSession(review_storage=ReviewStorage(tmp_path / 'runtime' / 'profiles'))
     session.current_routing = session.router.select(session.active_profile_id, [])

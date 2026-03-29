@@ -22,6 +22,11 @@ from ..corpus.catalog import (
     sort_key_time_control,
 )
 from ..models import SessionState
+from ..opponent import (
+    OPPONENT_FALLBACK_ANY_INSTALLED_HUMAN_BUNDLE,
+    OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY,
+    OPPONENT_FALLBACK_NEARBY_HUMAN_BUNDLES,
+)
 from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
 from ..settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from ..session import TrainingSession
@@ -98,6 +103,7 @@ class OpeningTrainerGUI:
         self.manual_elo_var = tk.StringVar(value='')
         self.manual_depth_var = tk.IntVar(value=self.session.settings.active_training_ply_depth)
         self.manual_good_var = tk.StringVar(value='Yes' if self.session.settings.good_moves_acceptable else 'No')
+        self.opponent_fallback_mode_var = tk.StringVar(value=self.session.settings.opponent_fallback_mode)
         self.catalog_root_var = tk.StringVar()
         self.catalog_category_combo = None
         self.catalog_time_control_combo = None
@@ -177,10 +183,24 @@ class OpeningTrainerGUI:
         self.top_good_label.grid(row=0, column=12, sticky='w', padx=(0, 8))
         self.top_good_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.manual_good_var, values=['Yes', 'No'], width=4)
         self.top_good_combo.grid(row=0, column=12, sticky='w', padx=(0, 8))
+        ttk.Label(self.control_strip, text='Human fallback').grid(row=0, column=13, sticky='w')
+        self.fallback_mode_combo = ttk.Combobox(
+            self.control_strip,
+            state='readonly',
+            textvariable=self.opponent_fallback_mode_var,
+            values=(
+                OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY,
+                OPPONENT_FALLBACK_NEARBY_HUMAN_BUNDLES,
+                OPPONENT_FALLBACK_ANY_INSTALLED_HUMAN_BUNDLE,
+            ),
+            width=28,
+        )
+        self.fallback_mode_combo.grid(row=0, column=14, sticky='w', padx=(0, 8))
         self.top_time_control_combo.bind('<<ComboboxSelected>>', self._on_top_time_control_selected)
         self.top_elo_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_depth_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_good_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
+        self.fallback_mode_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
 
         self.root_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bd=0)
         self.root_pane.grid(row=3, column=0, sticky='nsew', padx=12, pady=(6, 12))
@@ -332,6 +352,7 @@ class OpeningTrainerGUI:
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
+                opponent_fallback_mode=settings.opponent_fallback_mode,
             )
         )
 
@@ -350,6 +371,7 @@ class OpeningTrainerGUI:
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=bundle_path,
                 last_corpus_catalog_root=self._catalog_root_setting(),
+                opponent_fallback_mode=settings.opponent_fallback_mode,
             )
         )
 
@@ -372,6 +394,7 @@ class OpeningTrainerGUI:
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=catalog_root,
+                opponent_fallback_mode=settings.opponent_fallback_mode,
             )
         )
 
@@ -494,9 +517,17 @@ class OpeningTrainerGUI:
         self._apply_top_contract_change(reason='time control changed')
 
     def _on_manual_contract_changed(self, _event=None) -> None:
-        if self.smart_mode_var.get():
+        current_fallback_mode = self._selected_opponent_fallback_mode()
+        if self.smart_mode_var.get() and current_fallback_mode == self.session.settings.opponent_fallback_mode:
             return
         self._apply_top_contract_change(reason='manual contract changed')
+
+    def _selected_opponent_fallback_mode(self) -> str:
+        var = getattr(self, "opponent_fallback_mode_var", None)
+        if var is None or not hasattr(var, "get"):
+            return self.session.settings.opponent_fallback_mode
+        selected = str(var.get()).strip()
+        return selected or self.session.settings.opponent_fallback_mode
 
     def _apply_top_contract_change(self, *, reason: str) -> None:
         settings = self.session.settings
@@ -518,9 +549,12 @@ class OpeningTrainerGUI:
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
+                opponent_fallback_mode=self._selected_opponent_fallback_mode(),
             )
         )
         self.top_time_control_var.set(updated.selected_time_control_id)
+        if hasattr(self, "opponent_fallback_mode_var"):
+            self.opponent_fallback_mode_var.set(updated.opponent_fallback_mode)
         self._refresh_top_control_strip()
         resolved_bundle_path, blocked_message = self._resolve_bundle_for_top_contract(updated)
         remembered_path = self._remembered_bundle_path()
@@ -591,6 +625,8 @@ class OpeningTrainerGUI:
         controls = self._all_discovered_time_controls()
         if not controls:
             controls = [self.session.settings.selected_time_control_id]
+        if hasattr(self, "opponent_fallback_mode_var"):
+            self.opponent_fallback_mode_var.set(self.session.settings.opponent_fallback_mode)
         self.top_time_control_combo.configure(values=controls)
         if self.top_time_control_var.get().strip() not in controls:
             self.top_time_control_var.set(controls[0])
@@ -817,6 +853,7 @@ class OpeningTrainerGUI:
                 engine_depth=current.engine_depth,
                 engine_time_limit_seconds=current.engine_time_limit_seconds,
                 strict_assets=current.strict_assets,
+                opponent_fallback_mode=self._selected_opponent_fallback_mode(),
             )
         )
 
@@ -1166,6 +1203,7 @@ class OpeningTrainerGUI:
                     training_panel_visible_columns=selected_columns,
                     last_bundle_path=self._remembered_bundle_path(),
                     last_corpus_catalog_root=self._catalog_root_setting(),
+                    opponent_fallback_mode=self.session.settings.opponent_fallback_mode,
                 )
             )
             window.destroy()

@@ -32,6 +32,7 @@ class TrainerSettings:
     training_panel_visible_columns: tuple[str, ...] = DEFAULT_TRAINING_PANEL_COLUMNS
     last_bundle_path: str | None = None
     last_corpus_catalog_root: str | None = None
+    opponent_fallback_mode: str = 'current_bundle_only'
 
     def normalized(self, *, maximum_depth: int | None = None) -> 'TrainerSettings':
         effective_maximum = maximum_depth if maximum_depth is not None else max(self.active_training_ply_depth, CONSERVATIVE_FALLBACK_MAX_DEPTH)
@@ -64,6 +65,7 @@ class TrainerSettings:
             training_panel_visible_columns=visible_columns,
             last_bundle_path=bundle_path,
             last_corpus_catalog_root=catalog_root,
+            opponent_fallback_mode=str(self.opponent_fallback_mode or 'current_bundle_only').strip() or 'current_bundle_only',
         )
 
 
@@ -92,6 +94,7 @@ class TrainerSettingsStore:
             training_panel_visible_columns=tuple(payload.get('training_panel_visible_columns') or DEFAULT_TRAINING_PANEL_COLUMNS),
             last_bundle_path=payload.get('last_bundle_path') or None,
             last_corpus_catalog_root=payload.get('last_corpus_catalog_root') or None,
+            opponent_fallback_mode=str(payload.get('opponent_fallback_mode', 'current_bundle_only')),
         )
         normalized = settings.normalized(maximum_depth=maximum_depth)
         if normalized != settings:

@@ -513,16 +513,44 @@ def test_manual_target_defaults_to_play_to_position(tmp_path):
     assert decision.review_plan.root_fen == 'startpos'
 
 
-def test_manual_target_play_to_position_requires_predecessor_line(tmp_path):
+def test_manual_target_play_to_position_autoresolves_predecessor_line(tmp_path):
     session = _session(tmp_path)
-    with pytest.raises(ValueError, match='requires a predecessor line'):
-        session.add_manual_target(
-            target_fen='rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2',
-            predecessor_line_uci=None,
-            urgency_tier='ordinary_review',
-            allow_below_threshold_reach=False,
-            manual_presentation_mode='play_to_position',
-        )
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci=None,
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=False,
+        manual_presentation_mode='play_to_position',
+    )
+    assert item.predecessor_line_uci
+    assert item.predecessor_path
+
+
+def test_editing_ordinary_item_with_manual_fields_converts_origin(tmp_path):
+    session = _session(tmp_path)
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(False, True, ReasonCode.ENGINE_FAIL, 'Rejected by engine.', best_move_uci='d2d4', best_move_san='d4', played_move_uci='a2a3', played_move_san='a3', cp_loss=170, metadata={'engine_available': True})
+        ),
+    )
+    session.submit_user_move_uci('a2a3')
+    created = session.review_storage.load_items(session.active_profile_id)[0]
+    assert created.origin_kind == 'auto_captured_failure'
+
+    updated = session.edit_review_item(
+        created.review_item_id,
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',
+        urgency_tier='boosted_review',
+        predecessor_line_uci='e2e4 e7e5',
+        manual_presentation_mode='play_to_position',
+        manual_forced_player_color='white',
+        allow_below_threshold_reach=True,
+        operator_note='converted',
+    )
+    assert updated.origin_kind == 'manual_target'
+    assert updated.predecessor_line_uci == 'e2e4 e7e5'
+    assert updated.manual_forced_player_color == 'white'
 
 
 def test_manual_target_route_construction_failure_inherits_reach_policy(tmp_path):

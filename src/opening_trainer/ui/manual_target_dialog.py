@@ -112,6 +112,7 @@ class ManualTargetDialog(tk.Toplevel):
                 target_fen=fen,
                 predecessor_line_uci=predecessor,
                 presentation_mode=self.presentation_mode_var.get().strip(),
+                auto_resolve_predecessor=True,
             )
         except ValueError as exc:
             self.error_var.set(str(exc))
