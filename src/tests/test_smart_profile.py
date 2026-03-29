@@ -332,7 +332,7 @@ def test_record_outcome_promotion_reapplies_runtime_contract_and_exposes_pending
             return type("Track", (), {"current_level": self.level})(), object()
 
         def evaluate_eligibility(self, **_kwargs):
-            return object()
+            return type("Eligibility", (), {"eligible": True, "reason": "Eligible ordinary corpus ladder game."})()
 
         def apply_eligible_result(self, _eligibility, **_kwargs):
             self.level = 2
@@ -344,4 +344,37 @@ def test_record_outcome_promotion_reapplies_runtime_contract_and_exposes_pending
 
     assert reapplied == ["smart_profile"]
     assert session.consume_pending_smart_level_change() == (1, 2)
+    assert session.consume_pending_smart_level_change() is None
+
+
+def test_record_outcome_streak_only_still_reapplies_runtime_contract_without_pending_level_change():
+    session = TrainingSession.__new__(TrainingSession)
+    session.settings = TrainerSettings(training_mode="smart_profile")
+    session.runtime_context = type("Runtime", (), {"config": type("Config", (), {"corpus_bundle_dir": "/tmp/bundle"})()})()
+    session.required_player_moves = 3
+    session.config = type("Config", (), {"good_moves_acceptable": True})()
+    session.current_routing = type("Route", (), {"routing_source": "ordinary_corpus_play"})()
+    session._pending_smart_level_change = None
+    reapplied: list[str] = []
+    session._apply_settings = lambda settings: reapplied.append(settings.training_mode)
+    session._timing_contract_metadata = lambda: ("600+0", "400-600")
+
+    class SmartProfileSpy:
+        def __init__(self):
+            self.level = 4
+
+        def current_track_state(self):
+            return type("Track", (), {"current_level": self.level})(), object()
+
+        def evaluate_eligibility(self, **_kwargs):
+            return type("Eligibility", (), {"eligible": True, "reason": "Eligible ordinary corpus ladder game."})()
+
+        def apply_eligible_result(self, _eligibility, **_kwargs):
+            return "none"
+
+    session.smart_profile = SmartProfileSpy()
+
+    TrainingSession._record_smart_profile_outcome(session, True)
+
+    assert reapplied == ["smart_profile"]
     assert session.consume_pending_smart_level_change() is None

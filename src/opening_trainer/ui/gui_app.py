@@ -861,7 +861,11 @@ class OpeningTrainerGUI:
         self._show_bundle_picker('Choose a corpus bundle for this session. The last valid bundle will be reused on future launches.')
 
     def _open_profiles(self):
-        ProfileDialog(self.root, self.session, self._refresh_supporting_surfaces).open()
+        ProfileDialog(self.root, self.session, self._refresh_after_profile_switch).open()
+
+    def _refresh_after_profile_switch(self) -> None:
+        self._reconcile_smart_profile_state(reason='profile_switch')
+        self._refresh_supporting_surfaces()
 
     def _start_game(self, loading_message: str | None = None):
         self._cancel_pending_opponent_callback()
@@ -1236,26 +1240,30 @@ class OpeningTrainerGUI:
         self._deferred_outcome_view = None
         self.selected_square = None
         self._clear_board_transients(reason='acknowledge_outcome')
-        self._sync_smart_contract_after_ladder_change()
+        self._reconcile_smart_profile_state(reason='outcome_acknowledged')
         self.session.start_new_game()
         self._refresh_top_control_strip()
         self._refresh_view()
 
-    def _sync_smart_contract_after_ladder_change(self) -> None:
-        consume_change = getattr(self.session, 'consume_pending_smart_level_change', None)
-        if not callable(consume_change):
-            return
-        level_change = consume_change()
-        if level_change is None:
-            return
-        previous_level, new_level = level_change
-        log_line(
-            f'GUI_SMART_LEVEL_CHANGED old_level=L{previous_level} new_level=L{new_level} '
-            f'track={self.session.settings.selected_smart_track} tc={self.session.settings.selected_time_control_id}',
-            tag='smart_profile',
-        )
+    def _reconcile_smart_profile_state(self, *, reason: str) -> None:
         if self.session.settings.training_mode != 'smart_profile':
             return
+        consume_change = getattr(self.session, 'consume_pending_smart_level_change', None)
+        level_change = consume_change() if callable(consume_change) else None
+        previous_level: int | None = None
+        new_level: int | None = None
+        if level_change is not None:
+            previous_level, new_level = level_change
+            log_line(
+                f'GUI_SMART_LEVEL_CHANGED old_level=L{previous_level} new_level=L{new_level} '
+                f'track={self.session.settings.selected_smart_track} tc={self.session.settings.selected_time_control_id}',
+                tag='smart_profile',
+            )
+        log_line(
+            f'GUI_SMART_RECONCILE_BEGIN reason={reason} track={self.session.settings.selected_smart_track} '
+            f'control={self.session.settings.selected_time_control_id}',
+            tag='smart_profile',
+        )
         self.session._apply_settings(self.session.settings)
         status = self.session.smart_profile_status()
         expected_band = getattr(status, 'expected_rating_band', None)
@@ -1263,31 +1271,34 @@ class OpeningTrainerGUI:
         contract_good = getattr(status, 'contract_good_accepted', None)
         expected_summary = getattr(status, 'expected_bundle_summary', 'n/a')
         category_id = getattr(status, 'category_id', None)
+        level = getattr(status, 'level', None)
+        success_streak = getattr(status, 'consecutive_eligible_successes', 0)
+        failure_streak = getattr(status, 'consecutive_eligible_failures', 0)
         log_line(
-            f'GUI_SMART_CONTRACT_REAPPLY_BEGIN level=L{new_level} expected={expected_band} '
-            f'turns={contract_turns} good={contract_good}',
+            f'GUI_SMART_RECONCILE_STATE level=L{level} success={success_streak} failure={failure_streak} '
+            f'expected={expected_band} control={category_id}',
             tag='smart_profile',
         )
         updated_settings = self.session.settings
         resolved_bundle_path, blocked_message = self._resolve_bundle_for_top_contract(updated_settings)
+        switched = False
+        missing = False
+        resolved_label = 'n/a'
         if resolved_bundle_path:
+            resolved_label = Path(resolved_bundle_path).name
             remembered_path = self._remembered_bundle_path()
             switched = self._bundle_token(remembered_path) != self._bundle_token(resolved_bundle_path)
             if switched:
                 self._load_selected_bundle(resolved_bundle_path)
-            log_line(
-                f'GUI_SMART_BUNDLE_REEVALUATED expected={expected_summary} '
-                f'resolved={Path(resolved_bundle_path).name} switched={str(switched).lower()}',
-                tag='smart_profile',
-            )
         else:
-            log_line(
-                f'GUI_SMART_BUNDLE_REEVALUATED expected={expected_summary} '
-                f"switched=false reason={blocked_message or 'missing'}",
-                tag='smart_profile',
-            )
+            missing = True
             if blocked_message:
                 self._prepend_recent_status(blocked_message)
+        log_line(
+            f'GUI_SMART_RECONCILE_BUNDLE expected={expected_summary} resolved={resolved_label} '
+            f'switched={str(switched).lower()} missing={str(missing).lower()}',
+            tag='smart_profile',
+        )
         self._refresh_top_control_strip()
         refreshed = self.session.smart_profile_status()
         refreshed_level = getattr(refreshed, 'level', None)
@@ -1295,9 +1306,17 @@ class OpeningTrainerGUI:
         refreshed_turns = getattr(refreshed, 'contract_turns', None)
         refreshed_good = getattr(refreshed, 'contract_good_accepted', None)
         refreshed_control = getattr(refreshed, 'category_id', category_id)
+        refreshed_success = getattr(refreshed, 'consecutive_eligible_successes', success_streak)
+        refreshed_failure = getattr(refreshed, 'consecutive_eligible_failures', failure_streak)
+        level_change_kind = 'none'
+        if previous_level is not None and new_level is not None:
+            level_change_kind = 'promotion_or_demotion'
+        elif reason == 'outcome_acknowledged':
+            level_change_kind = 'streak_only_or_steady'
         log_line(
-            f'GUI_SMART_CONTRACT_REAPPLY_APPLIED level=L{refreshed_level} band={refreshed_band} '
-            f'turns={refreshed_turns} good={refreshed_good} control={refreshed_control}',
+            f'GUI_SMART_RECONCILE_VISIBLE_REFRESH reason={reason} change_kind={level_change_kind} '
+            f'level=L{refreshed_level} band={refreshed_band} turns={refreshed_turns} good={refreshed_good} '
+            f'control={refreshed_control} success={refreshed_success} failure={refreshed_failure}',
             tag='smart_profile',
         )
         log_line(
@@ -1582,6 +1601,7 @@ class OpeningTrainerGUI:
 
     def _reset_smart_profile_state(self) -> None:
         self.session.smart_profile.reset_all()
+        self._reconcile_smart_profile_state(reason='reset')
         self._refresh_supporting_surfaces()
 
     def _set_smart_profile_level(self) -> None:
@@ -1597,7 +1617,7 @@ class OpeningTrainerGUI:
         if not self.session.smart_profile.set_level_for_current_track(time_control_id=time_control_id, level=level):
             messagebox.showerror('Smart Profile', 'Current bundle time control is unsupported for Smart Profile.', parent=self.root)
             return
-        self.session._apply_settings(self.session.settings)
+        self._reconcile_smart_profile_state(reason='set_level')
         self._refresh_supporting_surfaces()
 
     def _schedule_after(self, delay_ms: int, callback) -> None:

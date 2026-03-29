@@ -454,6 +454,52 @@ def test_acknowledge_outcome_reapplies_smart_contract_and_loads_promoted_bundle(
     assert refreshed["count"] >= 1
 
 
+def test_reset_smart_profile_state_uses_authoritative_reconcile_path(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeSession(tmp_path)
+    calls: list[str] = []
+    gui.session.smart_profile = type("SmartProfile", (), {"reset_all": lambda self: calls.append("reset")})()
+    gui._reconcile_smart_profile_state = lambda *, reason: calls.append(f"reconcile:{reason}")
+    gui._refresh_supporting_surfaces = lambda: calls.append("refresh")
+
+    gui._reset_smart_profile_state()
+
+    assert calls == ["reset", "reconcile:reset", "refresh"]
+
+
+def test_set_smart_profile_level_uses_authoritative_reconcile_path(monkeypatch, tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = None
+    gui.session = FakeSession(tmp_path)
+    gui.session.smart_profile = type(
+        "SmartProfile",
+        (),
+        {"set_level_for_current_track": lambda self, **_kwargs: True},
+    )()
+    gui.session._timing_contract_metadata = lambda: ("600+0", "400-600")
+    calls: list[str] = []
+    gui._reconcile_smart_profile_state = lambda *, reason: calls.append(f"reconcile:{reason}")
+    gui._refresh_supporting_surfaces = lambda: calls.append("refresh")
+    monkeypatch.setattr("opening_trainer.ui.gui_app.simpledialog.askstring", lambda *_args, **_kwargs: "5")
+    monkeypatch.setattr("opening_trainer.ui.gui_app.messagebox.showerror", lambda *_args, **_kwargs: None)
+
+    gui._set_smart_profile_level()
+
+    assert calls == ["reconcile:set_level", "refresh"]
+
+
+def test_profile_switch_refresh_runs_smart_reconcile(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeSession(tmp_path)
+    calls: list[str] = []
+    gui._reconcile_smart_profile_state = lambda *, reason: calls.append(f"reconcile:{reason}")
+    gui._refresh_supporting_surfaces = lambda: calls.append("refresh")
+
+    gui._refresh_after_profile_switch()
+
+    assert calls == ["reconcile:profile_switch", "refresh"]
+
+
 def test_toolbar_has_single_corpus_selection_entrypoint():
     source = inspect.getsource(OpeningTrainerGUI.__init__)
 
