@@ -854,6 +854,7 @@ class OpeningTrainerGUI:
         self._deferred_outcome_view = None
         self._clear_board_transients(reason='bundle_load')
         self._refresh_view()
+        self._apply_post_boot_live_gate()
 
     def _update_bundle_summary(self) -> None:
         bundle_path = self._remembered_bundle_path()
@@ -942,13 +943,27 @@ class OpeningTrainerGUI:
         timed = getattr(self.session, 'timed_state', None) is not None
         opponent_starts = getattr(self.session, 'state', None) == SessionState.OPPONENT_TURN
         first_boot_ready_required = getattr(self, 'first_boot_ready_required', True)
+        session_state = getattr(getattr(self.session, 'state', None), 'value', str(getattr(self.session, 'state', None)))
+        log_line(
+            'GUI_READY_GATE_EVALUATED '
+            f'timed={str(timed).lower()} '
+            f'opponent_starts={str(opponent_starts).lower()} '
+            f'first_boot_ready_required={str(first_boot_ready_required).lower()} '
+            f'session_state={session_state}',
+            tag='timing',
+        )
         if timed and opponent_starts and first_boot_ready_required:
+            log_line('GUI_READY_GATE_PATH action=show_overlay', tag='timing')
             self._show_ready_overlay()
             return
         if first_boot_ready_required:
             self.first_boot_ready_required = False
+            log_line('GUI_READY_GATE_PATH action=consume_without_overlay', tag='timing')
         if opponent_starts and not self.paused and not self.ready_overlay_visible:
+            log_line('GUI_READY_GATE_PATH action=schedule_opponent', tag='timing')
             self._schedule_pending_opponent_commit()
+            return
+        log_line('GUI_READY_GATE_PATH action=no_action', tag='timing')
 
     def _set_loading_message(self, message: str) -> None:
         self.loading_var.set(message)
