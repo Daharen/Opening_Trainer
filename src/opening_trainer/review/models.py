@@ -47,6 +47,7 @@ class ReviewItemOrigin(str, Enum):
 class ManualPresentationMode(str, Enum):
     PLAY_TO_POSITION = 'play_to_position'
     FORCE_TARGET_START = 'force_target_start'
+    MANUAL_SETUP_START = 'manual_setup_start'
 
 
 class ManualForcedPlayerColor(str, Enum):

@@ -268,7 +268,7 @@ class TrainingSession:
             target_fen=target_fen,
             predecessor_line_uci=predecessor_line_uci,
             presentation_mode=manual_presentation_mode,
-            auto_resolve_predecessor=True,
+            auto_resolve_predecessor=manual_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value,
         )
         item = create_manual_target_item(
             profile_id=self.active_profile_id,
@@ -310,7 +310,7 @@ class TrainingSession:
                 target_fen=target_fen,
                 predecessor_line_uci=predecessor_line_uci,
                 presentation_mode=manual_presentation_mode,
-                auto_resolve_predecessor=True,
+                auto_resolve_predecessor=manual_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value,
             )
             item.position_fen_normalized = target_board.fen()
             item.position_key = normalize_builder_position_key(target_board)

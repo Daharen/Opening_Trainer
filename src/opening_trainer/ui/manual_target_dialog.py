@@ -45,7 +45,11 @@ class ManualTargetDialog(tk.Toplevel):
             frame,
             state='readonly',
             textvariable=self.presentation_mode_var,
-            values=[ManualPresentationMode.PLAY_TO_POSITION.value, ManualPresentationMode.FORCE_TARGET_START.value],
+            values=[
+                ManualPresentationMode.PLAY_TO_POSITION.value,
+                ManualPresentationMode.FORCE_TARGET_START.value,
+                ManualPresentationMode.MANUAL_SETUP_START.value,
+            ],
             width=28,
         ).grid(row=5, column=1, sticky='w')
 
@@ -108,11 +112,12 @@ class ManualTargetDialog(tk.Toplevel):
         fen = self.fen_var.get().strip()
         predecessor = self.predecessor_var.get().strip() or None
         try:
+            selected_mode = self.presentation_mode_var.get().strip()
             validate_manual_target(
                 target_fen=fen,
                 predecessor_line_uci=predecessor,
-                presentation_mode=self.presentation_mode_var.get().strip(),
-                auto_resolve_predecessor=True,
+                presentation_mode=selected_mode,
+                auto_resolve_predecessor=selected_mode == ManualPresentationMode.PLAY_TO_POSITION.value,
             )
         except ValueError as exc:
             self.error_var.set(str(exc))
@@ -122,7 +127,7 @@ class ManualTargetDialog(tk.Toplevel):
             predecessor_line_uci=predecessor,
             urgency_tier=self.urgency_var.get().strip(),
             allow_below_threshold_reach=self.allow_below_var.get(),
-            manual_presentation_mode=self.presentation_mode_var.get().strip(),
+            manual_presentation_mode=selected_mode,
             manual_forced_player_color=self.forced_color_var.get().strip(),
             operator_note=self.note_var.get().strip() or None,
         )
