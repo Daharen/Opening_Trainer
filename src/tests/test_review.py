@@ -189,6 +189,45 @@ def test_profile_reset_clears_review_state_without_touching_runtime_config(tmp_p
     assert session.runtime_context.config is not None
 
 
+def test_session_reset_profile_resets_persisted_smart_state_for_non_active_profile(tmp_path):
+    storage = ReviewStorage(tmp_path / 'runtime' / 'profiles')
+    session = TrainingSession(review_storage=storage)
+    created = session.profile_service.create_profile('Experiment A')
+    storage.save_smart_profile_state(
+        created.profile_id,
+        {
+            'mode': 'smart_profile',
+            'mode_enabled': True,
+            'selected_track_id': 'blitz',
+            'selected_time_control_id': '300+0',
+            'tracks': {'blitz': {'300+0': {'current_level': 8, 'eligible_games_played': 5}}},
+        },
+    )
+
+    was_active = session.reset_profile(created.profile_id)
+
+    payload = storage.load_smart_profile_state(created.profile_id)
+    assert was_active is False
+    assert payload['selected_track_id'] == 'rapid'
+    assert payload['tracks'] == {}
+
+
+def test_session_reset_profile_resets_active_smart_runtime_state(tmp_path):
+    storage = ReviewStorage(tmp_path / 'runtime' / 'profiles')
+    session = TrainingSession(review_storage=storage)
+    session.smart_profile.state.selected_track_id = 'blitz'
+    session.smart_profile.state.selected_time_control_id = '300+0'
+    active = session.smart_profile.state.active_track_state()
+    active.current_level = 9
+    active.consecutive_eligible_successes = 3
+
+    was_active = session.reset_profile(session.active_profile_id)
+
+    assert was_active is True
+    assert session.smart_profile.state.selected_track_id == 'blitz'
+    assert session.smart_profile.state.active_track_state().current_level == 1
+
+
 def test_integration_fail_then_retry_then_success_updates_mastery(tmp_path):
     session = _session(tmp_path)
     session.current_routing = session.router.select(session.active_profile_id, [])

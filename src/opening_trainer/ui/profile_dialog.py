@@ -5,10 +5,12 @@ from tkinter import messagebox, simpledialog
 
 
 class ProfileDialog:
-    def __init__(self, master, session, refresh_callback):
+    def __init__(self, master, session, refresh_callback, switch_callback=None, reset_callback=None):
         self.master = master
         self.session = session
         self.refresh_callback = refresh_callback
+        self.switch_callback = switch_callback
+        self.reset_callback = reset_callback
 
     def open(self):
         top = tk.Toplevel(self.master)
@@ -42,13 +44,22 @@ class ProfileDialog:
     def _switch(self, profile_id, top):
         if profile_id:
             self.session.switch_profile(profile_id)
-            self.refresh_callback()
+            if self.switch_callback is not None:
+                self.switch_callback()
+            else:
+                self.refresh_callback()
             top.destroy()
 
     def _reset(self, profile_id):
-        if profile_id and messagebox.askyesno('Confirm reset', 'Clear this profile review memory and stats?'):
-            self.session.profile_service.reset_profile(profile_id)
-            self.refresh_callback()
+        if profile_id and messagebox.askyesno('Confirm reset', 'Clear this profile review memory, stats, and Smart Profile ladder state?'):
+            if self.reset_callback is not None:
+                self.reset_callback(profile_id)
+            elif hasattr(self.session, 'reset_profile'):
+                self.session.reset_profile(profile_id)
+                self.refresh_callback()
+            else:
+                self.session.profile_service.reset_profile(profile_id)
+                self.refresh_callback()
 
     def _delete(self, profile_id, top):
         if profile_id and profile_id != 'default' and messagebox.askyesno('Confirm delete', 'Delete this profile and its local review data?'):
