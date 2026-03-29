@@ -73,6 +73,7 @@ class TrainingSession:
     opponent_visible_delay_min_seconds = 0.15
     opponent_visible_delay_max_seconds = 2.5
     opponent_visible_delay_speed_multiplier = 1.0
+    premove_execution_time_cost_seconds = 0.1
 
     def __init__(self, runtime_context: RuntimeContext | None = None, mode: str = 'cli', review_storage: ReviewStorage | None = None):
         self.runtime_context = runtime_context or load_runtime_config(RuntimeOverrides())
@@ -301,8 +302,8 @@ class TrainingSession:
                 return
             raise RuntimeError(f'Unexpected session state: {self.state}')
 
-    def submit_user_move_uci(self, move_uci: str) -> SessionView:
-        return self._submit_user_move(move_uci.strip())
+    def submit_user_move_uci(self, move_uci: str, *, premove_executed: bool = False) -> SessionView:
+        return self._submit_user_move(move_uci.strip(), premove_executed=premove_executed)
 
     def submit_user_move(self, move_text: str) -> SessionView:
         return self._submit_user_move(move_text.strip())
@@ -453,14 +454,20 @@ class TrainingSession:
             )
         )
 
-    def _submit_user_move(self, move_str: str) -> SessionView:
+    def _submit_user_move(self, move_str: str, *, premove_executed: bool = False) -> SessionView:
         if self.state != SessionState.PLAYER_TURN:
             raise RuntimeError('Cannot submit a user move when the session is not awaiting player input.')
         if not self.board.is_legal(move_str):
             log_line('Illegal move. Try again.', tag='evaluation')
             return self.get_view()
         board_before_move = self.board.board.copy(stack=True)
-        self._consume_player_think_time()
+        self._consume_player_think_time(
+            additional_seconds=(
+                self.premove_execution_time_cost_seconds
+                if premove_executed
+                else 0.0
+            )
+        )
         pre_fail_fen = board_before_move.fen()
         move = self.board.push(move_str)
         self._record_path_move(board_before_move, move)
@@ -863,10 +870,10 @@ class TrainingSession:
             black_remaining_ms=int(initial_seconds * 1000),
         )
 
-    def _consume_player_think_time(self) -> None:
+    def _consume_player_think_time(self, *, additional_seconds: float = 0.0) -> None:
         if self.timed_state is None or self._player_turn_started_at is None:
             return
-        elapsed = max(0.0, time.monotonic() - self._player_turn_started_at)
+        elapsed = max(0.0, time.monotonic() - self._player_turn_started_at) + max(0.0, additional_seconds)
         is_white = self.player_color == chess.WHITE
         if is_white:
             self.timed_state.white_remaining_ms = max(0, self.timed_state.white_remaining_ms - int(elapsed * 1000))
@@ -878,6 +885,20 @@ class TrainingSession:
                 self.timed_state.white_remaining_ms += int(self.timed_state.increment_seconds * 1000)
             else:
                 self.timed_state.black_remaining_ms += int(self.timed_state.increment_seconds * 1000)
+
+    def displayed_clock_seconds(self, now: float | None = None) -> tuple[float | None, float | None]:
+        if self.timed_state is None:
+            return None, None
+        white_remaining_ms = self.timed_state.white_remaining_ms
+        black_remaining_ms = self.timed_state.black_remaining_ms
+        if self.state == SessionState.PLAYER_TURN and self._player_turn_started_at is not None:
+            timestamp = time.monotonic() if now is None else now
+            elapsed_ms = int(max(0.0, timestamp - self._player_turn_started_at) * 1000)
+            if self.player_color == chess.WHITE:
+                white_remaining_ms = max(0, white_remaining_ms - elapsed_ms)
+            else:
+                black_remaining_ms = max(0, black_remaining_ms - elapsed_ms)
+        return white_remaining_ms / 1000.0, black_remaining_ms / 1000.0
 
     def _consume_opponent_think_time(self, sampled_seconds: float | None) -> None:
         if self.timed_state is None:
