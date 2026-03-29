@@ -19,6 +19,7 @@ from .models import EvaluationResult, MoveHistoryEntry, SessionOutcome, SessionS
 from .opening_names import OpeningNameDataset
 from .opponent import OpponentProvider
 from .review.models import ReviewItem, ReviewPathMove, RoutingDecision
+from .review.manual_target import create_manual_target_item, validate_manual_target
 from .review.profile_service import ProfileService
 from .review.router import ReviewRouter
 from .review.scheduler import apply_failure, apply_success, sync_due_cycle_transition
@@ -225,6 +226,34 @@ class TrainingSession:
     def _save_items(self, items):
         self.review_storage.save_items(self.active_profile_id, items)
 
+    def add_manual_target(
+        self,
+        *,
+        target_fen: str,
+        predecessor_line_uci: str | None,
+        urgency_tier: str,
+        allow_below_threshold_reach: bool,
+        operator_note: str | None = None,
+    ) -> ReviewItem:
+        target_board, predecessor_path, normalized_line = validate_manual_target(
+            target_fen=target_fen,
+            predecessor_line_uci=predecessor_line_uci,
+        )
+        item = create_manual_target_item(
+            profile_id=self.active_profile_id,
+            target_board=target_board,
+            predecessor_path=predecessor_path,
+            predecessor_line_uci=normalized_line,
+            urgency_tier=urgency_tier,
+            allow_below_threshold_reach=allow_below_threshold_reach,
+            operator_note=operator_note,
+        )
+        items = self._items()
+        items = [existing for existing in items if existing.review_item_id != item.review_item_id]
+        items.append(item)
+        self._save_items(items)
+        return item
+
     def start_new_game(self) -> SessionView:
         self.cancel_pending_opponent_action()
         self.state = SessionState.STARTING_GAME
@@ -247,6 +276,8 @@ class TrainingSession:
         self.current_routing = self.router.select(self.active_profile_id, items)
         self.current_review_item_id = self.current_routing.selected_review_item_id
         self.active_review_plan = self.current_routing.review_plan
+        if self.active_review_plan and self.active_review_plan.root_fen != 'startpos':
+            self.board.board = chess.Board(self.active_review_plan.root_fen)
         self._print_new_game_banner()
         log_line(self.opponent.status_message, tag='startup')
         self._print_startup_summary()
@@ -529,6 +560,17 @@ class TrainingSession:
         move = self.board.push(move_str)
         self._record_path_move(board_before_move, move)
         self.player_move_count += 1
+        setup_override_feedback = self._manual_target_setup_override_feedback(board_before_move, move)
+        if setup_override_feedback is not None:
+            self.last_evaluation = setup_override_feedback
+            self._refresh_opening_name_state(reason='position_refresh')
+            self._print_evaluation_feedback(setup_override_feedback)
+            if self._resolve_terminal_board_state():
+                return self.get_view()
+            self.state = SessionState.OPPONENT_TURN
+            if self.mode != 'gui':
+                self.advance_until_user_turn()
+            return self.get_view()
         evaluation = self.evaluator.evaluate(board_before_move, move, self.player_move_count)
         self.last_evaluation = evaluation
         self._refresh_opening_name_state(reason='position_refresh')
@@ -640,6 +682,8 @@ class TrainingSession:
         previous_level = int(track_state.current_level)
         time_control_id, rating_band = self._timing_contract_metadata()
         routing_source = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
+        if routing_source == 'manual_target':
+            return
         eligibility = self.smart_profile.evaluate_eligibility(
             routing_source=routing_source,
             bundle_available=bool(self.runtime_context.config.corpus_bundle_dir),
@@ -803,7 +847,44 @@ class TrainingSession:
             return 'ordinary_corpus_play'
         if routing_reason == 'srs_due_review':
             return 'spaced_repetition_review'
+        if routing_reason == 'manual_target':
+            return 'manual_target'
         return 'review_or_practice'
+
+    def _manual_target_setup_override_feedback(self, board_before_move: chess.Board, move: chess.Move):
+        if not self.current_routing or self.current_routing.routing_source != 'manual_target':
+            return None
+        if not self.active_review_plan or len(board_before_move.move_stack) >= len(self.active_review_plan.predecessor_path):
+            return None
+        if not self.current_review_item_id:
+            return None
+        items = self._items()
+        item = next((candidate for candidate in items if candidate.review_item_id == self.current_review_item_id), None)
+        if item is None or not item.allow_below_threshold_reach:
+            return None
+        expected = self.active_review_plan.predecessor_path[len(board_before_move.move_stack)]
+        expected_side = 'white' if board_before_move.turn == chess.WHITE else 'black'
+        if expected.get('side_to_move') != expected_side:
+            return None
+        if expected.get('move_uci') != move.uci():
+            return None
+        from .evaluation import AuthoritySource, CanonicalJudgment, OverlayLabel, ReasonCode
+        return EvaluationResult(
+            accepted=True,
+            canonical_judgment=CanonicalJudgment.BETTER,
+            overlay_label=OverlayLabel.GOOD,
+            reason_code=ReasonCode.ENGINE_PASS,
+            reason_text='Permitted reach move (manual target mode).',
+            authority_source=AuthoritySource.NONE,
+            move_uci=move.uci(),
+            legal_move_confirmed=True,
+            preferred_move_uci=expected.get('move_uci'),
+            preferred_move_san=expected.get('san'),
+            metadata={
+                'manual_target_authorized_setup_move': True,
+                'manual_target_reason': 'authorized_reach_path',
+            },
+        )
 
     def _handle_opponent_turn(self) -> None:
         pending = self.prepare_pending_opponent_action()

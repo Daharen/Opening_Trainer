@@ -7,6 +7,7 @@ import pytest
 
 from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResult, ReasonCode
 from opening_trainer.evaluator import MoveEvaluator
+from opening_trainer.review.manual_target import validate_manual_target
 from opening_trainer.review.models import ReviewItem, ReviewPathMove
 from opening_trainer.review.profile_service import ProfileService
 from opening_trainer.review.router import ReviewRouter
@@ -454,3 +455,45 @@ def test_failure_outcome_omits_good_alternatives_when_good_moves_disabled(tmp_pa
 
     assert session.last_outcome.excellent_moves == (('g1f3', 'Nf3'),)
     assert session.last_outcome.good_moves == ()
+
+
+def test_manual_target_validation_rejects_non_matching_predecessor_line():
+    with pytest.raises(ValueError, match='does not reach the target position identity'):
+        validate_manual_target(
+            target_fen='rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',
+            predecessor_line_uci='e2e4 c7c5',
+        )
+
+
+def test_manual_target_authorized_setup_move_is_permitted_without_ordinary_fail(tmp_path):
+    session = _session(tmp_path)
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci='e2e4 e7e5',
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=True,
+        operator_note='King pawn reach drill',
+    )
+    session.current_routing = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
+    session.current_review_item_id = item.review_item_id
+    session.active_review_plan = session.current_routing.review_plan
+    session.board.reset()
+    session.state = session.state.PLAYER_TURN
+    session.player_color = chess.WHITE
+    session.submit_user_move_uci('e2e4')
+    assert session.state in {session.state.OPPONENT_TURN, session.state.PLAYER_TURN}
+    assert session.last_outcome is None
+    assert session.last_evaluation.metadata.get('manual_target_authorized_setup_move') is True
+
+
+def test_manual_target_without_predecessor_uses_direct_target_root(tmp_path):
+    session = _session(tmp_path)
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci=None,
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=False,
+    )
+    decision = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
+    assert decision.routing_source == 'manual_target'
+    assert decision.review_plan.root_fen == item.position_fen_normalized

@@ -3,11 +3,14 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .manual_target_dialog import ManualTargetDialog
+
 
 class ReviewInspector(ttk.Frame):
     columns = (
         'position',
         'side',
+        'origin',
         'urgency',
         'frequency_state',
         'due',
@@ -38,7 +41,12 @@ class ReviewInspector(ttk.Frame):
         self.filter_var = tk.StringVar(value='all')
         self.visible_columns = tuple(column for column in (visible_columns or self.columns) if column in self.columns) or self.columns
 
-        ttk.Combobox(self, textvariable=self.filter_var, values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency'], state='readonly').pack(anchor='e')
+        ttk.Combobox(
+            self,
+            textvariable=self.filter_var,
+            values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency', 'manual_target'],
+            state='readonly',
+        ).pack(anchor='e')
         self.filter_var.trace_add('write', lambda *_: self.refresh())
 
         tree_frame = ttk.Frame(self)
@@ -54,6 +62,7 @@ class ReviewInspector(ttk.Frame):
 
         button_row = ttk.Frame(self)
         button_row.pack(fill='x', pady=4)
+        ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
         ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
 
@@ -67,7 +76,9 @@ class ReviewInspector(ttk.Frame):
             self.tree.delete(row)
         items = self.session.review_storage.load_items(self.session.active_profile_id)
         tier = self.filter_var.get()
-        if tier != 'all':
+        if tier == 'manual_target':
+            items = [item for item in items if item.origin_kind == 'manual_target']
+        elif tier != 'all':
             items = [item for item in items if item.urgency_tier == tier]
         tier_rank = {'extreme_urgency': 0, 'boosted_review': 1, 'ordinary_review': 2}
         items.sort(key=lambda item: (tier_rank.get(item.urgency_tier, 3), item.due_at_utc, -item.consecutive_failures, item.last_seen_at_utc, item.review_item_id))
@@ -79,6 +90,7 @@ class ReviewInspector(ttk.Frame):
                 values=(
                     item.position_key[:24],
                     item.side_to_move,
+                    item.origin_kind,
                     item.urgency_tier,
                     item.frequency_state,
                     'due' if item.due_at_utc <= item.updated_at_utc else 'scheduled',
@@ -137,3 +149,15 @@ class ReviewInspector(ttk.Frame):
                     item.last_routing_reason = 'manual_reset'
             self.session.review_storage.save_items(self.session.active_profile_id, items)
             self.refresh_callback()
+
+    def _open_manual_target_dialog(self):
+        def _save_manual_target(**payload):
+            try:
+                self.session.add_manual_target(**payload)
+            except ValueError as exc:
+                messagebox.showerror('Manual target validation', str(exc))
+                return
+            self.refresh_callback()
+            messagebox.showinfo('Manual target', 'Manual target item saved.')
+
+        ManualTargetDialog(self, _save_manual_target)
