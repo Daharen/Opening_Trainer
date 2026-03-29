@@ -44,6 +44,10 @@ class SessionOutcome:
     punishing_reply_uci: str | None = None
     punishing_reply_san: str | None = None
     punishment_line: tuple[tuple[str, str, str], ...] = ()
+    corrective_line: tuple[tuple[str, str, str], ...] = ()
+    corrective_root_fen: str | None = None
+    corrective_move_uci: str | None = None
+    corrective_move_san: str | None = None
     excellent_moves: tuple[tuple[str, str], ...] = ()
     good_moves: tuple[tuple[str, str], ...] = ()
     player_color: chess.Color = chess.WHITE

@@ -25,7 +25,7 @@ from ..models import SessionState
 from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
 from ..settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from ..session import TrainingSession
-from ..session_contracts import OutcomeArrowContract, OutcomeBoardContract, OutcomeModalContract, PunishmentSlideContract
+from ..session_contracts import OutcomeArrowContract, OutcomeBoardContract, OutcomeModalContract, ReviewSlideContract
 from ..session_logging import get_session_logger, log_line
 from ..single_instance import (
     acquire_single_instance_guard,
@@ -1465,7 +1465,8 @@ class OpeningTrainerGUI:
         if outcome is None:
             return None
         review_boards: list[OutcomeBoardContract] = []
-        punishment_slides: list[PunishmentSlideContract] = []
+        punishment_slides: list[ReviewSlideContract] = []
+        corrective_slides: list[ReviewSlideContract] = []
         if outcome.terminal_kind == 'fail' and outcome.pre_fail_fen and outcome.preferred_move_uci:
             arrows = [OutcomeArrowContract(move_uci=outcome.preferred_move_uci, color='#2e7d32', width_scale=1.0)]
             arrows.extend(OutcomeArrowContract(move_uci=uci, color='#66bb6a', width_scale=0.82) for uci, _ in outcome.excellent_moves)
@@ -1486,9 +1487,22 @@ class OpeningTrainerGUI:
         if outcome.terminal_kind == 'fail' and outcome.punishment_line:
             total_steps = len(outcome.punishment_line)
             for index, (move_uci, move_san, board_fen) in enumerate(outcome.punishment_line, start=1):
-                punishment_slides.append(PunishmentSlideContract(
+                punishment_slides.append(ReviewSlideContract(
                     step_index=index,
                     total_steps=total_steps,
+                    line_label='Punishment',
+                    board_fen=board_fen,
+                    current_move_uci=move_uci,
+                    current_move_san=move_san,
+                    player_color=outcome.player_color,
+                ))
+        if outcome.terminal_kind == 'fail' and outcome.corrective_line:
+            total_steps = len(outcome.corrective_line)
+            for index, (move_uci, move_san, board_fen) in enumerate(outcome.corrective_line, start=1):
+                corrective_slides.append(ReviewSlideContract(
+                    step_index=index,
+                    total_steps=total_steps,
+                    line_label='Correct move',
                     board_fen=board_fen,
                     current_move_uci=move_uci,
                     current_move_san=move_san,
@@ -1504,6 +1518,7 @@ class OpeningTrainerGUI:
             impact_summary=f'Profile: {outcome.profile_name} | {outcome.impact_summary}',
             review_boards=tuple(review_boards),
             punishment_slides=tuple(punishment_slides),
+            corrective_slides=tuple(corrective_slides),
         )
         return OutcomeModal(self.root, contract, self._acknowledge_outcome)
 

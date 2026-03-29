@@ -1060,7 +1060,7 @@ def test_session_opponent_turn_uses_random_after_bundle_miss_and_stockfish_failu
 
     assert session.board.board.move_stack[0].uci() == "g1f3"
     assert session.last_opponent_choice is not None
-    assert session.last_opponent_choice.selected_via == "random_legal_move"
+    assert session.last_opponent_choice.selected_via == "random_legal_fallback"
     assert session.last_opponent_choice.corpus_lookup_reason_code == "random_fallback_used_after_all_failures"
     assert "Stockfish fallback failed" in (session.last_opponent_choice.sparse_reason or "")
 
@@ -1227,3 +1227,98 @@ def test_terminal_opponent_mate_does_not_loop_waiting_for_more_moves(tmp_path):
     assert view.awaiting_user_input is False
     assert view.state == SessionState.RESTART_PENDING
     assert 'defeated' in view.last_outcome.reason.lower()
+
+
+def test_cross_bundle_fallback_uses_installed_exact_bundles_before_stockfish(tmp_path):
+    board = chess.Board()
+    position_key = normalize_builder_position_key(board)
+    active_manifest = {
+        "payload_format": "sqlite_compact_v2",
+        "payload_version": "2",
+        "canonical_exact_payload_file": "data/corpus.sqlite",
+        "position_key_format": "fen_normalized",
+        "move_key_format": "uci",
+        "time_control_id": "600+0",
+        "target_rating_band": "1200-1399",
+    }
+    fallback_manifest = {
+        "payload_format": "sqlite_compact_v2",
+        "payload_version": "2",
+        "canonical_exact_payload_file": "data/corpus.sqlite",
+        "position_key_format": "fen_normalized",
+        "move_key_format": "uci",
+        "time_control_id": "600+0",
+        "target_rating_band": "1400-1599",
+    }
+    active_bundle = _write_sqlite_bundle(tmp_path / "bundles" / "active", active_manifest, rows=[])
+    fallback_bundle = _write_sqlite_bundle(
+        tmp_path / "bundles" / "neighbor",
+        fallback_manifest,
+        rows=[{"position_key": position_key, "total_observed_count": 10, "candidate_moves": [{"uci": "e2e4", "raw_count": 10}]}],
+    )
+    assert fallback_bundle.exists()
+
+    runtime = load_runtime_config(
+        RuntimeOverrides(
+            corpus_bundle_dir=str(active_bundle),
+            opponent_fallback_mode="any_installed_human_bundle",
+        )
+    )
+    session = TrainingSession(runtime_context=runtime)
+    choice = session.opponent.choose_move_with_runtime_context(board)
+
+    assert choice.move.uci() == "e2e4"
+    assert choice.selected_via == "cross_bundle_human_fallback"
+    assert choice.cross_bundle_mode == "any_installed_human_bundle"
+    assert choice.cross_bundle_bundles_queried
+    assert choice.cross_bundle_bundles_matched
+
+
+def test_failure_outcome_includes_extended_punishment_and_corrective_lines(tmp_path):
+    class ContinuationEngine:
+        def evaluate(self, board_before_move, played_move):
+            return EngineAuthorityResult(
+                accepted=False,
+                available=True,
+                reason_code=ReasonCode.ENGINE_FAIL,
+                reason_text="fail",
+                best_move_uci="e2e4",
+                best_move_san="e4",
+                played_move_uci=played_move.uci(),
+                played_move_san=board_before_move.san(played_move),
+                cp_loss=150,
+                metadata={"engine_available": True},
+            )
+
+        def best_continuation(self, board, plies=5):
+            line: list[tuple[str, str, str]] = []
+            probe = board.copy(stack=False)
+            for _ in range(plies):
+                legal = list(probe.legal_moves)
+                if not legal:
+                    break
+                move = legal[0]
+                san = probe.san(move)
+                probe.push(move)
+                line.append((move.uci(), san, probe.fen()))
+            return line
+
+        def ranked_candidate_moves(self, board_before_move, max_moves=8):
+            return []
+
+    session = TrainingSession(review_storage=ReviewStorage(tmp_path / "runtime" / "profiles"))
+    session.current_routing = session.router.select(session.active_profile_id, [])
+    session.player_color = chess.WHITE
+    session.state = SessionState.PLAYER_TURN
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=ContinuationEngine(),
+    )
+
+    view = session.submit_user_move_uci("a2a3")
+
+    assert view.run_failed is True
+    assert view.last_outcome is not None
+    assert len(view.last_outcome.punishment_line) <= 15
+    assert len(view.last_outcome.corrective_line) <= 15
+    assert view.last_outcome.corrective_line

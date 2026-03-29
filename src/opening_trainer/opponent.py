@@ -11,6 +11,7 @@ import chess.engine
 
 from .bundle_corpus import (
     BuilderAggregateParseError,
+    CompactSQLiteAggregateCorpusProvider,
     normalize_builder_position_key,
 )
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact, normalize_position_key
@@ -22,6 +23,7 @@ from .bundle_contract import (
     classify_bundle_contract,
     manifest_declared_canonical_exact_payload_path,
     manifest_payload_version,
+    resolve_timing_conditioned_exact_payload,
 )
 from .timing import (
     DynamicTimingContext,
@@ -73,6 +75,30 @@ class OpponentMoveChoice:
     timing_bundle_invariant_time_control_id: str | None = None
     timing_bundle_invariant_rating_band: str | None = None
     timing_invariants_ignored_for_match: bool = False
+    cross_bundle_mode: str | None = None
+    cross_bundle_bundles_queried: tuple[str, ...] = ()
+    cross_bundle_bundles_matched: tuple[str, ...] = ()
+    cross_bundle_candidate_row_count: int = 0
+    cross_bundle_merged_candidate_count: int = 0
+    cross_bundle_selected_bundle: str | None = None
+
+
+OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY = "current_bundle_only"
+OPPONENT_FALLBACK_NEARBY_HUMAN_BUNDLES = "nearby_human_bundles"
+OPPONENT_FALLBACK_ANY_INSTALLED_HUMAN_BUNDLE = "any_installed_human_bundle"
+SUPPORTED_OPPONENT_FALLBACK_MODES = {
+    OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY,
+    OPPONENT_FALLBACK_NEARBY_HUMAN_BUNDLES,
+    OPPONENT_FALLBACK_ANY_INSTALLED_HUMAN_BUNDLE,
+}
+
+
+@dataclass(frozen=True)
+class _InstalledBundleCandidate:
+    bundle_dir: Path
+    payload_path: Path
+    time_control_id: str | None
+    rating_band: str | None
 
 
 class OpponentMoveProvider(Protocol):
@@ -92,7 +118,7 @@ class RandomOpponentProvider:
         return OpponentMoveChoice(
             move=move,
             position_key=normalize_position_key(board),
-            selected_via="random_legal_move",
+            selected_via="random_legal_fallback",
             corpus_lookup_reason_code="random_fallback_used_after_all_failures",
             normalized_position_key=normalize_position_key(board),
             candidate_row_count=0,
@@ -370,7 +396,14 @@ class BuilderAggregateOpponentProvider:
 
 
 class OpponentProvider:
-    def __init__(self, artifact_path: str | Path | None = DEFAULT_ARTIFACT_PATH, bundle_dir: str | Path | None = None, evaluator_config: EvaluatorConfig | None = None, rng=None):
+    def __init__(
+        self,
+        artifact_path: str | Path | None = DEFAULT_ARTIFACT_PATH,
+        bundle_dir: str | Path | None = None,
+        evaluator_config: EvaluatorConfig | None = None,
+        rng=None,
+        opponent_fallback_mode: str = OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY,
+    ):
         self.rng = rng or random
         self.artifact_path = Path(artifact_path) if artifact_path is not None else None
         self.bundle_dir = Path(bundle_dir) if bundle_dir is not None else None
@@ -379,6 +412,12 @@ class OpponentProvider:
         self.stockfish_provider = StockfishOpponentProvider(self.evaluator_config)
         self.bundle_provider: BuilderAggregateOpponentProvider | None = None
         self.corpus_provider: CorpusBackedOpponentProvider | None = None
+        self.cross_bundle_service: _CrossBundleHumanFallbackService | None = None
+        self.opponent_fallback_mode = (
+            opponent_fallback_mode
+            if opponent_fallback_mode in SUPPORTED_OPPONENT_FALLBACK_MODES
+            else OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY
+        )
         self.mode = "random_fallback"
         self.status_message = "No compatible corpus source loaded; opponent provider will use Stockfish fallback before random legal fallback."
         self.last_choice: OpponentMoveChoice | None = None
@@ -388,6 +427,11 @@ class OpponentProvider:
             bundle_contract = self._read_bundle_contract(self.bundle_dir)
             try:
                 self.bundle_provider = BuilderAggregateOpponentProvider(self.bundle_dir, rng=self.rng)
+                self.cross_bundle_service = _CrossBundleHumanFallbackService(
+                    active_bundle_dir=self.bundle_dir,
+                    fallback_mode=self.opponent_fallback_mode,
+                    rng=self.rng,
+                )
                 self.mode = "bundle"
                 self.status_message = corpus_status_detail(self.bundle_dir)
             except Exception as exc:
@@ -426,11 +470,19 @@ class OpponentProvider:
                 return choice
             except LookupError as exc:
                 failures.append(f"bundle lookup failed: {exc}")
+                cross_bundle_choice = self._cross_bundle_fallback_choice(board)
+                if cross_bundle_choice is not None:
+                    self.last_choice = cross_bundle_choice
+                    return cross_bundle_choice
             except BuilderAggregateParseError as exc:
                 failures.append(
                     "bundle lookup failed: "
                     f"reason_code={exc.reason_code}; detail={exc.detail}; position_key={normalize_builder_position_key(board)}"
                 )
+                cross_bundle_choice = self._cross_bundle_fallback_choice(board)
+                if cross_bundle_choice is not None:
+                    self.last_choice = cross_bundle_choice
+                    return cross_bundle_choice
         if self.corpus_provider is not None:
             try:
                 choice = self.corpus_provider.choose_move(board)
@@ -484,6 +536,11 @@ class OpponentProvider:
     def close(self) -> None:
         self.stockfish_provider.close()
 
+    def _cross_bundle_fallback_choice(self, board: chess.Board) -> OpponentMoveChoice | None:
+        if self.cross_bundle_service is None:
+            return None
+        return self.cross_bundle_service.choose_move(board)
+
     def _extract_candidate_row_count(self) -> int:
         diagnostic = getattr(self.bundle_provider, "last_lookup_diagnostic", None)
         return self._extract_int_from_diagnostic(diagnostic, "candidate_rows_loaded", default=0)
@@ -534,3 +591,210 @@ class OpponentProvider:
             and bundle_contract.get("canonical_exact_payload") is not None
             and str(bundle_contract.get("payload_version") or "").strip().lower() in {"2", "v2"}
         )
+
+
+class _CrossBundleHumanFallbackService:
+    def __init__(self, active_bundle_dir: Path, fallback_mode: str, rng=None):
+        self.active_bundle_dir = active_bundle_dir.resolve()
+        self.fallback_mode = fallback_mode
+        self.rng = rng or random
+        self._providers: dict[Path, CompactSQLiteAggregateCorpusProvider] = {}
+        self._installed_candidates: list[_InstalledBundleCandidate] | None = None
+        self._active_manifest = self._read_manifest(self.active_bundle_dir)
+        self._active_time_control = self._manifest_time_control_id(self._active_manifest)
+        self._active_rating_band = self._manifest_rating_band(self._active_manifest)
+
+    def choose_move(self, board: chess.Board) -> OpponentMoveChoice | None:
+        if self.fallback_mode == OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY:
+            return None
+        normalized_position_key = normalize_builder_position_key(board)
+        ranked_candidates = self._ranked_bundle_candidates()
+        if self.fallback_mode == OPPONENT_FALLBACK_NEARBY_HUMAN_BUNDLES:
+            ranked_candidates = [row for row in ranked_candidates if row.time_control_id == self._active_time_control]
+        if not ranked_candidates:
+            return None
+
+        merged_candidates_by_uci: dict[str, dict[str, object]] = {}
+        queried_bundles: list[str] = []
+        matched_bundles: list[str] = []
+        total_candidate_rows = 0
+        for rank_index, candidate in enumerate(ranked_candidates):
+            queried_bundles.append(str(candidate.bundle_dir))
+            position = self._lookup_position(candidate, normalized_position_key)
+            if position is None:
+                continue
+            legal_bundle_candidates: list[tuple[chess.Move, int]] = []
+            for row in position.candidates:
+                try:
+                    move = chess.Move.from_uci(row.uci)
+                except ValueError:
+                    continue
+                if move not in board.legal_moves:
+                    continue
+                legal_bundle_candidates.append((move, int(row.raw_count)))
+            if not legal_bundle_candidates:
+                continue
+            matched_bundles.append(str(candidate.bundle_dir))
+            total_candidate_rows += int(position.candidate_row_count)
+            priority_multiplier = self._priority_multiplier(candidate, rank_index)
+            for move, raw_count in legal_bundle_candidates:
+                merged = merged_candidates_by_uci.setdefault(
+                    move.uci(),
+                    {
+                        "move": move,
+                        "raw_count": 0,
+                        "effective_weight": 0.0,
+                        "source_bundles": set(),
+                    },
+                )
+                merged["raw_count"] = int(merged["raw_count"]) + max(0, raw_count)
+                merged["effective_weight"] = float(merged["effective_weight"]) + (max(0, raw_count) * priority_multiplier)
+                source_bundles = merged["source_bundles"]
+                if isinstance(source_bundles, set):
+                    source_bundles.add(str(candidate.bundle_dir))
+
+        if not merged_candidates_by_uci:
+            return None
+        merged_candidates = sorted(
+            merged_candidates_by_uci.values(),
+            key=lambda row: (-float(row["effective_weight"]), -int(row["raw_count"]), row["move"].uci()),
+        )
+        selected = self.rng.choices(
+            merged_candidates,
+            weights=[float(max(0.0, row["effective_weight"])) for row in merged_candidates],
+            k=1,
+        )[0]
+        selected_source_bundle = None
+        if isinstance(selected.get("source_bundles"), set) and selected["source_bundles"]:
+            selected_source_bundle = sorted(str(path) for path in selected["source_bundles"])[0]
+        return OpponentMoveChoice(
+            move=selected["move"],
+            position_key=normalized_position_key,
+            selected_via="cross_bundle_human_fallback",
+            corpus_lookup_reason_code="cross_bundle_human_fallback_after_active_bundle_miss",
+            normalized_position_key=normalized_position_key,
+            candidate_row_count=total_candidate_rows,
+            legal_candidate_count=len(merged_candidates),
+            raw_count=int(selected["raw_count"]),
+            effective_weight=float(selected["effective_weight"]),
+            total_observed_count=sum(int(row["raw_count"]) for row in merged_candidates),
+            sparse=False,
+            sparse_reason=None,
+            fallback_applied=True,
+            candidate_summaries=tuple(
+                {
+                    "uci": row["move"].uci(),
+                    "raw_count": int(row["raw_count"]),
+                    "effective_weight": float(row["effective_weight"]),
+                    "source_bundle_count": len(row["source_bundles"]) if isinstance(row["source_bundles"], set) else 0,
+                }
+                for row in merged_candidates
+            ),
+            cross_bundle_mode=self.fallback_mode,
+            cross_bundle_bundles_queried=tuple(queried_bundles),
+            cross_bundle_bundles_matched=tuple(matched_bundles),
+            cross_bundle_candidate_row_count=total_candidate_rows,
+            cross_bundle_merged_candidate_count=len(merged_candidates),
+            cross_bundle_selected_bundle=selected_source_bundle,
+        )
+
+    def _ranked_bundle_candidates(self) -> list[_InstalledBundleCandidate]:
+        candidates = list(self._installed_bundles())
+        candidates.sort(
+            key=lambda row: (
+                0 if row.time_control_id == self._active_time_control else 1,
+                self._rating_distance(self._active_rating_band, row.rating_band),
+                str(row.bundle_dir).lower(),
+            )
+        )
+        return candidates
+
+    def _installed_bundles(self) -> list[_InstalledBundleCandidate]:
+        if self._installed_candidates is not None:
+            return self._installed_candidates
+        root = self.active_bundle_dir.parent
+        discovered: list[_InstalledBundleCandidate] = []
+        for manifest_path in sorted(root.rglob(BUNDLE_MANIFEST_NAME)):
+            bundle_dir = manifest_path.parent.resolve()
+            if bundle_dir == self.active_bundle_dir:
+                continue
+            manifest = self._read_manifest(bundle_dir)
+            if not manifest:
+                continue
+            payload_resolution, _error = resolve_timing_conditioned_exact_payload(manifest, bundle_dir)
+            if payload_resolution is None:
+                continue
+            discovered.append(
+                _InstalledBundleCandidate(
+                    bundle_dir=bundle_dir,
+                    payload_path=payload_resolution.payload_path,
+                    time_control_id=self._manifest_time_control_id(manifest),
+                    rating_band=self._manifest_rating_band(manifest),
+                )
+            )
+        self._installed_candidates = discovered
+        return discovered
+
+    def _lookup_position(self, candidate: _InstalledBundleCandidate, position_key: str):
+        provider = self._providers.get(candidate.bundle_dir)
+        if provider is None:
+            provider = CompactSQLiteAggregateCorpusProvider(
+                candidate.bundle_dir,
+                {"position_key_format": "fen_normalized", "move_key_format": "uci", "payload_status": "ready"},
+                candidate.payload_path,
+            )
+            self._providers[candidate.bundle_dir] = provider
+        return provider.lookup_position(position_key)
+
+    def _priority_multiplier(self, candidate: _InstalledBundleCandidate, rank_index: int) -> float:
+        same_time_control = candidate.time_control_id == self._active_time_control and candidate.time_control_id is not None
+        rating_distance = self._rating_distance(self._active_rating_band, candidate.rating_band)
+        if same_time_control:
+            return max(0.45, 1.0 - min(rating_distance, 2400) / 3200.0 - (rank_index * 0.03))
+        return max(0.3, 0.65 - (rank_index * 0.02))
+
+    @staticmethod
+    def _read_manifest(bundle_dir: Path) -> dict[str, object]:
+        manifest_path = bundle_dir / BUNDLE_MANIFEST_NAME
+        if not manifest_path.exists():
+            return {}
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _manifest_time_control_id(manifest: dict[str, object]) -> str | None:
+        value = manifest.get("time_control_id") or manifest.get("time_format_label")
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _manifest_rating_band(manifest: dict[str, object]) -> str | None:
+        value = manifest.get("target_rating_band") or manifest.get("rating_band") or manifest.get("elo_band")
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _rating_distance(active_rating_band: str | None, candidate_rating_band: str | None) -> int:
+        def _parse(rating_band: str | None) -> tuple[int, int] | None:
+            if not rating_band or "-" not in rating_band:
+                return None
+            minimum, maximum = rating_band.split("-", 1)
+            try:
+                return int(minimum.strip()), int(maximum.strip())
+            except ValueError:
+                return None
+
+        active = _parse(active_rating_band)
+        candidate = _parse(candidate_rating_band)
+        if active is None or candidate is None:
+            return 10000
+        active_mid = (active[0] + active[1]) / 2.0
+        candidate_mid = (candidate[0] + candidate[1]) / 2.0
+        return int(abs(active_mid - candidate_mid))

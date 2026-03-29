@@ -96,6 +96,7 @@ class TrainingSession:
             bundle_dir=self.runtime_context.config.corpus_bundle_dir,
             evaluator_config=self.config,
             rng=random,
+            opponent_fallback_mode=self.runtime_context.config.opponent_fallback_mode,
         )
         self.evaluator = MoveEvaluator(
             config=self.config,
@@ -648,9 +649,10 @@ class TrainingSession:
             return self.get_view()
         if not evaluation.accepted:
             post_fail_fen = self.board.board.fen()
-            punishment_line = self._lookup_punishment_line(max_plies=5)
+            punishment_line = self.get_best_continuation_from_board(self.board.board.copy(stack=True), max_plies=15)
             punishing_reply_uci = punishment_line[0][0] if punishment_line else None
             punishing_reply_san = punishment_line[0][1] if punishment_line else None
+            corrective_line = self.get_corrective_continuation(board_before_move, evaluation.preferred_move_uci, max_plies=15)
             excellent_moves, good_moves = self._lookup_recommended_alternatives(board_before_move, evaluation)
             item, impact_summary, next_reason = self._capture_failure(board_before_move, evaluation)
             self.last_outcome = SessionOutcome(
@@ -670,6 +672,10 @@ class TrainingSession:
                 punishing_reply_uci=punishing_reply_uci,
                 punishing_reply_san=punishing_reply_san,
                 punishment_line=tuple(punishment_line),
+                corrective_line=tuple(corrective_line),
+                corrective_root_fen=board_before_move.fen() if corrective_line else None,
+                corrective_move_uci=evaluation.preferred_move_uci if corrective_line else None,
+                corrective_move_san=evaluation.preferred_move_san if corrective_line else None,
                 excellent_moves=tuple(excellent_moves),
                 good_moves=tuple(good_moves),
                 player_color=self.player_color,
@@ -784,8 +790,9 @@ class TrainingSession:
         self._pending_smart_level_change = None
         return pending
 
-    def _lookup_punishment_line(self, max_plies: int = 5) -> list[tuple[str, str, str]]:
-        board_after_fail = self.board.board.copy(stack=True)
+    def get_best_continuation_from_board(self, board: chess.Board, max_plies: int = 15) -> list[tuple[str, str, str]]:
+        if max_plies <= 0:
+            return []
         engine_authority = getattr(self.evaluator, 'engine_authority', None)
         best_continuation = getattr(engine_authority, 'best_continuation', None)
         if best_continuation is None:
@@ -793,18 +800,18 @@ class TrainingSession:
             if best_reply is None:
                 return []
             try:
-                reply_uci, reply_san = best_reply(board_after_fail)
+                reply_uci, reply_san = best_reply(board)
             except Exception:
                 return []
             if not reply_uci or not reply_san:
                 return []
             move = chess.Move.from_uci(reply_uci)
-            if move not in board_after_fail.legal_moves:
+            if move not in board.legal_moves:
                 return []
-            board_after_fail.push(move)
-            return [(reply_uci, reply_san, board_after_fail.fen())]
+            board.push(move)
+            return [(reply_uci, reply_san, board.fen())]
         try:
-            line = list(best_continuation(board_after_fail, plies=max_plies))
+            line = list(best_continuation(board, plies=max_plies))
         except Exception:
             line = []
         if line:
@@ -813,16 +820,37 @@ class TrainingSession:
         if best_reply is None:
             return []
         try:
-            reply_uci, reply_san = best_reply(board_after_fail)
+            reply_uci, reply_san = best_reply(board)
         except Exception:
             return []
         if not reply_uci or not reply_san:
             return []
         move = chess.Move.from_uci(reply_uci)
-        if move not in board_after_fail.legal_moves:
+        if move not in board.legal_moves:
             return []
-        board_after_fail.push(move)
-        return [(reply_uci, reply_san, board_after_fail.fen())]
+        board.push(move)
+        return [(reply_uci, reply_san, board.fen())]
+
+    def get_corrective_continuation(
+        self,
+        board_before_fail: chess.Board,
+        preferred_move_uci: str | None,
+        max_plies: int = 15,
+    ) -> list[tuple[str, str, str]]:
+        if max_plies <= 0 or not preferred_move_uci:
+            return []
+        board_after_correction = board_before_fail.copy(stack=True)
+        try:
+            corrective_move = chess.Move.from_uci(preferred_move_uci)
+        except ValueError:
+            return []
+        if corrective_move not in board_after_correction.legal_moves:
+            return []
+        corrective_san = board_after_correction.san(corrective_move)
+        board_after_correction.push(corrective_move)
+        continuation = [(preferred_move_uci, corrective_san, board_after_correction.fen())]
+        continuation.extend(self.get_best_continuation_from_board(board_after_correction, max_plies=max_plies - 1))
+        return continuation[:max_plies]
 
     def _lookup_recommended_alternatives(
         self,
@@ -1136,6 +1164,17 @@ class TrainingSession:
                 f"visible_delay_reason={choice.visible_delay_reason or 'none'}",
             ]
         )
+        if choice.selected_via == "cross_bundle_human_fallback":
+            parts.extend(
+                [
+                    f"cross_bundle_mode={choice.cross_bundle_mode or 'n/a'}",
+                    f"cross_bundle_queried={len(choice.cross_bundle_bundles_queried)}",
+                    f"cross_bundle_matched={len(choice.cross_bundle_bundles_matched)}",
+                    f"cross_bundle_candidate_rows={choice.cross_bundle_candidate_row_count}",
+                    f"cross_bundle_merged_legal={choice.cross_bundle_merged_candidate_count}",
+                    f"cross_bundle_selected_bundle={choice.cross_bundle_selected_bundle or 'unknown'}",
+                ]
+            )
         return ' [' + ' | '.join(parts) + ']'
 
     def _visible_opponent_delay_seconds(self, sampled_seconds: float | None, *, choice=None):
@@ -1348,7 +1387,8 @@ class TrainingSession:
         source_map = {
             "review_predecessor_path": "review predecessor path",
             "stockfish_fallback": "stockfish fallback",
-            "random_legal_move": "random fallback",
+            "cross_bundle_human_fallback": "cross-bundle human fallback",
+            "random_legal_fallback": "random fallback",
         }
         bundle = getattr(getattr(self.opponent, "bundle_provider", None), "bundle", None)
         inferred_lookup_mode = getattr(bundle, "timing_lookup_mode", "full_key")

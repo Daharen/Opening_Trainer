@@ -58,6 +58,7 @@ ENV_BOOK_PATH = "OPENING_TRAINER_BOOK_PATH"
 ENV_STRICT_ASSETS = "OPENING_TRAINER_STRICT_ASSETS"
 ENV_ENGINE_DEPTH = "OPENING_TRAINER_ENGINE_DEPTH"
 ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
+ENV_OPPONENT_FALLBACK_MODE = "OPENING_TRAINER_OPPONENT_FALLBACK_MODE"
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class RuntimeConfig:
     engine_depth: int | None = None
     engine_time_limit_seconds: float | None = None
     strict_assets: bool = False
+    opponent_fallback_mode: str = "current_bundle_only"
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "RuntimeConfig":
@@ -89,6 +91,7 @@ class RuntimeConfig:
             engine_depth=payload.get("engine_depth"),
             engine_time_limit_seconds=payload.get("engine_time_limit_seconds"),
             strict_assets=bool(payload.get("strict_assets", False)),
+            opponent_fallback_mode=str(payload.get("opponent_fallback_mode", "current_bundle_only")),
         )
 
 
@@ -102,6 +105,7 @@ class RuntimeOverrides:
     engine_depth: int | None = None
     engine_time_limit_seconds: float | None = None
     strict_assets: bool | None = None
+    opponent_fallback_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +216,15 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
             )
         ),
         strict_assets=strict_assets,
+        opponent_fallback_mode=str(
+            _pick_asset_value(
+                override_value=overrides.opponent_fallback_mode,
+                file_value=file_config.opponent_fallback_mode,
+                env_value=os.getenv(ENV_OPPONENT_FALLBACK_MODE),
+                prefer_file_value=config_prefers_file_assets,
+            )
+            or "current_bundle_only"
+        ),
     )
 
     evaluator_base = EvaluatorConfig()
