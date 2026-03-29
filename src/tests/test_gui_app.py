@@ -1619,7 +1619,7 @@ def test_on_board_release_terminal_restart_pending_defers_modal_when_animation_a
         def current_board(self):
             return board
 
-        def submit_user_move_uci(self, uci):
+        def submit_user_move_uci(self, uci, **_kwargs):
             submitted['uci'] = uci
 
     gui.session = Session()
@@ -1674,7 +1674,7 @@ def test_on_board_release_terminal_restart_pending_shows_modal_immediately_witho
         def current_board(self):
             return board
 
-        def submit_user_move_uci(self, _uci):
+        def submit_user_move_uci(self, _uci, **_kwargs):
             return None
 
     gui.session = Session()
@@ -1726,7 +1726,7 @@ def test_on_board_release_non_terminal_state_still_schedules_pending_opponent_co
         def current_board(self):
             return board
 
-        def submit_user_move_uci(self, _uci):
+        def submit_user_move_uci(self, _uci, **_kwargs):
             return None
 
     gui.session = Session()
@@ -2096,7 +2096,7 @@ def test_clear_board_transients_clears_premove_queue():
 
 def test_attempt_execute_next_premove_executes_when_legal():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
-    submitted = {'uci': None}
+    submitted = {'uci': None, 'premove_executed': None}
     scheduled = {'count': 0}
     refreshed = {'count': 0}
     class Session:
@@ -2105,9 +2105,17 @@ def test_attempt_execute_next_premove_executes_when_legal():
         def current_board(self):
             return chess.Board()
 
-        def submit_user_move_uci(self, uci):
+        def submit_user_move_uci(self, uci, **kwargs):
             submitted['uci'] = uci
+            submitted['premove_executed'] = kwargs.get('premove_executed')
             self.state = SessionState.OPPONENT_TURN
+
+        player_color = chess.WHITE
+        premove_execution_time_cost_seconds = 0.1
+        timed_state = type('Timed', (), {})()
+
+        def displayed_clock_seconds(self):
+            return 299.9, 300.0
 
         def get_view(self):
             return SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.OPPONENT_TURN, 1, 1, None, None, None)
@@ -2124,9 +2132,43 @@ def test_attempt_execute_next_premove_executes_when_legal():
 
     assert executed is True
     assert submitted['uci'] == 'e2e4'
+    assert submitted['premove_executed'] is True
     assert gui.premove_queue == []
     assert scheduled['count'] == 1
     assert refreshed['count'] == 0
+
+
+def test_live_clock_refresh_tick_updates_clock_display_only():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = set()
+    gui._is_shutting_down = False
+    gui._clock_refresh_after_handle = None
+    calls = {'clock': 0, 'full': 0}
+    gui._refresh_clock_display = lambda *args, **kwargs: calls.__setitem__('clock', calls['clock'] + 1)
+    gui._refresh_view = lambda *args, **kwargs: calls.__setitem__('full', calls['full'] + 1)
+
+    OpeningTrainerGUI._start_live_clock_refresh(gui)
+
+    assert len(gui.root.after_calls) == 1
+    _delay, callback, _handle = gui.root.after_calls.pop(0)
+    callback()
+    assert calls['clock'] == 1
+    assert calls['full'] == 0
+    assert len(gui.root.after_calls) == 1
+
+
+def test_stop_live_clock_refresh_cancels_scheduled_handle():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = FakeRoot()
+    gui._after_handles = {'h7'}
+    gui._clock_refresh_after_handle = 'h7'
+
+    OpeningTrainerGUI._stop_live_clock_refresh(gui)
+
+    assert gui._clock_refresh_after_handle is None
+    assert gui.root.cancelled == ['h7']
+    assert 'h7' not in gui._after_handles
 
 
 def test_attempt_execute_next_premove_invalidates_entire_queue_when_next_is_illegal():

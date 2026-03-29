@@ -49,6 +49,7 @@ ANIMATION_IMPL_MARKER = 'committed_move_anim_v2'
 ANIMATION_LOG_PREFIX = 'GUI_ANIM'
 PLAYER_COMMITTED_MOVE_DURATION_MS = 240
 OPPONENT_COMMITTED_MOVE_DURATION_MS = 220
+LIVE_CLOCK_REFRESH_INTERVAL_MS = 150
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,7 @@ class OpeningTrainerGUI:
         self._deferred_outcome_view = None
         self._child_windows: list[tk.Toplevel] = []
         self.premove_queue: list[PremoveIntent] = []
+        self._clock_refresh_after_handle = None
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(3, weight=1)
@@ -266,6 +268,7 @@ class OpeningTrainerGUI:
         self._refresh_catalog()
         self._update_bundle_summary()
         self._refresh_top_control_strip()
+        self._start_live_clock_refresh()
         self.root.protocol('WM_DELETE_WINDOW', self._request_shutdown)
 
     def _log_animation_event(self, event: str, **fields: object) -> None:
@@ -1011,23 +1014,32 @@ class OpeningTrainerGUI:
         view = self.session.get_view()
         self.move_list_panel.update_moves(view.move_history)
         board = chess.Board(view.board_fen)
-        timed_state = getattr(self.session, 'timed_state', None)
-        white_clock_seconds = timed_state.white_remaining_ms / 1000.0 if timed_state is not None else None
-        black_clock_seconds = timed_state.black_remaining_ms / 1000.0 if timed_state is not None else None
-        top_is_white = view.player_color == chess.BLACK
+        self._refresh_clock_display(board=board, view=view)
+        self._update_bundle_summary()
+
+    def _refresh_clock_display(self, board: chess.Board | None = None, view=None) -> None:
+        resolved_view = self.session.get_view() if view is None else view
+        resolved_board = chess.Board(resolved_view.board_fen) if board is None else board
+        displayed_clock_seconds = getattr(self.session, 'displayed_clock_seconds', None)
+        if callable(displayed_clock_seconds):
+            white_clock_seconds, black_clock_seconds = displayed_clock_seconds()
+        else:
+            timed_state = getattr(self.session, 'timed_state', None)
+            white_clock_seconds = timed_state.white_remaining_ms / 1000.0 if timed_state is not None else None
+            black_clock_seconds = timed_state.black_remaining_ms / 1000.0 if timed_state is not None else None
+        top_is_white = resolved_view.player_color == chess.BLACK
         self.top_captured_panel.update_board(
-            board,
-            player_color=view.player_color,
+            resolved_board,
+            player_color=resolved_view.player_color,
             near_side=False,
             clock_seconds=white_clock_seconds if top_is_white else black_clock_seconds,
         )
         self.bottom_captured_panel.update_board(
-            board,
-            player_color=view.player_color,
+            resolved_board,
+            player_color=resolved_view.player_color,
             near_side=True,
-            clock_seconds=white_clock_seconds if view.player_color == chess.WHITE else black_clock_seconds,
+            clock_seconds=white_clock_seconds if resolved_view.player_color == chess.WHITE else black_clock_seconds,
         )
-        self._update_bundle_summary()
 
     def _open_options(self):
         window = tk.Toplevel(self.root)
@@ -1374,7 +1386,16 @@ class OpeningTrainerGUI:
             self._refresh_view()
             return False
         self.premove_queue.pop(0)
-        self.session.submit_user_move_uci(move.uci())
+        self.session.submit_user_move_uci(move.uci(), premove_executed=True)
+        if getattr(self.session, 'timed_state', None) is not None:
+            white_seconds, black_seconds = self.session.displayed_clock_seconds()
+            player_remaining_seconds = white_seconds if self.session.player_color == chess.WHITE else black_seconds
+            log_line(
+                "GUI_PREMOVE_TIME_APPLIED: "
+                f"deducted_seconds={self.session.premove_execution_time_cost_seconds:.1f}; "
+                f"player_remaining_seconds={player_remaining_seconds:.3f}",
+                tag='timing',
+            )
         self.board_view.start_committed_move_animation(
             piece_symbol=moved_piece.symbol(),
             source_square=move.from_square,
@@ -1744,6 +1765,35 @@ class OpeningTrainerGUI:
             finally:
                 self._after_handles.discard(handle)
 
+    def _start_live_clock_refresh(self) -> None:
+        if getattr(self, '_clock_refresh_after_handle', None) is not None:
+            return
+        log_line('GUI_CLOCK_LIVE_REFRESH_STARTED', tag='timing')
+
+        def tick() -> None:
+            self._clock_refresh_after_handle = None
+            if getattr(self, '_is_shutting_down', False):
+                return
+            self._refresh_clock_display()
+            self._clock_refresh_after_handle = self._schedule_after(LIVE_CLOCK_REFRESH_INTERVAL_MS, tick)
+
+        self._clock_refresh_after_handle = self._schedule_after(LIVE_CLOCK_REFRESH_INTERVAL_MS, tick)
+
+    def _stop_live_clock_refresh(self) -> None:
+        handle = getattr(self, '_clock_refresh_after_handle', None)
+        self._clock_refresh_after_handle = None
+        if handle is None:
+            return
+        root = getattr(self, 'root', None)
+        try:
+            if root is not None:
+                root.after_cancel(handle)
+        except Exception:
+            pass
+        after_handles = getattr(self, '_after_handles', set())
+        after_handles.discard(handle)
+        log_line('GUI_CLOCK_LIVE_REFRESH_STOPPED', tag='timing')
+
     def _request_shutdown(self) -> None:
         self._shutdown_coordinator(reason='window_close')
 
@@ -1753,6 +1803,7 @@ class OpeningTrainerGUI:
         self._shutdown_started = True
         self._is_shutting_down = True
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
+        self._stop_live_clock_refresh()
         self._cancel_pending_opponent_callback()
         self._clear_board_transients(reason='shutdown')
         self._cancel_after_handles()

@@ -234,6 +234,73 @@ def _write_timing_bundle(
     return bundle_dir
 
 
+def test_displayed_clock_seconds_applies_live_elapsed_to_active_player(monkeypatch):
+    session = TrainingSession()
+    session.player_color = chess.WHITE
+    session.state = SessionState.PLAYER_TURN
+    session.timed_state = type(
+        "TimedState",
+        (),
+        {"white_remaining_ms": 10_000, "black_remaining_ms": 8_000},
+    )()
+    session._player_turn_started_at = 100.0
+    monkeypatch.setattr("opening_trainer.session.time.monotonic", lambda: 100.6)
+
+    white, black = session.displayed_clock_seconds()
+
+    assert white == 9.401
+    assert black == 8.0
+
+
+def test_submit_user_move_uci_premove_execution_deducts_fixed_time_cost(monkeypatch):
+    session = TrainingSession()
+    session.player_color = chess.WHITE
+    session.mode = "gui"
+    session.state = SessionState.PLAYER_TURN
+    session.timed_state = type(
+        "TimedState",
+        (),
+        {
+            "white_remaining_ms": 10_000,
+            "black_remaining_ms": 10_000,
+            "increment_seconds": 0.0,
+            "previous_opponent_think_seconds": None,
+        },
+    )()
+    session._player_turn_started_at = 50.0
+    monkeypatch.setattr("opening_trainer.session.time.monotonic", lambda: 50.0)
+    session.board = type(
+        "BoardStub",
+        (),
+        {
+            "is_legal": lambda self, move: move == "e2e4",
+            "board": chess.Board(),
+            "push": lambda self, move: chess.Move.from_uci(move),
+            "turn": lambda self: chess.BLACK,
+        },
+    )()
+    session._record_path_move = lambda *args, **kwargs: None
+    session.evaluator = type(
+        "EvaluatorStub",
+        (),
+        {
+            "evaluate": lambda self, board_before, move, player_move_count: type(
+                "Eval",
+                (),
+                {"canonical_judgment": None, "accepted": True, "reason_text": "ok"},
+            )()
+        },
+    )()
+    session._print_evaluation_feedback = lambda *args, **kwargs: None
+    session._resolve_terminal_board_state = lambda: False
+    session.required_player_moves = 99
+    session.current_routing = None
+
+    session.submit_user_move_uci("e2e4", premove_executed=True)
+
+    assert session.timed_state.white_remaining_ms == 9_900
+
+
 def test_timing_bundle_loader_accepts_native_manifest_and_exact_path(tmp_path):
     bundle_dir = _write_timing_bundle(tmp_path / "bundle", native=True, use_json_overlay=True, exact_name="exact_corpus.sqlite")
     handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
