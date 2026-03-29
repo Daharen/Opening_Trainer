@@ -592,6 +592,14 @@ class TrainingSession:
             good_accepted=self.config.good_moves_acceptable,
             catalog_root=self.settings.last_corpus_catalog_root,
         )
+        if not eligibility.eligible and (
+            "mismatch" in eligibility.reason.lower() or "no corpus bundle is active" in eligibility.reason.lower()
+        ):
+            log_line(
+                f"GUI_SMART_ELIGIBILITY_MISMATCH reason={eligibility.reason} "
+                f"routing={routing_source} active_control={time_control_id or 'unknown'} active_band={(rating_band or 'unknown')}",
+                tag="smart_profile",
+            )
         self.smart_profile.apply_eligible_result(
             eligibility,
             passed=passed,
@@ -600,9 +608,9 @@ class TrainingSession:
         )
         refreshed_track_state, _updated_contract = self.smart_profile.current_track_state()
         new_level = int(refreshed_track_state.current_level)
+        self._apply_settings(self.settings)
         if new_level != previous_level:
             self._pending_smart_level_change = (previous_level, new_level)
-            self._apply_settings(self.settings)
 
     def consume_pending_smart_level_change(self) -> tuple[int, int] | None:
         pending = self._pending_smart_level_change
