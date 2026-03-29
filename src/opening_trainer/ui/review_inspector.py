@@ -3,7 +3,6 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from ..review.models import ManualPresentationMode
 from .board_setup_editor import BoardSetupEditorDialog
 from .manual_target_dialog import ManualTargetDialog
 
@@ -73,7 +72,8 @@ class ReviewInspector(ttk.Frame):
         button_row = ttk.Frame(self)
         button_row.pack(fill='x', pady=4)
         ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Edit item', command=self._edit_item).pack(side='left', padx=4)
+        ttk.Button(button_row, text='Edit Item', command=self._edit_item).pack(side='left', padx=4)
+        ttk.Button(button_row, text='Board Edit', command=self._edit_item_in_board_setup).pack(side='left', padx=4)
         ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
 
@@ -97,6 +97,9 @@ class ReviewInspector(ttk.Frame):
         menu.add_command(label='Copy Position', command=self._copy_position)
         menu.add_command(label='Copy Cell', command=self._copy_cell)
         menu.add_command(label='Copy Row', command=self._copy_row)
+        menu.add_separator()
+        menu.add_command(label='Edit Item', command=self._edit_item)
+        menu.add_command(label='Edit in Board Setup', command=self._edit_item_in_board_setup)
         menu.tk_popup(event.x_root, event.y_root)
 
     def _copy_with_shortcut(self, _event=None):
@@ -258,23 +261,9 @@ class ReviewInspector(ttk.Frame):
         BoardSetupEditorDialog(self, _save_manual_target, title='Create Manual Position')
 
     def _edit_item(self):
-        item_id = self.tree.focus()
-        if not item_id:
-            return
-        items = self.session.review_storage.load_items(self.session.active_profile_id)
-        item = next((candidate for candidate in items if candidate.review_item_id == item_id), None)
+        item = self._selected_item_for_editing('Edit item')
         if item is None:
-            messagebox.showerror('Edit item', 'Selected item no longer exists.')
             return
-        initial = {
-            'target_fen': item.manual_target_fen or item.position_fen_normalized,
-            'predecessor_line_uci': item.predecessor_line_uci or '',
-            'urgency_tier': item.urgency_tier,
-            'allow_below_threshold_reach': item.allow_below_threshold_reach,
-            'manual_presentation_mode': item.manual_presentation_mode,
-            'manual_forced_player_color': item.manual_forced_player_color,
-            'operator_note': item.operator_note or '',
-        }
 
         def _save_edit(**payload):
             try:
@@ -289,7 +278,47 @@ class ReviewInspector(ttk.Frame):
                 message = 'Review item updated and converted to manual-managed semantics.'
             messagebox.showinfo('Edit review item', message)
 
-        if item.manual_presentation_mode == ManualPresentationMode.MANUAL_SETUP_START.value:
-            BoardSetupEditorDialog(self, _save_edit, title='Edit Manual Setup', initial=initial)
+        ManualTargetDialog(self, _save_edit, title='Edit Review Item', initial=self._build_item_initial(item))
+
+    def _edit_item_in_board_setup(self):
+        item = self._selected_item_for_editing('Board edit')
+        if item is None:
             return
-        ManualTargetDialog(self, _save_edit, title='Edit Review Item', initial=initial)
+
+        def _save_edit(**payload):
+            try:
+                updated = self.session.edit_review_item(item.review_item_id, **payload)
+            except ValueError as exc:
+                messagebox.showerror('Edit review item', str(exc))
+                return
+            self.refresh_callback()
+            converted = item.origin_kind != 'manual_target' and updated.origin_kind == 'manual_target'
+            message = 'Review item updated.'
+            if converted:
+                message = 'Review item updated and converted to manual-managed semantics.'
+            messagebox.showinfo('Edit review item', message)
+
+        BoardSetupEditorDialog(self, _save_edit, title='Edit in Board Setup', initial=self._build_item_initial(item))
+
+    def _selected_item_for_editing(self, context: str):
+        item_id = self.tree.focus()
+        if not item_id:
+            return None
+        items = self.session.review_storage.load_items(self.session.active_profile_id)
+        item = next((candidate for candidate in items if candidate.review_item_id == item_id), None)
+        if item is None:
+            messagebox.showerror(context, 'Selected item no longer exists.')
+            return None
+        return item
+
+    @staticmethod
+    def _build_item_initial(item):
+        return {
+            'target_fen': item.manual_target_fen or item.position_fen_normalized,
+            'predecessor_line_uci': item.predecessor_line_uci or '',
+            'urgency_tier': item.urgency_tier,
+            'allow_below_threshold_reach': item.allow_below_threshold_reach,
+            'manual_presentation_mode': item.manual_presentation_mode,
+            'manual_forced_player_color': item.manual_forced_player_color,
+            'operator_note': item.operator_note or '',
+        }
