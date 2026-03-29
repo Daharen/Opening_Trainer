@@ -16,6 +16,7 @@ from .developer_timing import DeveloperTimingOverrideState, DeveloperTimingOverr
 from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, MoveHistoryEntry, SessionOutcome, SessionState, SessionView
+from .opening_names import OpeningNameDataset
 from .opponent import OpponentProvider
 from .review.models import ReviewItem, ReviewPathMove, RoutingDecision
 from .review.profile_service import ProfileService
@@ -119,6 +120,15 @@ class TrainingSession:
         self._pending_smart_level_change: tuple[int, int] | None = None
         self.opening_name: str | None = None
         self.opening_name_frozen = False
+        self.opening_names = OpeningNameDataset.load()
+        dataset_status = self.opening_names.status()
+        log_line(
+            "GUI_OPENING_NAME_DATASET_STATUS "
+            f"loaded={'yes' if dataset_status.loaded else 'no'}; "
+            f"source={dataset_status.source_path or 'unresolved'}; "
+            f"entries={dataset_status.entry_count}",
+            tag='gui',
+        )
 
     @property
     def timing_diagnostics(self) -> LiveTimingDebugState:
@@ -275,15 +285,14 @@ class TrainingSession:
     def _refresh_opening_name_state(self, *, reason: str) -> None:
         if self.opening_name_frozen:
             return
-        resolver = getattr(self.evaluator.book_authority, 'opening_name_for_position', None)
-        opening_name = resolver(self.board.board) if callable(resolver) else None
+        opening_name = self.opening_names.opening_name_for_board(self.board.board)
         if isinstance(opening_name, str):
             opening_name = opening_name.strip() or None
         else:
             opening_name = None
         if opening_name is not None:
             if opening_name != self.opening_name:
-                update_reason = 'refined' if self.opening_name else 'book_hit'
+                update_reason = 'refined' if self.opening_name else 'dataset_hit'
                 log_line(
                     f"GUI_OPENING_NAME_UPDATED old_value={self.opening_name!r}; new_value={opening_name!r}; reason={update_reason}",
                     tag='gui',
@@ -293,7 +302,7 @@ class TrainingSession:
         if self.opening_name is not None:
             self.opening_name_frozen = True
             log_line(
-                f"GUI_OPENING_NAME_FROZEN final_value={self.opening_name!r}; reason=book_exit; trigger={reason}",
+                f"GUI_OPENING_NAME_FROZEN final_value={self.opening_name!r}; reason=book_exit_or_lookup_miss; trigger={reason}",
                 tag='gui',
             )
 

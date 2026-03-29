@@ -18,6 +18,7 @@ from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.evaluator import MoveEvaluator
 from opening_trainer.models import SessionState
 from opening_trainer.evaluation import BookAuthorityResult
+from opening_trainer.opening_names import OpeningNameDataset
 from opening_trainer.session import TrainingSession
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_corpus.pgn"
@@ -267,37 +268,78 @@ def test_book_authority_uses_polyglot_membership(monkeypatch, tmp_path):
     assert result.metadata["candidate_moves"] == ["e2e4", "d2d4"]
 
 
+def test_external_opening_dataset_loads_and_resolves_known_line(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "opening_names"
+    dataset_dir.mkdir()
+    for filename in ("a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv"):
+        (dataset_dir / filename).write_text("eco\tname\tpgn\n", encoding="utf-8")
+    (dataset_dir / "a.tsv").write_text(
+        "eco\tname\tpgn\n"
+        "C20\tKing's Pawn Game: Leonardis Variation\t1. e4 e5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENING_TRAINER_OPENING_NAMES_DIR", str(dataset_dir))
+    dataset = OpeningNameDataset.load()
+
+    assert dataset.loaded is True
+    assert dataset.entry_count == 1
+    board = chess.Board()
+    assert dataset.opening_name_for_board(board) is None
+    board.push(chess.Move.from_uci("e2e4"))
+    assert dataset.opening_name_for_board(board) is None
+    board.push(chess.Move.from_uci("e7e5"))
+    assert dataset.opening_name_for_board(board) == "King's Pawn Game: Leonardis Variation"
+
+
 def test_opening_name_state_updates_freezes_and_resets(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "opening_names"
+    dataset_dir.mkdir()
+    for filename in ("a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv"):
+        (dataset_dir / filename).write_text("eco\tname\tpgn\n", encoding="utf-8")
+    (dataset_dir / "a.tsv").write_text(
+        "eco\tname\tpgn\n"
+        "C20\tKing's Pawn Game: Leonardis Variation\t1. e4 e5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENING_TRAINER_OPENING_NAMES_DIR", str(dataset_dir))
     runtime = load_runtime_config(RuntimeOverrides(opening_book_path=str(tmp_path / "missing.bin")))
     session = TrainingSession(runtime_context=runtime)
     session.state = SessionState.PLAYER_TURN
     session.player_color = chess.WHITE
 
-    position_names = {
-        OpeningBookAuthority.normalized_position_key(chess.Board()): "King's Pawn Game",
-    }
-    board_after_e4 = chess.Board()
-    board_after_e4.push(chess.Move.from_uci("e2e4"))
-    position_names[OpeningBookAuthority.normalized_position_key(board_after_e4)] = "King's Pawn Game: Leonardis Variation"
-
-    session.evaluator.book_authority.opening_name_for_position = (
-        lambda board: position_names.get(OpeningBookAuthority.normalized_position_key(board))
-    )
-
     session._refresh_opening_name_state(reason="position_refresh")
-    assert session.opening_name == "King's Pawn Game"
+    assert session.opening_name is None
     assert session.opening_name_frozen is False
 
     session.submit_user_move_uci("e2e4")
+    assert session.opening_name is None
+    assert session.opening_name_frozen is False
+
+    session.board.push("e7e5")
+    session._refresh_opening_name_state(reason="position_refresh")
     assert session.opening_name == "King's Pawn Game: Leonardis Variation"
     assert session.opening_name_frozen is False
 
-    position_names.pop(OpeningBookAuthority.normalized_position_key(board_after_e4))
+    session.board.push("g1f3")
     session._refresh_opening_name_state(reason="position_refresh")
     assert session.opening_name_frozen is True
     assert session.opening_name == "King's Pawn Game: Leonardis Variation"
 
     session._clear_opening_name_state(reason="new_game_start")
+    assert session.opening_name is None
+    assert session.opening_name_frozen is False
+
+
+def test_missing_opening_name_dataset_keeps_opening_name_blank(monkeypatch, tmp_path):
+    missing_dataset_path = tmp_path / "missing-openings"
+    monkeypatch.setenv("OPENING_TRAINER_OPENING_NAMES_DIR", str(missing_dataset_path))
+    runtime = load_runtime_config(RuntimeOverrides(opening_book_path=str(tmp_path / "missing.bin")))
+    session = TrainingSession(runtime_context=runtime)
+    session.state = SessionState.PLAYER_TURN
+    session.player_color = chess.WHITE
+
+    session.submit_user_move_uci("e2e4")
+
     assert session.opening_name is None
     assert session.opening_name_frozen is False
 
