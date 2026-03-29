@@ -29,6 +29,70 @@ class EngineAuthority:
             self._close_engine()
             return None, None
 
+
+    def best_continuation(self, board: chess.Board, plies: int = 5) -> list[tuple[str, str, str]]:
+        if plies <= 0:
+            return []
+        try:
+            engine = self._ensure_engine()
+            limit = chess.engine.Limit(
+                depth=self.config.engine_depth,
+                time=self.config.engine_time_limit_seconds,
+            )
+            info = engine.analyse(board, limit)
+            pv = info.get("pv", [])
+        except (FileNotFoundError, chess.engine.EngineError, OSError):
+            self._close_engine()
+            return []
+        if not pv:
+            return []
+        line: list[tuple[str, str, str]] = []
+        line_board = board.copy(stack=False)
+        for move in pv[:plies]:
+            try:
+                san = line_board.san(move)
+            except Exception:
+                break
+            line_board.push(move)
+            line.append((move.uci(), san, line_board.fen()))
+        return line
+
+    def ranked_candidate_moves(self, board: chess.Board, *, max_moves: int = 6) -> list[tuple[str, str, int | None]]:
+        if max_moves <= 0:
+            return []
+        try:
+            engine = self._ensure_engine()
+            limit = chess.engine.Limit(
+                depth=self.config.engine_depth,
+                time=self.config.engine_time_limit_seconds,
+            )
+            infos = engine.analyse(board, limit, multipv=max_moves)
+        except (FileNotFoundError, chess.engine.EngineError, OSError):
+            self._close_engine()
+            return []
+        if isinstance(infos, dict):
+            infos = [infos]
+        mover = board.turn
+        ranked: list[tuple[str, str, int | None, int]] = []
+        best_score_cp: int | None = None
+        for info in infos:
+            pv = info.get("pv", [])
+            if not pv:
+                continue
+            move = pv[0]
+            score = self._score_for_side(info, mover)
+            if best_score_cp is None and score is not None:
+                best_score_cp = score
+            try:
+                san = board.san(move)
+            except Exception:
+                continue
+            cp_loss = None if best_score_cp is None or score is None else max(0, best_score_cp - score)
+            rank = int(info.get('multipv', len(ranked) + 1))
+            ranked.append((move.uci(), san, cp_loss, rank))
+        ranked.sort(key=lambda item: item[3])
+        return [(uci, san, cp_loss) for uci, san, cp_loss, _ in ranked]
+
     def evaluate(self, board_before_move: chess.Board, played_move: chess.Move) -> EngineAuthorityResult:
         played_move_uci = played_move.uci()
         played_move_san = board_before_move.san(played_move)

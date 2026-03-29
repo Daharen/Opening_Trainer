@@ -27,15 +27,23 @@ class StubBookAuthority:
 
 
 class StubEngineAuthority:
-    def __init__(self, result, best_reply=(None, None)):
+    def __init__(self, result, best_reply=(None, None), best_continuation_result=None, ranked_moves_result=None):
         self.result = result
         self.best_reply_result = best_reply
+        self.best_continuation_result = list(best_continuation_result or [])
+        self.ranked_moves_result = list(ranked_moves_result or [])
 
     def evaluate(self, board_before_move, played_move):
         return self.result
 
     def best_reply(self, board):
         return self.best_reply_result
+
+    def best_continuation(self, board, plies=5):
+        return self.best_continuation_result[:plies]
+
+    def ranked_candidate_moves(self, board, max_moves=6):
+        return self.ranked_moves_result[:max_moves]
 
 
 BOOK_MISS = BookAuthorityResult(False, False, ReasonCode.BOOK_UNAVAILABLE, 'Book authority unavailable for this position.', metadata={'book_available': False})
@@ -355,3 +363,55 @@ def test_session_history_tags_outcome_channel_for_smart_profile_isolation(tmp_pa
     if lines:
         payload = __import__('json').loads(lines[-1])['payload']
         assert payload.get('outcome_channel') in {'ordinary_corpus_play', 'review_or_practice', 'spaced_repetition_review'}
+
+
+def test_failure_outcome_builds_punishment_line_up_to_five_plies_and_recommended_alternatives(tmp_path):
+    session = _session(tmp_path)
+    continuation = [
+        ('g8f6', 'Nf6', 'rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2'),
+        ('d2d4', 'd4', 'rnbqkb1r/pppppppp/5n2/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq - 0 2'),
+        ('d7d5', 'd5', 'rnbqkb1r/ppp1pppp/5n2/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3'),
+        ('e4d5', 'exd5', 'rnbqkb1r/ppp1pppp/5n2/3P4/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3'),
+        ('f6d5', 'Nxd5', 'rnbqkb1r/ppp1pppp/8/3n4/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 0 4'),
+        ('c2c4', 'c4', 'rnbqkb1r/ppp1pppp/8/3n4/2PP4/8/PP3PPP/RNBQKBNR b KQkq - 0 4'),
+    ]
+    ranked = [
+        ('d2d4', 'd4', 0),
+        ('c2c4', 'c4', 28),
+        ('g1f3', 'Nf3', 42),
+        ('b1c3', 'Nc3', 70),
+    ]
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(False, True, ReasonCode.ENGINE_FAIL, 'Rejected by engine.', best_move_uci='d2d4', best_move_san='d4', played_move_uci='e2e4', played_move_san='e4', cp_loss=170, metadata={'engine_available': True}),
+            best_continuation_result=continuation,
+            ranked_moves_result=ranked,
+        ),
+    )
+
+    session.submit_user_move_uci('e2e4')
+
+    assert len(session.last_outcome.punishment_line) == 5
+    assert session.last_outcome.punishment_line[0][0] == 'g8f6'
+    assert session.last_outcome.excellent_moves == (('c2c4', 'c4'), ('g1f3', 'Nf3'))
+    assert session.last_outcome.good_moves == (('b1c3', 'Nc3'),)
+
+
+def test_failure_outcome_omits_good_alternatives_when_good_moves_disabled(tmp_path):
+    session = _session(tmp_path)
+    session.config = type(session.config)(**{**session.config.snapshot(), 'good_moves_acceptable': False})
+    ranked = [('d2d4', 'd4', 0), ('g1f3', 'Nf3', 20), ('b1c3', 'Nc3', 70)]
+    session.evaluator = MoveEvaluator(
+        config=session.config,
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(False, True, ReasonCode.ENGINE_FAIL, 'Rejected by engine.', best_move_uci='d2d4', best_move_san='d4', played_move_uci='e2e4', played_move_san='e4', cp_loss=170, metadata={'engine_available': True}),
+            ranked_moves_result=ranked,
+        ),
+    )
+
+    session.submit_user_move_uci('e2e4')
+
+    assert session.last_outcome.excellent_moves == (('g1f3', 'Nf3'),)
+    assert session.last_outcome.good_moves == ()

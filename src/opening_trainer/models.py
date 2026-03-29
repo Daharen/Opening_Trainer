@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 import chess
@@ -43,6 +43,9 @@ class SessionOutcome:
     preferred_move_san: str | None = None
     punishing_reply_uci: str | None = None
     punishing_reply_san: str | None = None
+    punishment_line: tuple[tuple[str, str, str], ...] = ()
+    excellent_moves: tuple[tuple[str, str], ...] = ()
+    good_moves: tuple[tuple[str, str], ...] = ()
     player_color: chess.Color = chess.WHITE
 
 
