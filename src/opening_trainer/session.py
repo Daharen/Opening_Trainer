@@ -253,10 +253,11 @@ class TrainingSession:
         log_line(f'Routing: {self.current_routing.selection_explanation}', tag='review')
         if self.board.turn() == self.player_color:
             self.state = SessionState.PLAYER_TURN
-            self._player_turn_started_at = time.monotonic()
+            self._player_turn_started_at = None if self.mode == 'gui' else time.monotonic()
         else:
             self.state = SessionState.OPPONENT_TURN
-            self.advance_until_user_turn()
+            if self.mode != 'gui':
+                self.advance_until_user_turn()
         self._refresh_opening_name_state(reason='position_refresh')
         return self.get_view()
 
@@ -515,6 +516,8 @@ class TrainingSession:
             log_line('Illegal move. Try again.', tag='evaluation')
             return self.get_view()
         board_before_move = self.board.board.copy(stack=True)
+        if self._player_turn_started_at is None:
+            self._player_turn_started_at = time.monotonic()
         self._consume_player_think_time(
             additional_seconds=(
                 self.premove_execution_time_cost_seconds
