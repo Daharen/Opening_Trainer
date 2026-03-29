@@ -286,6 +286,7 @@ def test_show_outcome_modal_fail_path_builds_dual_board_contract(monkeypatch):
         preferred_move_san='d4',
         punishing_reply_uci='g8f6',
         punishing_reply_san='Nf6',
+        punishment_line=(('g8f6','Nf6','rnbqkb1r/pppppppp/5n2/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2'),),
     )
     view = SessionView(chess.STARTING_FEN, chess.WHITE, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
@@ -298,18 +299,20 @@ def test_show_outcome_modal_fail_path_builds_dual_board_contract(monkeypatch):
     assert modal.contract.headline == 'FAIL'
     assert modal.contract.preferred_move == 'd4'
     assert modal.contract.next_routing_reason == 'immediate_retry'
-    assert len(modal.contract.review_boards) == 2
-    assert modal.contract.review_boards[0] == OutcomeBoardContract('What you should have played', chess.STARTING_FEN, chess.WHITE, 'd2d4', '#2e7d32', 'Correct move', 'd4')
-    assert modal.contract.review_boards[1].board_fen != modal.contract.review_boards[0].board_fen
-    assert modal.contract.review_boards[1].player_color is chess.WHITE
-    assert modal.contract.review_boards[1].arrow_move_uci == 'g8f6'
+    assert len(modal.contract.review_boards) == 1
+    assert modal.contract.review_boards[0].title == 'What you should have played'
+    assert modal.contract.review_boards[0].board_fen == chess.STARTING_FEN
+    assert modal.contract.review_boards[0].arrows[0].move_uci == 'd2d4'
+    assert len(modal.contract.review_boards) == 1
+    assert modal.contract.punishment_slides
+    assert modal.contract.punishment_slides[0].current_move_uci == 'g8f6'
 
 
 def test_show_outcome_modal_fail_path_keeps_black_orientation(monkeypatch):
     outcome = SessionOutcome(
         False, 'Rejected by engine.', 'd4', None, 'fail', 'ordinary_corpus_play', 'immediate_retry', 'Default', 'Created new review item.',
         pre_fail_fen=chess.STARTING_FEN, post_fail_fen='rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1',
-        preferred_move_uci='d2d4', punishing_reply_uci='g8f6', player_color=chess.BLACK,
+        preferred_move_uci='d2d4', punishing_reply_uci='g8f6', punishment_line=(('g8f6','Nf6','rnbqkb1r/pppppppp/5n2/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2'),), player_color=chess.BLACK,
     )
     view = SessionView(chess.STARTING_FEN, chess.BLACK, SessionState.RESTART_PENDING, 1, 1, None, outcome, None)
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
@@ -349,7 +352,8 @@ def test_show_outcome_modal_fail_path_survives_missing_punishing_reply(monkeypat
     modal = gui._show_outcome_modal(view)
 
     assert len(modal.contract.review_boards) == 1
-    assert modal.contract.review_boards[0].arrow_move_uci == 'd2d4'
+    assert modal.contract.review_boards[0].arrows[0].move_uci == 'd2d4'
+    assert modal.contract.punishment_slides == ()
 
 
 def test_default_shell_layout_keeps_move_list_visible_and_training_panel_hidden(tmp_path):

@@ -482,7 +482,10 @@ class TrainingSession:
             return self.get_view()
         if not evaluation.accepted:
             post_fail_fen = self.board.board.fen()
-            punishing_reply_uci, punishing_reply_san = self._lookup_punishing_reply()
+            punishment_line = self._lookup_punishment_line(max_plies=5)
+            punishing_reply_uci = punishment_line[0][0] if punishment_line else None
+            punishing_reply_san = punishment_line[0][1] if punishment_line else None
+            excellent_moves, good_moves = self._lookup_recommended_alternatives(board_before_move, evaluation)
             item, impact_summary, next_reason = self._capture_failure(board_before_move, evaluation)
             self.last_outcome = SessionOutcome(
                 False,
@@ -500,6 +503,9 @@ class TrainingSession:
                 preferred_move_san=evaluation.preferred_move_san,
                 punishing_reply_uci=punishing_reply_uci,
                 punishing_reply_san=punishing_reply_san,
+                punishment_line=tuple(punishment_line),
+                excellent_moves=tuple(excellent_moves),
+                good_moves=tuple(good_moves),
                 player_color=self.player_color,
             )
             self.state = SessionState.FAIL_RESOLUTION
@@ -590,16 +596,73 @@ class TrainingSession:
             bundle_rating_band=rating_band,
         )
 
-    def _lookup_punishing_reply(self) -> tuple[str | None, str | None]:
+    def _lookup_punishment_line(self, max_plies: int = 5) -> list[tuple[str, str, str]]:
         board_after_fail = self.board.board.copy(stack=True)
         engine_authority = getattr(self.evaluator, 'engine_authority', None)
+        best_continuation = getattr(engine_authority, 'best_continuation', None)
+        if best_continuation is None:
+            best_reply = getattr(engine_authority, 'best_reply', None)
+            if best_reply is None:
+                return []
+            try:
+                reply_uci, reply_san = best_reply(board_after_fail)
+            except Exception:
+                return []
+            if not reply_uci or not reply_san:
+                return []
+            move = chess.Move.from_uci(reply_uci)
+            if move not in board_after_fail.legal_moves:
+                return []
+            board_after_fail.push(move)
+            return [(reply_uci, reply_san, board_after_fail.fen())]
+        try:
+            line = list(best_continuation(board_after_fail, plies=max_plies))
+        except Exception:
+            line = []
+        if line:
+            return line
         best_reply = getattr(engine_authority, 'best_reply', None)
         if best_reply is None:
-            return None, None
+            return []
         try:
-            return best_reply(board_after_fail)
+            reply_uci, reply_san = best_reply(board_after_fail)
         except Exception:
-            return None, None
+            return []
+        if not reply_uci or not reply_san:
+            return []
+        move = chess.Move.from_uci(reply_uci)
+        if move not in board_after_fail.legal_moves:
+            return []
+        board_after_fail.push(move)
+        return [(reply_uci, reply_san, board_after_fail.fen())]
+
+    def _lookup_recommended_alternatives(
+        self,
+        board_before_move: chess.Board,
+        evaluation: EvaluationResult,
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        if not evaluation.preferred_move_uci:
+            return [], []
+        engine_authority = getattr(self.evaluator, 'engine_authority', None)
+        ranked_candidate_moves = getattr(engine_authority, 'ranked_candidate_moves', None)
+        if ranked_candidate_moves is None:
+            return [], []
+        try:
+            ranked = list(ranked_candidate_moves(board_before_move, max_moves=8))
+        except Exception:
+            return [], []
+        excellent: list[tuple[str, str]] = []
+        good: list[tuple[str, str]] = []
+        for move_uci, move_san, cp_loss in ranked:
+            if move_uci == evaluation.preferred_move_uci:
+                continue
+            if cp_loss is None:
+                continue
+            if cp_loss <= self.config.overlay_excellent_max_cp_loss:
+                excellent.append((move_uci, move_san))
+            elif self.config.good_moves_acceptable and cp_loss <= self.config.overlay_good_max_cp_loss:
+                good.append((move_uci, move_san))
+        return excellent[:3], good[:3]
 
     def _capture_failure(self, board_before_move: chess.Board, evaluation: EvaluationResult):
         items = self._items()

@@ -25,7 +25,7 @@ from ..models import SessionState
 from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
 from ..settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from ..session import TrainingSession
-from ..session_contracts import OutcomeBoardContract, OutcomeModalContract
+from ..session_contracts import OutcomeArrowContract, OutcomeBoardContract, OutcomeModalContract, PunishmentSlideContract
 from ..session_logging import get_session_logger, log_line
 from ..single_instance import (
     acquire_single_instance_guard,
@@ -1188,26 +1188,35 @@ class OpeningTrainerGUI:
         if outcome is None:
             return None
         review_boards: list[OutcomeBoardContract] = []
+        punishment_slides: list[PunishmentSlideContract] = []
         if outcome.terminal_kind == 'fail' and outcome.pre_fail_fen and outcome.preferred_move_uci:
+            arrows = [OutcomeArrowContract(move_uci=outcome.preferred_move_uci, color='#2e7d32', width_scale=1.0)]
+            arrows.extend(OutcomeArrowContract(move_uci=uci, color='#66bb6a', width_scale=0.82) for uci, _ in outcome.excellent_moves)
+            arrows.extend(OutcomeArrowContract(move_uci=uci, color='#a5d6a7', width_scale=0.72) for uci, _ in outcome.good_moves)
+            recommendation_label_parts = [outcome.preferred_move_san or outcome.preferred_move_uci]
+            if outcome.excellent_moves:
+                recommendation_label_parts.append('Excellent: ' + ', '.join(san for _, san in outcome.excellent_moves))
+            if outcome.good_moves:
+                recommendation_label_parts.append('Good: ' + ', '.join(san for _, san in outcome.good_moves))
             review_boards.append(OutcomeBoardContract(
                 title='What you should have played',
                 board_fen=outcome.pre_fail_fen,
                 player_color=outcome.player_color,
-                arrow_move_uci=outcome.preferred_move_uci,
-                arrow_color='#2e7d32',
-                arrow_label='Correct move',
-                move_label=outcome.preferred_move_san or outcome.preferred_move_uci,
+                arrow_label='Recommended moves',
+                move_label=' | '.join(recommendation_label_parts),
+                arrows=tuple(arrows),
             ))
-        if outcome.terminal_kind == 'fail' and outcome.post_fail_fen and outcome.punishing_reply_uci:
-            review_boards.append(OutcomeBoardContract(
-                title='What punishes this',
-                board_fen=outcome.post_fail_fen,
-                player_color=outcome.player_color,
-                arrow_move_uci=outcome.punishing_reply_uci,
-                arrow_color='#c62828',
-                arrow_label='Likely punishment',
-                move_label=outcome.punishing_reply_san or outcome.punishing_reply_uci,
-            ))
+        if outcome.terminal_kind == 'fail' and outcome.punishment_line:
+            total_steps = len(outcome.punishment_line)
+            for index, (move_uci, move_san, board_fen) in enumerate(outcome.punishment_line, start=1):
+                punishment_slides.append(PunishmentSlideContract(
+                    step_index=index,
+                    total_steps=total_steps,
+                    board_fen=board_fen,
+                    current_move_uci=move_uci,
+                    current_move_san=move_san,
+                    player_color=outcome.player_color,
+                ))
         contract = OutcomeModalContract(
             headline='SUCCESS' if outcome.passed else 'FAIL',
             summary=outcome.reason,
@@ -1217,6 +1226,7 @@ class OpeningTrainerGUI:
             next_routing_reason=outcome.next_routing_reason,
             impact_summary=f'Profile: {outcome.profile_name} | {outcome.impact_summary}',
             review_boards=tuple(review_boards),
+            punishment_slides=tuple(punishment_slides),
         )
         return OutcomeModal(self.root, contract, self._acknowledge_outcome)
 

@@ -65,6 +65,7 @@ class BoardView(tk.Canvas):
         self.highlight_squares: set[chess.Square] = set()
         self.arrow_move_uci: str | None = None
         self.arrow_color: str = '#2e7d32'
+        self.arrow_descriptors: tuple[tuple[str, str, float], ...] = ()
         self.premove_move_uci_queue: tuple[str, ...] = ()
         self.premove_highlight_squares: set[chess.Square] = set()
         self.drag_state: DragState | None = None
@@ -92,6 +93,14 @@ class BoardView(tk.Canvas):
     def set_arrow(self, move_uci: str | None, color: str = '#2e7d32') -> None:
         self.arrow_move_uci = move_uci
         self.arrow_color = color
+        self.arrow_descriptors = ((move_uci, color, 1.0),) if move_uci else ()
+
+    def set_arrows(self, arrows: list[tuple[str, str, float]]) -> None:
+        self.arrow_descriptors = tuple((move_uci, color, width_scale) for move_uci, color, width_scale in arrows if move_uci)
+        if self.arrow_descriptors:
+            self.arrow_move_uci, self.arrow_color, _ = self.arrow_descriptors[0]
+        else:
+            self.arrow_move_uci = None
 
     def set_premove_queue(self, move_uci_queue: list[str]) -> None:
         self.premove_move_uci_queue = tuple(move_uci_queue)
@@ -356,30 +365,38 @@ class BoardView(tk.Canvas):
         self.render(chess.Board(self._last_board_fen), self._last_player_color)
 
     def _draw_arrow(self, player_color: chess.Color) -> None:
-        if not self.arrow_move_uci:
-            return
-        move = chess.Move.from_uci(self.arrow_move_uci)
-        start_x, start_y = self._square_center(move.from_square, player_color)
-        end_x, end_y = self._square_center(move.to_square, player_color)
-        dx = end_x - start_x
-        dy = end_y - start_y
-        distance = math.hypot(dx, dy)
-        if distance <= 0:
-            return
-        inset = self.square_size * 0.18
-        ux = dx / distance
-        uy = dy / distance
-        self.create_line(
-            start_x + ux * inset,
-            start_y + uy * inset,
-            end_x - ux * inset,
-            end_y - uy * inset,
-            fill=self.arrow_color,
-            width=max(4, self.square_size * 0.12),
-            arrow=tk.LAST,
-            arrowshape=(max(12, self.square_size * 0.36), max(14, self.square_size * 0.42), max(6, self.square_size * 0.16)),
-            capstyle=tk.ROUND,
-        )
+        self._draw_arrows(player_color)
+
+    def _draw_arrows(self, player_color: chess.Color) -> None:
+        arrows = getattr(self, "arrow_descriptors", ())
+        if not arrows and self.arrow_move_uci:
+            arrows = ((self.arrow_move_uci, self.arrow_color, 1.0),)
+        for move_uci, color, width_scale in reversed(arrows):
+            try:
+                move = chess.Move.from_uci(move_uci)
+            except ValueError:
+                continue
+            start_x, start_y = self._square_center(move.from_square, player_color)
+            end_x, end_y = self._square_center(move.to_square, player_color)
+            dx = end_x - start_x
+            dy = end_y - start_y
+            distance = math.hypot(dx, dy)
+            if distance <= 0:
+                continue
+            inset = self.square_size * 0.18
+            ux = dx / distance
+            uy = dy / distance
+            self.create_line(
+                start_x + ux * inset,
+                start_y + uy * inset,
+                end_x - ux * inset,
+                end_y - uy * inset,
+                fill=color,
+                width=max(2, self.square_size * (0.12 * max(0.5, width_scale))),
+                arrow=tk.LAST,
+                arrowshape=(max(12, self.square_size * 0.36), max(14, self.square_size * 0.42), max(6, self.square_size * 0.16)),
+                capstyle=tk.ROUND,
+            )
 
     def _draw_premove_arrows(self, player_color: chess.Color) -> None:
         premove_queue = getattr(self, 'premove_move_uci_queue', ())
