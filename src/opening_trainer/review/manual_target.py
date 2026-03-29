@@ -6,7 +6,15 @@ from dataclasses import asdict
 import chess
 
 from ..bundle_corpus import normalize_builder_position_key
-from .models import ReviewItem, ReviewItemOrigin, ReviewPathMove, UrgencyTier, utc_now_iso
+from .models import (
+    ManualForcedPlayerColor,
+    ManualPresentationMode,
+    ReviewItem,
+    ReviewItemOrigin,
+    ReviewPathMove,
+    UrgencyTier,
+    utc_now_iso,
+)
 
 
 def normalize_fen_for_target(fen: str) -> str:
@@ -45,6 +53,7 @@ def validate_manual_target(
     *,
     target_fen: str,
     predecessor_line_uci: str | None,
+    presentation_mode: str = ManualPresentationMode.PLAY_TO_POSITION.value,
 ) -> tuple[chess.Board, list[ReviewPathMove], str | None]:
     try:
         target_board = chess.Board(target_fen)
@@ -59,6 +68,8 @@ def validate_manual_target(
         predecessor_path, reached = _parse_predecessor_path_uci(cleaned_line)
         if _position_identity(reached) != _position_identity(target_board):
             raise ValueError('Predecessor line does not reach the target position identity.')
+    if presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value and not predecessor_path:
+        raise ValueError('Play-to-position mode requires a predecessor line that reaches the target.')
     return target_board, predecessor_path, cleaned_line or None
 
 
@@ -70,12 +81,19 @@ def create_manual_target_item(
     predecessor_line_uci: str | None,
     urgency_tier: str,
     allow_below_threshold_reach: bool,
+    manual_presentation_mode: str,
+    manual_forced_player_color: str,
     operator_note: str | None,
+    manual_parent_review_item_id: str | None = None,
+    manual_reach_policy_inherited: bool = False,
 ) -> ReviewItem:
     now = utc_now_iso()
     position_key = _position_identity(target_board)
     side_to_move = 'white' if target_board.turn == chess.WHITE else 'black'
-    stable_id_material = f"{profile_id}|manual_target|{position_key}|{side_to_move}|{predecessor_line_uci or ''}"
+    stable_id_material = (
+        f"{profile_id}|manual_target|{position_key}|{side_to_move}|"
+        f"{predecessor_line_uci or ''}|{manual_presentation_mode}|{manual_forced_player_color}"
+    )
     review_item_id = hashlib.sha256(stable_id_material.encode('utf-8')).hexdigest()[:16]
     return ReviewItem(
         review_item_id=review_item_id,
@@ -132,6 +150,10 @@ def create_manual_target_item(
         predecessor_line_uci=predecessor_line_uci,
         predecessor_line_notation_kind='uci' if predecessor_line_uci else None,
         allow_below_threshold_reach=allow_below_threshold_reach,
+        manual_presentation_mode=manual_presentation_mode or ManualPresentationMode.PLAY_TO_POSITION.value,
+        manual_forced_player_color=manual_forced_player_color or ManualForcedPlayerColor.AUTO.value,
         manual_initial_urgency_tier=urgency_tier,
         operator_note=operator_note.strip() if operator_note and operator_note.strip() else None,
+        manual_parent_review_item_id=manual_parent_review_item_id,
+        manual_reach_policy_inherited=manual_reach_policy_inherited,
     )

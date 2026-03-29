@@ -44,6 +44,17 @@ class ReviewItemOrigin(str, Enum):
     MANUAL_TARGET = 'manual_target'
 
 
+class ManualPresentationMode(str, Enum):
+    PLAY_TO_POSITION = 'play_to_position'
+    FORCE_TARGET_START = 'force_target_start'
+
+
+class ManualForcedPlayerColor(str, Enum):
+    AUTO = 'auto'
+    WHITE = 'white'
+    BLACK = 'black'
+
+
 class HijackStage(str, Enum):
     NONE = 'none'
     H80 = 'h80'
@@ -120,6 +131,10 @@ class ReviewItem:
     allow_below_threshold_reach: bool = False
     manual_initial_urgency_tier: str | None = None
     operator_note: str | None = None
+    manual_presentation_mode: str = ManualPresentationMode.PLAY_TO_POSITION.value
+    manual_forced_player_color: str = ManualForcedPlayerColor.AUTO.value
+    manual_parent_review_item_id: str | None = None
+    manual_reach_policy_inherited: bool = False
 
     @classmethod
     def create(
@@ -213,6 +228,14 @@ class ReviewItem:
         payload.setdefault('allow_below_threshold_reach', False)
         payload.setdefault('manual_initial_urgency_tier', None)
         payload.setdefault('operator_note', None)
+        predecessor_exists = bool(payload.get('predecessor_line_uci') or payload.get('predecessor_path'))
+        payload.setdefault(
+            'manual_presentation_mode',
+            ManualPresentationMode.PLAY_TO_POSITION.value if predecessor_exists else ManualPresentationMode.FORCE_TARGET_START.value,
+        )
+        payload.setdefault('manual_forced_player_color', ManualForcedPlayerColor.AUTO.value)
+        payload.setdefault('manual_parent_review_item_id', None)
+        payload.setdefault('manual_reach_policy_inherited', False)
         return cls(**payload)
 
 
