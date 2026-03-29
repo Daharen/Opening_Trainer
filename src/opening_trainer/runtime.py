@@ -145,6 +145,7 @@ class RuntimeContext:
             f"Book: {self.book.detail}",
             f"Engine: {self.engine.detail}",
             f"Opponent source order: {opponent_order}",
+            f"Opponent human fallback mode: {self.config.opponent_fallback_mode}",
             f"Stockfish fallback available: {'yes' if self.engine.available else 'no'}",
             "Random fallback remains enabled only as the last-ditch opponent source.",
             doctrine_status,

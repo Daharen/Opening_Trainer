@@ -457,6 +457,12 @@ class OpponentProvider:
         self.last_choice = self.choose_move_with_context(board)
         return self.last_choice.move
 
+    def set_fallback_mode(self, mode: str) -> None:
+        normalized = mode if mode in SUPPORTED_OPPONENT_FALLBACK_MODES else OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY
+        self.opponent_fallback_mode = normalized
+        if self.cross_bundle_service is not None:
+            self.cross_bundle_service.fallback_mode = normalized
+
     def choose_move_with_context(self, board: chess.Board) -> OpponentMoveChoice:
         return self.choose_move_with_runtime_context(board, timing_context=None)
 
@@ -474,6 +480,8 @@ class OpponentProvider:
                 if cross_bundle_choice is not None:
                     self.last_choice = cross_bundle_choice
                     return cross_bundle_choice
+                if self.cross_bundle_service is not None and self.cross_bundle_service.last_diagnostic:
+                    failures.append(self.cross_bundle_service.last_diagnostic)
             except BuilderAggregateParseError as exc:
                 failures.append(
                     "bundle lookup failed: "
@@ -483,6 +491,8 @@ class OpponentProvider:
                 if cross_bundle_choice is not None:
                     self.last_choice = cross_bundle_choice
                     return cross_bundle_choice
+                if self.cross_bundle_service is not None and self.cross_bundle_service.last_diagnostic:
+                    failures.append(self.cross_bundle_service.last_diagnostic)
         if self.corpus_provider is not None:
             try:
                 choice = self.corpus_provider.choose_move(board)
@@ -507,6 +517,7 @@ class OpponentProvider:
                 sparse_reason="; ".join(failures) if failures else choice.sparse_reason,
                 fallback_applied=choice.fallback_applied,
                 candidate_summaries=choice.candidate_summaries,
+                cross_bundle_mode=self.opponent_fallback_mode,
             )
             self.last_choice = choice
             return choice
@@ -529,6 +540,7 @@ class OpponentProvider:
                 sparse_reason="; ".join(failures),
                 fallback_applied=True,
                 candidate_summaries=choice.candidate_summaries,
+                cross_bundle_mode=self.opponent_fallback_mode,
             )
         self.last_choice = choice
         return choice
@@ -603,15 +615,18 @@ class _CrossBundleHumanFallbackService:
         self._active_manifest = self._read_manifest(self.active_bundle_dir)
         self._active_time_control = self._manifest_time_control_id(self._active_manifest)
         self._active_rating_band = self._manifest_rating_band(self._active_manifest)
+        self.last_diagnostic: str | None = None
 
     def choose_move(self, board: chess.Board) -> OpponentMoveChoice | None:
         if self.fallback_mode == OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY:
+            self.last_diagnostic = "cross-bundle fallback disabled by mode=current_bundle_only"
             return None
         normalized_position_key = normalize_builder_position_key(board)
         ranked_candidates = self._ranked_bundle_candidates()
         if self.fallback_mode == OPPONENT_FALLBACK_NEARBY_HUMAN_BUNDLES:
             ranked_candidates = [row for row in ranked_candidates if row.time_control_id == self._active_time_control]
         if not ranked_candidates:
+            self.last_diagnostic = f"cross-bundle fallback enabled mode={self.fallback_mode} but no eligible installed bundle match"
             return None
 
         merged_candidates_by_uci: dict[str, dict[str, object]] = {}
@@ -654,6 +669,10 @@ class _CrossBundleHumanFallbackService:
                     source_bundles.add(str(candidate.bundle_dir))
 
         if not merged_candidates_by_uci:
+            self.last_diagnostic = (
+                f"cross-bundle fallback enabled mode={self.fallback_mode}; queried={len(queried_bundles)}; "
+                f"matched={len(matched_bundles)}; merged_candidates=0"
+            )
             return None
         merged_candidates = sorted(
             merged_candidates_by_uci.values(),
@@ -667,6 +686,10 @@ class _CrossBundleHumanFallbackService:
         selected_source_bundle = None
         if isinstance(selected.get("source_bundles"), set) and selected["source_bundles"]:
             selected_source_bundle = sorted(str(path) for path in selected["source_bundles"])[0]
+        self.last_diagnostic = (
+            f"cross-bundle fallback enabled and used mode={self.fallback_mode}; "
+            f"queried={len(queried_bundles)}; matched={len(matched_bundles)}; merged_candidates={len(merged_candidates)}"
+        )
         return OpponentMoveChoice(
             move=selected["move"],
             position_key=normalized_position_key,

@@ -178,51 +178,27 @@ class ReviewInspector(ttk.Frame):
         if item is None:
             messagebox.showerror('Edit item', 'Selected item no longer exists.')
             return
-        if item.origin_kind == 'manual_target':
-            initial = {
-                'target_fen': item.manual_target_fen or item.position_fen_normalized,
-                'predecessor_line_uci': item.predecessor_line_uci or '',
-                'urgency_tier': item.urgency_tier,
-                'allow_below_threshold_reach': item.allow_below_threshold_reach,
-                'manual_presentation_mode': item.manual_presentation_mode,
-                'manual_forced_player_color': item.manual_forced_player_color,
-                'operator_note': item.operator_note or '',
-            }
+        initial = {
+            'target_fen': item.manual_target_fen or item.position_fen_normalized,
+            'predecessor_line_uci': item.predecessor_line_uci or '',
+            'urgency_tier': item.urgency_tier,
+            'allow_below_threshold_reach': item.allow_below_threshold_reach,
+            'manual_presentation_mode': item.manual_presentation_mode,
+            'manual_forced_player_color': item.manual_forced_player_color,
+            'operator_note': item.operator_note or '',
+        }
 
-            def _save_edit(**payload):
-                try:
-                    self.session.edit_review_item(item.review_item_id, **payload)
-                except ValueError as exc:
-                    messagebox.showerror('Edit manual target', str(exc))
-                    return
-                self.refresh_callback()
-                messagebox.showinfo('Edit manual target', 'Manual target item updated.')
-
-            ManualTargetDialog(self, _save_edit, title='Edit Manual Target', initial=initial)
-            return
-
-        urgency = tk.StringVar(value=item.urgency_tier)
-        dialog = tk.Toplevel(self)
-        dialog.title('Edit Review Item')
-        dialog.transient(self)
-        dialog.grab_set()
-        frame = ttk.Frame(dialog, padding=12)
-        frame.grid(row=0, column=0)
-        ttk.Label(frame, text='Urgency').grid(row=0, column=0, sticky='w')
-        ttk.Combobox(
-            frame,
-            state='readonly',
-            textvariable=urgency,
-            values=['ordinary_review', 'boosted_review', 'extreme_urgency'],
-            width=20,
-        ).grid(row=0, column=1, sticky='w')
-
-        def _save_ordinary():
-            self.session.edit_review_item(item.review_item_id, urgency_tier=urgency.get().strip())
-            dialog.destroy()
+        def _save_edit(**payload):
+            try:
+                updated = self.session.edit_review_item(item.review_item_id, **payload)
+            except ValueError as exc:
+                messagebox.showerror('Edit review item', str(exc))
+                return
             self.refresh_callback()
+            converted = item.origin_kind != 'manual_target' and updated.origin_kind == 'manual_target'
+            message = 'Review item updated.'
+            if converted:
+                message = 'Review item updated and converted to manual-managed semantics.'
+            messagebox.showinfo('Edit review item', message)
 
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=1, column=0, columnspan=2, sticky='e', pady=(12, 0))
-        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=(8, 0))
-        ttk.Button(buttons, text='Save', command=_save_ordinary).pack(side='right')
+        ManualTargetDialog(self, _save_edit, title='Edit Review Item', initial=initial)

@@ -49,11 +49,57 @@ def _parse_predecessor_path_uci(predecessor_line_uci: str) -> tuple[list[ReviewP
     return predecessor_path, board
 
 
+def _canonical_predecessor_path_from_start(target_board: chess.Board) -> list[ReviewPathMove]:
+    target_identity = _position_identity(target_board)
+    start = chess.Board()
+    if _position_identity(start) == target_identity:
+        return []
+    queue: list[tuple[chess.Board, list[chess.Move]]] = [(start, [])]
+    seen = {_position_identity(start)}
+    max_depth = 24
+    max_nodes = 50000
+    visited = 0
+    while queue:
+        board, path = queue.pop(0)
+        if len(path) >= max_depth:
+            continue
+        legal_moves = sorted((move.uci(), move) for move in board.legal_moves)
+        for _uci, move in legal_moves:
+            probe = board.copy(stack=True)
+            probe.push(move)
+            visited += 1
+            identity = _position_identity(probe)
+            if identity in seen:
+                continue
+            new_path = [*path, move]
+            if identity == target_identity:
+                material_board = chess.Board()
+                resolved: list[ReviewPathMove] = []
+                for resolved_move in new_path:
+                    resolved.append(
+                        ReviewPathMove(
+                            ply_index=len(material_board.move_stack),
+                            side_to_move='white' if material_board.turn == chess.WHITE else 'black',
+                            move_uci=resolved_move.uci(),
+                            san=material_board.san(resolved_move),
+                            fen_before=material_board.fen(),
+                        )
+                    )
+                    material_board.push(resolved_move)
+                return resolved
+            if visited >= max_nodes:
+                raise ValueError('No valid predecessor route could be deterministically resolved from the start position.')
+            seen.add(identity)
+            queue.append((probe, new_path))
+    raise ValueError('No valid predecessor route could be deterministically resolved from the start position.')
+
+
 def validate_manual_target(
     *,
     target_fen: str,
     predecessor_line_uci: str | None,
     presentation_mode: str = ManualPresentationMode.PLAY_TO_POSITION.value,
+    auto_resolve_predecessor: bool = False,
 ) -> tuple[chess.Board, list[ReviewPathMove], str | None]:
     try:
         target_board = chess.Board(target_fen)
@@ -65,11 +111,24 @@ def validate_manual_target(
     cleaned_line = (predecessor_line_uci or '').strip()
     predecessor_path: list[ReviewPathMove] = []
     if cleaned_line:
-        predecessor_path, reached = _parse_predecessor_path_uci(cleaned_line)
+        try:
+            predecessor_path, reached = _parse_predecessor_path_uci(cleaned_line)
+        except ValueError:
+            if not auto_resolve_predecessor:
+                raise
+            predecessor_path = _canonical_predecessor_path_from_start(target_board)
+            cleaned_line = ' '.join(move.move_uci for move in predecessor_path)
+            reached = target_board
         if _position_identity(reached) != _position_identity(target_board):
-            raise ValueError('Predecessor line does not reach the target position identity.')
+            if not auto_resolve_predecessor:
+                raise ValueError('Predecessor line does not reach the target position identity.')
+            predecessor_path = _canonical_predecessor_path_from_start(target_board)
+            cleaned_line = ' '.join(move.move_uci for move in predecessor_path)
     if presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value and not predecessor_path:
-        raise ValueError('Play-to-position mode requires a predecessor line that reaches the target.')
+        if not auto_resolve_predecessor:
+            raise ValueError('Play-to-position mode requires a predecessor line that reaches the target.')
+        predecessor_path = _canonical_predecessor_path_from_start(target_board)
+        cleaned_line = ' '.join(move.move_uci for move in predecessor_path)
     return target_board, predecessor_path, cleaned_line or None
 
 

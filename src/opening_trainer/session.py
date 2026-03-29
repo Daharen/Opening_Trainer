@@ -122,6 +122,22 @@ class TrainingSession:
         self.active_review_plan = None
         self.run_path: list[ReviewPathMove] = []
         self.settings = self.settings_store.load(maximum_depth=self.max_supported_training_depth())
+        runtime_fallback_mode = self.runtime_context.config.opponent_fallback_mode
+        if runtime_fallback_mode and self.settings.opponent_fallback_mode == "current_bundle_only" and runtime_fallback_mode != "current_bundle_only":
+            self.settings = TrainerSettings(
+                good_moves_acceptable=self.settings.good_moves_acceptable,
+                active_training_ply_depth=self.settings.active_training_ply_depth,
+                smart_profile_enabled=self.settings.smart_profile_enabled,
+                training_mode=self.settings.training_mode,
+                selected_smart_track=self.settings.selected_smart_track,
+                selected_time_control_id=self.settings.selected_time_control_id,
+                side_panel_visible=self.settings.side_panel_visible,
+                move_list_visible=self.settings.move_list_visible,
+                training_panel_visible_columns=self.settings.training_panel_visible_columns,
+                last_bundle_path=self.settings.last_bundle_path,
+                last_corpus_catalog_root=self.settings.last_corpus_catalog_root,
+                opponent_fallback_mode=runtime_fallback_mode,
+            )
         self.developer_timing_overrides = self.developer_timing_store.load()
         self.live_timing_debug_state = self._initial_timing_debug_state()
         self._apply_settings(self.settings)
@@ -226,6 +242,7 @@ class TrainingSession:
         self.evaluator.config = self.config
         self.evaluator.overlay_classifier.config = self.config
         self.evaluator.engine_authority.config = self.config
+        self.opponent.set_fallback_mode(self.settings.opponent_fallback_mode)
 
     def _profile_name(self) -> str:
         return self.review_storage.load_profile_meta(self.active_profile_id).display_name
@@ -251,6 +268,7 @@ class TrainingSession:
             target_fen=target_fen,
             predecessor_line_uci=predecessor_line_uci,
             presentation_mode=manual_presentation_mode,
+            auto_resolve_predecessor=True,
         )
         item = create_manual_target_item(
             profile_id=self.active_profile_id,
@@ -274,7 +292,17 @@ class TrainingSession:
         item = next((candidate for candidate in items if candidate.review_item_id == review_item_id), None)
         if item is None:
             raise ValueError('Review item not found.')
-        if item.origin_kind == ReviewItemOrigin.MANUAL_TARGET.value:
+        manual_fields_requested = any(
+            key in changes
+            for key in (
+                'target_fen',
+                'predecessor_line_uci',
+                'allow_below_threshold_reach',
+                'manual_presentation_mode',
+                'manual_forced_player_color',
+            )
+        )
+        if item.origin_kind == ReviewItemOrigin.MANUAL_TARGET.value or manual_fields_requested:
             target_fen = changes.get('target_fen', item.manual_target_fen or item.position_fen_normalized)
             predecessor_line_uci = changes.get('predecessor_line_uci', item.predecessor_line_uci)
             manual_presentation_mode = changes.get('manual_presentation_mode', item.manual_presentation_mode)
@@ -282,6 +310,7 @@ class TrainingSession:
                 target_fen=target_fen,
                 predecessor_line_uci=predecessor_line_uci,
                 presentation_mode=manual_presentation_mode,
+                auto_resolve_predecessor=True,
             )
             item.position_fen_normalized = target_board.fen()
             item.position_key = normalize_builder_position_key(target_board)
@@ -295,6 +324,10 @@ class TrainingSession:
             item.manual_presentation_mode = manual_presentation_mode
             item.manual_forced_player_color = changes.get('manual_forced_player_color', item.manual_forced_player_color)
             item.operator_note = changes.get('operator_note', item.operator_note)
+            if item.origin_kind != ReviewItemOrigin.MANUAL_TARGET.value:
+                item.origin_kind = ReviewItemOrigin.MANUAL_TARGET.value
+                if getattr(item, "manual_parent_review_item_id", None) is None:
+                    item.manual_parent_review_item_id = review_item_id
         item.urgency_tier = changes.get('urgency_tier', item.urgency_tier)
         item.frequency_state = item.urgency_tier
         if item.origin_kind == ReviewItemOrigin.MANUAL_TARGET.value:
@@ -637,6 +670,8 @@ class TrainingSession:
             self.state = SessionState.OPPONENT_TURN
             if self.mode != 'gui':
                 self.advance_until_user_turn()
+            return self.get_view()
+        if self._resolve_terminal_board_state():
             return self.get_view()
         evaluation = self.evaluator.evaluate(board_before_move, move, self.player_move_count)
         self.last_evaluation = evaluation
@@ -1175,6 +1210,8 @@ class TrainingSession:
                     f"cross_bundle_selected_bundle={choice.cross_bundle_selected_bundle or 'unknown'}",
                 ]
             )
+        elif getattr(choice, "cross_bundle_mode", None):
+            parts.append(f"cross_bundle_mode={choice.cross_bundle_mode}")
         return ' [' + ' | '.join(parts) + ']'
 
     def _visible_opponent_delay_seconds(self, sampled_seconds: float | None, *, choice=None):
