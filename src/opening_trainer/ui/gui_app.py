@@ -1279,6 +1279,12 @@ class OpeningTrainerGUI:
             f'expected={expected_band} control={category_id}',
             tag='smart_profile',
         )
+        if reason == 'reset':
+            log_line(
+                f'GUI_SMART_RESET_APPLIED level=L{level} success={success_streak} failure={failure_streak} '
+                f'control={category_id}',
+                tag='smart_profile',
+            )
         updated_settings = self.session.settings
         resolved_bundle_path, blocked_message = self._resolve_bundle_for_top_contract(updated_settings)
         switched = False
@@ -1299,6 +1305,12 @@ class OpeningTrainerGUI:
             f'switched={str(switched).lower()} missing={str(missing).lower()}',
             tag='smart_profile',
         )
+        if reason == 'reset':
+            log_line(
+                f'GUI_SMART_RESET_BUNDLE expected={expected_summary} switched={str(switched).lower()} '
+                f'missing={str(missing).lower()}',
+                tag='smart_profile',
+            )
         self._refresh_top_control_strip()
         refreshed = self.session.smart_profile_status()
         refreshed_level = getattr(refreshed, 'level', None)
@@ -1319,6 +1331,12 @@ class OpeningTrainerGUI:
             f'control={refreshed_control} success={refreshed_success} failure={refreshed_failure}',
             tag='smart_profile',
         )
+        if reason == 'reset':
+            log_line(
+                f'GUI_SMART_RESET_VISIBLE_REFRESH level=L{refreshed_level} band={refreshed_band} '
+                f'depth={refreshed_turns} good={refreshed_good}',
+                tag='smart_profile',
+            )
         log_line(
             f'GUI_SMART_CONTRACT_STRIP_REFRESHED level={self.top_level_var.get()} '
             f'elo={self.top_elo_var.get()} depth={self.top_depth_var.get()} good={self.top_good_var.get()}',
@@ -1600,6 +1618,12 @@ class OpeningTrainerGUI:
         self.session_logger.clear_visible_buffer()
 
     def _reset_smart_profile_state(self) -> None:
+        pre_status = self.session.smart_profile_status()
+        log_line(
+            f'GUI_SMART_RESET_BEGIN track={getattr(pre_status, "track_id", None)} '
+            f'control={getattr(pre_status, "category_id", None)}',
+            tag='smart_profile',
+        )
         self.session.smart_profile.reset_all()
         self._reconcile_smart_profile_state(reason='reset')
         self._refresh_supporting_surfaces()
