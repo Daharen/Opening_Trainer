@@ -409,6 +409,44 @@ class ReviewRouter:
         self.pending_rebuild_trigger = 'HIJACK_REVIVED'
 
     def select(self, profile_id: str, items: list) -> RoutingDecision:
+        manual_targets = [
+            item for item in items
+            if item.origin_kind == 'manual_target'
+            and due_state(item.due_at_utc) == 'due'
+            and not item.frequency_retired_for_current_due_cycle
+        ]
+        if manual_targets:
+            selected_item = sorted(manual_targets, key=self._queue_sort_key)[0]
+            plan = ReviewPlan(
+                root_fen='startpos' if selected_item.predecessor_path else selected_item.position_fen_normalized,
+                target_review_item_id=selected_item.review_item_id,
+                target_position_key=selected_item.position_key,
+                target_fen=selected_item.position_fen_normalized,
+                predecessor_path=tuple(selected_item.predecessor_path),
+                routing_reason=RoutingSource.MANUAL_TARGET.value,
+            )
+            return RoutingDecision(
+                RoutingSource.MANUAL_TARGET.value,
+                selected_item.review_item_id,
+                selected_item.urgency_tier,
+                due_state(selected_item.due_at_utc),
+                bool(selected_item.predecessor_path),
+                'manual_target selected ahead of ordinary review/corpus routing.',
+                profile_id,
+                review_plan=plan,
+                corpus_share=self.last_shares[0],
+                review_share=self.last_shares[1],
+                due_count=0,
+                boosted_due_count=0,
+                extreme_due_count=0,
+                deck_size=len(self.deck.tokens),
+                token_counts=self.deck_counts.copy(),
+                selected_token_category='MANUAL',
+                queue_position_before=0,
+                queue_position_after=0,
+                rebuild_trigger=None,
+            )
+
         srs_due_items = [item for item in items if due_state(item.srs_next_due_at_utc) == 'due' and not item.frequency_retired_for_current_due_cycle]
         self._sync_srs_queue(srs_due_items)
         if self.srs_due_queue:

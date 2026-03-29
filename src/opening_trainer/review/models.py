@@ -36,6 +36,12 @@ class RoutingSource(str, Enum):
     HIJACK_DECAY_PASS = 'hijack_decay_pass'
     HIJACK_NO_ANCHOR = 'hijack_no_anchor'
     HIJACK_DORMANT_SKIP = 'hijack_dormant_skip'
+    MANUAL_TARGET = 'manual_target'
+
+
+class ReviewItemOrigin(str, Enum):
+    AUTO_CAPTURED_FAILURE = 'auto_captured_failure'
+    MANUAL_TARGET = 'manual_target'
 
 
 class HijackStage(str, Enum):
@@ -107,6 +113,13 @@ class ReviewItem:
     srs_last_reviewed_at_utc: str | None = None
     srs_last_result: str = 'none'
     srs_lapse_count: int = 0
+    origin_kind: str = ReviewItemOrigin.AUTO_CAPTURED_FAILURE.value
+    manual_target_fen: str | None = None
+    predecessor_line_uci: str | None = None
+    predecessor_line_notation_kind: str | None = None
+    allow_below_threshold_reach: bool = False
+    manual_initial_urgency_tier: str | None = None
+    operator_note: str | None = None
 
     @classmethod
     def create(
@@ -193,6 +206,13 @@ class ReviewItem:
         payload.setdefault('srs_last_reviewed_at_utc', None)
         payload.setdefault('srs_last_result', 'none')
         payload.setdefault('srs_lapse_count', 0)
+        payload.setdefault('origin_kind', ReviewItemOrigin.AUTO_CAPTURED_FAILURE.value)
+        payload.setdefault('manual_target_fen', None)
+        payload.setdefault('predecessor_line_uci', None)
+        payload.setdefault('predecessor_line_notation_kind', None)
+        payload.setdefault('allow_below_threshold_reach', False)
+        payload.setdefault('manual_initial_urgency_tier', None)
+        payload.setdefault('operator_note', None)
         return cls(**payload)
 
 

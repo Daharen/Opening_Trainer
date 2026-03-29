@@ -1036,6 +1036,7 @@ class OpeningTrainerGUI:
             'boosted_review': 'Session route: boosted review',
             'extreme_urgency_review': 'Session route: urgent review',
             'immediate_retry': 'Session route: immediate retry',
+            'manual_target': 'Session route: manual target',
         }
         return labels.get(routing, 'Session route: mixed training')
 
