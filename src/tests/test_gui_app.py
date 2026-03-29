@@ -467,6 +467,128 @@ def test_reset_smart_profile_state_uses_authoritative_reconcile_path(tmp_path):
     assert calls == ["reset", "reconcile:reset", "refresh"]
 
 
+def test_reset_smart_profile_state_logs_begin_with_pre_reset_track_and_control(monkeypatch, tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeSession(tmp_path)
+    gui.session.smart_profile = type("SmartProfile", (), {"reset_all": lambda self: None})()
+    gui._reconcile_smart_profile_state = lambda *, reason: None
+    gui._refresh_supporting_surfaces = lambda: None
+    seen: list[str] = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda message, tag=None: seen.append(message))
+
+    gui._reset_smart_profile_state()
+
+    assert any("GUI_SMART_RESET_BEGIN track=rapid control=600+0" in line for line in seen)
+
+
+def test_reconcile_reset_reapplies_contract_and_loads_reset_level_bundle(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeSession(tmp_path)
+    gui.session.settings = TrainerSettings(training_mode="smart_profile")
+    gui.session._apply_settings = lambda _settings: None
+    statuses = iter(
+        [
+            type(
+                "Status",
+                (),
+                {
+                    "expected_rating_band": "400-600",
+                    "contract_turns": 3,
+                    "contract_good_accepted": True,
+                    "expected_bundle_summary": "Expected: 600+0 / 400-600 -> /tmp/reset_bundle",
+                    "category_id": "600+0",
+                    "level": 1,
+                    "consecutive_eligible_successes": 0,
+                    "consecutive_eligible_failures": 0,
+                },
+            )(),
+            type(
+                "Status",
+                (),
+                {
+                    "category_id": "600+0",
+                    "level": 1,
+                    "expected_rating_band": "400-600",
+                    "contract_turns": 3,
+                    "contract_good_accepted": True,
+                    "consecutive_eligible_successes": 0,
+                    "consecutive_eligible_failures": 0,
+                },
+            )(),
+        ]
+    )
+    gui.session.smart_profile_status = lambda: next(statuses)
+    gui.session.consume_pending_smart_level_change = lambda: None
+    gui._resolve_bundle_for_top_contract = lambda _settings: ("/tmp/reset_bundle", None)
+    gui._remembered_bundle_path = lambda: "/tmp/old_bundle"
+    loaded: list[str] = []
+    gui._load_selected_bundle = lambda path: loaded.append(path)
+    gui._prepend_recent_status = lambda _msg: None
+    gui._refresh_top_control_strip = lambda: None
+    gui.top_level_var = FakeStringVar("L1")
+    gui.top_elo_var = FakeStringVar("400-600")
+    gui.top_depth_var = FakeStringVar("3")
+    gui.top_good_var = FakeStringVar("Yes")
+
+    gui._reconcile_smart_profile_state(reason="reset")
+
+    assert loaded == ["/tmp/reset_bundle"]
+
+
+def test_reconcile_reset_surfaces_missing_reset_level_bundle(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeSession(tmp_path)
+    gui.session.settings = TrainerSettings(training_mode="smart_profile")
+    gui.session._apply_settings = lambda _settings: None
+    statuses = iter(
+        [
+            type(
+                "Status",
+                (),
+                {
+                    "expected_rating_band": "400-600",
+                    "contract_turns": 3,
+                    "contract_good_accepted": True,
+                    "expected_bundle_summary": "Expected: 600+0 / 400-600 -> unavailable",
+                    "category_id": "600+0",
+                    "level": 1,
+                    "consecutive_eligible_successes": 0,
+                    "consecutive_eligible_failures": 0,
+                },
+            )(),
+            type(
+                "Status",
+                (),
+                {
+                    "category_id": "600+0",
+                    "level": 1,
+                    "expected_rating_band": "400-600",
+                    "contract_turns": 3,
+                    "contract_good_accepted": True,
+                    "consecutive_eligible_successes": 0,
+                    "consecutive_eligible_failures": 0,
+                },
+            )(),
+        ]
+    )
+    gui.session.smart_profile_status = lambda: next(statuses)
+    gui.session.consume_pending_smart_level_change = lambda: None
+    gui._resolve_bundle_for_top_contract = lambda _settings: (None, "Expected bundle unavailable for 600+0 / 400-600")
+    gui._remembered_bundle_path = lambda: "/tmp/old_bundle"
+    gui._load_selected_bundle = lambda _path: None
+    seen: list[str] = []
+    gui._prepend_recent_status = lambda message: seen.append(message)
+    gui._refresh_top_control_strip = lambda: None
+    gui.top_level_var = FakeStringVar("L1")
+    gui.top_elo_var = FakeStringVar("400-600")
+    gui.top_depth_var = FakeStringVar("3")
+    gui.top_good_var = FakeStringVar("Yes")
+
+    gui._reconcile_smart_profile_state(reason="reset")
+
+    assert seen == ["Expected bundle unavailable for 600+0 / 400-600"]
+
+
 def test_set_smart_profile_level_uses_authoritative_reconcile_path(monkeypatch, tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.root = None

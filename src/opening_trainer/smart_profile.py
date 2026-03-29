@@ -481,7 +481,22 @@ class SmartProfileService:
         )
 
     def reset_all(self) -> None:
-        self.state = SmartProfileState(mode=self.state.mode, selected_track_id=self.state.selected_track_id)
+        selected_track_id = self.state.selected_track_id if self.state.selected_track_id in TRACK_TO_EXACT_CATEGORY else "rapid"
+        normalized_time_control = normalize_time_control_id(self.state.selected_time_control_id)
+        resolved = resolve_track_category(normalized_time_control)
+        if resolved is None:
+            selected_time_control_id = TRACK_TO_EXACT_CATEGORY[selected_track_id]
+        else:
+            resolved_track_id, resolved_time_control_id = resolved
+            if resolved_track_id != selected_track_id:
+                selected_time_control_id = TRACK_TO_EXACT_CATEGORY[selected_track_id]
+            else:
+                selected_time_control_id = resolved_time_control_id
+        self.state = SmartProfileState(
+            mode=self.state.mode,
+            selected_track_id=selected_track_id,
+            selected_time_control_id=selected_time_control_id,
+        )
         self.state.ensure_defaults()
         self.save()
 

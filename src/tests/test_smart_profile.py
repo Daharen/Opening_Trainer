@@ -262,6 +262,26 @@ def test_selected_time_control_drives_expected_bundle_resolution(tmp_path):
     assert str(resolution.resolved_entry.bundle_dir).endswith("bundle_600_1")
 
 
+def test_reset_all_preserves_selected_exact_control_and_resets_active_track_state(tmp_path):
+    service = _service(tmp_path)
+    assert service.set_selected_time_control("600+1") is True
+    active = service.state.active_track_state()
+    active.current_level = 7
+    active.consecutive_eligible_successes = 3
+    active.consecutive_eligible_failures = 2
+    service.save()
+
+    service.reset_all()
+
+    assert service.state.selected_track_id == "rapid"
+    assert service.state.selected_time_control_id == "600+1"
+    reset_active = service.state.active_track_state()
+    assert reset_active.time_control_category_id == "600+1"
+    assert reset_active.current_level == 1
+    assert reset_active.consecutive_eligible_successes == 0
+    assert reset_active.consecutive_eligible_failures == 0
+
+
 def test_apply_settings_propagates_selected_exact_time_control_before_contract_enforcement():
     session = TrainingSession.__new__(TrainingSession)
     session.max_supported_training_depth = lambda: 10
