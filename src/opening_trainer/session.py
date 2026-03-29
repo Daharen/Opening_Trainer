@@ -283,6 +283,13 @@ class TrainingSession:
         self.active_profile_id = profile_id
         self.smart_profile.switch_profile(profile_id)
 
+    def reset_profile(self, profile_id: str) -> bool:
+        self.profile_service.reset_profile(profile_id)
+        is_active_profile = self.active_profile_id == profile_id
+        if is_active_profile:
+            self.smart_profile.reset_all()
+        return is_active_profile
+
     def run_session(self, input_func=None) -> None:
         if input_func is None:
             input_func = input

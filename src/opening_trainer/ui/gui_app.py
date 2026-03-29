@@ -861,10 +861,36 @@ class OpeningTrainerGUI:
         self._show_bundle_picker('Choose a corpus bundle for this session. The last valid bundle will be reused on future launches.')
 
     def _open_profiles(self):
-        ProfileDialog(self.root, self.session, self._refresh_after_profile_switch).open()
+        ProfileDialog(
+            self.root,
+            self.session,
+            self._refresh_supporting_surfaces,
+            switch_callback=self._refresh_after_profile_switch,
+            reset_callback=self._reset_profile_from_dialog,
+        ).open()
 
     def _refresh_after_profile_switch(self) -> None:
         self._reconcile_smart_profile_state(reason='profile_switch')
+        self._refresh_supporting_surfaces()
+
+    def _reset_profile_from_dialog(self, profile_id: str) -> None:
+        is_active_profile = self.session.active_profile_id == profile_id
+        log_line(
+            f'GUI_PROFILE_RESET_BEGIN profile_id={profile_id} is_active={is_active_profile}',
+            tag='smart_profile',
+        )
+        self.session.reset_profile(profile_id)
+        log_line(
+            f'GUI_PROFILE_RESET_SMART_STATE_RESET profile_id={profile_id}',
+            tag='smart_profile',
+        )
+        if is_active_profile:
+            reason = 'profile_reset'
+            log_line(
+                f'GUI_PROFILE_RESET_ACTIVE_RECONCILE profile_id={profile_id} reason={reason}',
+                tag='smart_profile',
+            )
+            self._reconcile_smart_profile_state(reason=reason)
         self._refresh_supporting_surfaces()
 
     def _start_game(self, loading_message: str | None = None):

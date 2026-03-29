@@ -18,6 +18,7 @@ from opening_trainer.ui.board_view import (
     SettleAnimationState,
 )
 from opening_trainer.ui.captured_material_panel import captured_pieces_and_material
+from opening_trainer.ui.profile_dialog import ProfileDialog
 from opening_trainer.ui.gui_app import (
     OPPONENT_COMMITTED_MOVE_DURATION_MS,
     PLAYER_COMMITTED_MOVE_DURATION_MS,
@@ -453,6 +454,69 @@ def test_acknowledge_outcome_reapplies_smart_contract_and_loads_promoted_bundle(
     assert loads == ["/tmp/new_bundle"]
     assert refreshed["count"] >= 1
 
+
+
+
+def test_profile_reset_from_dialog_reconciles_when_target_is_active(monkeypatch, tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    calls: list[str] = []
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "active_profile_id": "default",
+            "reset_profile": lambda self, _profile_id: calls.append("session_reset"),
+        },
+    )()
+    gui._reconcile_smart_profile_state = lambda *, reason: calls.append(f"reconcile:{reason}")
+    gui._refresh_supporting_surfaces = lambda: calls.append("refresh")
+    seen: list[str] = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda message, tag=None: seen.append(message))
+
+    gui._reset_profile_from_dialog("default")
+
+    assert calls == ["session_reset", "reconcile:profile_reset", "refresh"]
+    assert any("GUI_PROFILE_RESET_BEGIN profile_id=default is_active=True" in line for line in seen)
+    assert any("GUI_PROFILE_RESET_SMART_STATE_RESET profile_id=default" in line for line in seen)
+    assert any("GUI_PROFILE_RESET_ACTIVE_RECONCILE profile_id=default reason=profile_reset" in line for line in seen)
+
+
+def test_profile_reset_from_dialog_does_not_reconcile_when_target_is_not_active(monkeypatch, tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    calls: list[str] = []
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "active_profile_id": "default",
+            "reset_profile": lambda self, _profile_id: calls.append("session_reset"),
+        },
+    )()
+    gui._reconcile_smart_profile_state = lambda *, reason: calls.append(f"reconcile:{reason}")
+    gui._refresh_supporting_surfaces = lambda: calls.append("refresh")
+    seen: list[str] = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda message, tag=None: seen.append(message))
+
+    gui._reset_profile_from_dialog("other")
+
+    assert calls == ["session_reset", "refresh"]
+    assert any("GUI_PROFILE_RESET_BEGIN profile_id=other is_active=False" in line for line in seen)
+    assert not any("GUI_PROFILE_RESET_ACTIVE_RECONCILE" in line for line in seen)
+
+
+def test_profile_dialog_reset_confirmation_mentions_smart_profile(monkeypatch, tmp_path):
+    asked = {"message": ""}
+    monkeypatch.setattr("opening_trainer.ui.profile_dialog.messagebox.askyesno", lambda _title, message: asked.__setitem__("message", message) or False)
+
+    dialog = ProfileDialog(
+        master=None,
+        session=type("Session", (), {"profile_service": object()})(),
+        refresh_callback=lambda: None,
+    )
+
+    dialog._reset("default")
+
+    assert "Smart Profile ladder state" in asked["message"]
 
 def test_reset_smart_profile_state_uses_authoritative_reconcile_path(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
