@@ -118,7 +118,7 @@ def test_promotion_demotion_thresholds_and_counter_reset(tmp_path):
     state.current_level = 4
     service.save()
 
-    for _ in range(20):
+    for _ in range(10):
         eligibility = service.evaluate_eligibility(
             routing_source="ordinary_corpus_play",
             bundle_available=True,
@@ -136,7 +136,7 @@ def test_promotion_demotion_thresholds_and_counter_reset(tmp_path):
     assert promoted.consecutive_eligible_failures == 0
 
     promoted.current_level = 5
-    promoted.consecutive_eligible_failures = 9
+    promoted.consecutive_eligible_failures = 4
     eligibility = service.evaluate_eligibility(
         routing_source="ordinary_corpus_play",
         bundle_available=True,
@@ -169,6 +169,14 @@ def test_unsupported_time_control_is_ineligible(tmp_path):
     assert "time control mismatch" in eligibility.reason
 
 
+
+
+def test_level_table_threshold_remap_and_unaffected_values():
+    assert LEVEL_BY_INDEX[4].game_successes_to_promote == 10
+    assert LEVEL_BY_INDEX[5].game_successes_to_promote == 20
+    assert LEVEL_BY_INDEX[1].game_failures_to_demote == 5
+    assert LEVEL_BY_INDEX[30].game_successes_to_promote == float("inf")
+
 def test_level_table_contains_stockfish_tiers_and_promotion_clamps_at_28(tmp_path):
     assert len(SMART_PROFILE_LEVELS) == 30
     assert LEVEL_BY_INDEX[29].is_stockfish_tier is True
@@ -179,7 +187,7 @@ def test_level_table_contains_stockfish_tiers_and_promotion_clamps_at_28(tmp_pat
     service.set_selected_track("bullet")
     state = service.state.get_track_state("bullet", "120+1")
     state.current_level = 28
-    state.consecutive_eligible_successes = 49
+    state.consecutive_eligible_successes = 19
     service.save()
     eligibility = service.evaluate_eligibility(
         routing_source="ordinary_corpus_play",
