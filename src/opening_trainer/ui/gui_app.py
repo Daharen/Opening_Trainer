@@ -1911,10 +1911,14 @@ class OpeningTrainerGUI:
         dev_menu.add_command(label='Copy Current Session Log Path', command=self._copy_session_log_path)
         dev_menu.add_command(label='Clear Visible Buffer', command=self._clear_visible_log_buffer)
         dev_menu.add_separator()
+        dev_menu.add_command(label='Open Board Setup Editor', command=self._open_board_setup_editor)
         dev_menu.add_command(label='Reset Smart Profile State', command=self._reset_smart_profile_state)
         dev_menu.add_command(label='Set Smart Profile Level…', command=self._set_smart_profile_level)
         menubar.add_cascade(label='Developer', menu=dev_menu)
         self.root.config(menu=menubar)
+
+    def _open_board_setup_editor(self) -> None:
+        self.inspector.open_board_setup_editor()
 
     def _open_dev_console(self) -> None:
         self.dev_console.open()
