@@ -84,6 +84,7 @@ class FakeSession:
         self.saved_settings = None
         self.settings_store = self
         self.smart_profile = type('SmartProfile', (), {'reset_all': lambda self: None, 'set_level_for_current_track': lambda self, **kwargs: True, 'resolve_expected_bundle': lambda self, _root: type('R', (), {'resolved_entry': None})()})()
+        self._pending_level_change = None
 
     def start_new_game(self):
         self.start_calls += 1
@@ -131,6 +132,11 @@ class FakeSession:
 
     def _apply_settings(self, settings):
         self.update_settings(settings)
+
+    def consume_pending_smart_level_change(self):
+        pending = self._pending_level_change
+        self._pending_level_change = None
+        return pending
 
 
 class RecordingModal:
@@ -382,6 +388,7 @@ def test_toggle_side_panel_reveals_training_panel_without_hiding_move_list(tmp_p
 def test_load_panel_visibility_preference_defaults_false_for_new_settings(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.session = FakeSession(tmp_path)
+    gui.session.settings = TrainerSettings(training_mode="smart_profile")
     assert gui._load_panel_visibility_preference() is False
     assert gui._load_move_list_visibility_preference() is True
 
@@ -411,12 +418,40 @@ def test_acknowledge_outcome_starts_next_game_only_after_modal_callback(tmp_path
     gui.selected_square = chess.E2
     refresh_calls = {'count': 0}
     gui._refresh_view = lambda transient_status=None: refresh_calls.__setitem__('count', refresh_calls['count'] + 1)
+    gui._refresh_top_control_strip = lambda: None
     gui._acknowledge_outcome()
 
     assert gui.pending_restart is False
     assert gui.selected_square is None
     assert gui.session.start_calls == 1
     assert refresh_calls['count'] == 1
+
+
+def test_acknowledge_outcome_reapplies_smart_contract_and_loads_promoted_bundle(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = FakeSession(tmp_path)
+    gui.session.settings = TrainerSettings(training_mode="smart_profile")
+    gui.session._pending_level_change = (1, 2)
+    gui.pending_restart = True
+    gui.selected_square = chess.E2
+    gui.top_level_var = FakeStringVar("L1")
+    gui.top_elo_var = FakeStringVar("400-600")
+    gui.top_depth_var = FakeStringVar("3")
+    gui.top_good_var = FakeStringVar("Yes")
+    gui.recent_var = FakeStringVar("")
+    gui._remembered_bundle_path = lambda: "/tmp/old_bundle"
+    gui._resolve_bundle_for_top_contract = lambda _settings: ("/tmp/new_bundle", None)
+    loads: list[str] = []
+    gui._load_selected_bundle = lambda path: loads.append(path)
+    refreshed = {"count": 0}
+    gui._refresh_top_control_strip = lambda: refreshed.__setitem__("count", refreshed["count"] + 1)
+    gui._refresh_view = lambda transient_status=None: None
+
+    gui._acknowledge_outcome()
+
+    assert gui.session.start_calls == 1
+    assert loads == ["/tmp/new_bundle"]
+    assert refreshed["count"] >= 1
 
 
 def test_toolbar_has_single_corpus_selection_entrypoint():
