@@ -33,6 +33,15 @@ DEFAULT_IMMEDIATE_FRAME_MIN_PROGRESS = 0.08
 DEFAULT_IMMEDIATE_FRAME_MAX_PROGRESS = 0.92
 
 
+def square_is_light(square: chess.Square) -> bool:
+    """Return True when a board square should be rendered as light.
+
+    Chessboard convention requires a1 to be dark and h1 to be light.
+    """
+
+    return (chess.square_file(square) + chess.square_rank(square)) % 2 == 1
+
+
 @dataclass(frozen=True)
 class DragState:
     source_square: chess.Square
@@ -278,7 +287,7 @@ class BoardView(tk.Canvas):
             y0 = origin_y + row * self.square_size
             x1 = x0 + self.square_size
             y1 = y0 + self.square_size
-            is_light = (chess.square_file(square) + chess.square_rank(square)) % 2 == 0
+            is_light = square_is_light(square)
             fill = '#f0d9b5' if is_light else '#b58863'
             if square in getattr(self, 'premove_highlight_squares', set()):
                 fill = '#efd6d6' if is_light else '#c69494'
