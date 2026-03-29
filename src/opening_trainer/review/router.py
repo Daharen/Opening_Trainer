@@ -4,7 +4,15 @@ from collections import deque
 from dataclasses import dataclass, field
 from math import floor
 
-from .models import HijackStage, ReviewPlan, RoutingDecision, RoutingSource, UrgencyTier, due_state
+from .models import (
+    HijackStage,
+    ManualPresentationMode,
+    ReviewPlan,
+    RoutingDecision,
+    RoutingSource,
+    UrgencyTier,
+    due_state,
+)
 
 
 CATEGORY_PRIORITY = ('E', 'B', 'H80', 'H60', 'H40', 'H20', 'D', 'C')
@@ -417,8 +425,10 @@ class ReviewRouter:
         ]
         if manual_targets:
             selected_item = sorted(manual_targets, key=self._queue_sort_key)[0]
+            presentation_mode = selected_item.manual_presentation_mode or ManualPresentationMode.PLAY_TO_POSITION.value
+            use_force_start = presentation_mode == ManualPresentationMode.FORCE_TARGET_START.value
             plan = ReviewPlan(
-                root_fen='startpos' if selected_item.predecessor_path else selected_item.position_fen_normalized,
+                root_fen=selected_item.position_fen_normalized if use_force_start else 'startpos',
                 target_review_item_id=selected_item.review_item_id,
                 target_position_key=selected_item.position_key,
                 target_fen=selected_item.position_fen_normalized,
@@ -431,7 +441,10 @@ class ReviewRouter:
                 selected_item.urgency_tier,
                 due_state(selected_item.due_at_utc),
                 bool(selected_item.predecessor_path),
-                'manual_target selected ahead of ordinary review/corpus routing.',
+                (
+                    f'manual_target selected ahead of ordinary review/corpus routing; '
+                    f'presentation_mode={presentation_mode}; forced_color={selected_item.manual_forced_player_color}.'
+                ),
                 profile_id,
                 review_plan=plan,
                 corpus_share=self.last_shares[0],

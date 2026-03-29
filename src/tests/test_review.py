@@ -493,7 +493,72 @@ def test_manual_target_without_predecessor_uses_direct_target_root(tmp_path):
         predecessor_line_uci=None,
         urgency_tier='ordinary_review',
         allow_below_threshold_reach=False,
+        manual_presentation_mode='force_target_start',
     )
     decision = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
     assert decision.routing_source == 'manual_target'
     assert decision.review_plan.root_fen == item.position_fen_normalized
+
+
+def test_manual_target_defaults_to_play_to_position(tmp_path):
+    session = _session(tmp_path)
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci='e2e4 e7e5',
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=True,
+    )
+    decision = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
+    assert item.manual_presentation_mode == 'play_to_position'
+    assert decision.review_plan.root_fen == 'startpos'
+
+
+def test_manual_target_play_to_position_requires_predecessor_line(tmp_path):
+    session = _session(tmp_path)
+    with pytest.raises(ValueError, match='requires a predecessor line'):
+        session.add_manual_target(
+            target_fen='rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2',
+            predecessor_line_uci=None,
+            urgency_tier='ordinary_review',
+            allow_below_threshold_reach=False,
+            manual_presentation_mode='play_to_position',
+        )
+
+
+def test_manual_target_route_construction_failure_inherits_reach_policy(tmp_path):
+    session = _session(tmp_path)
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci='e2e4 e7e5',
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=True,
+    )
+    session.current_routing = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
+    session.current_review_item_id = item.review_item_id
+    session.active_review_plan = session.current_routing.review_plan
+    session.board.reset()
+    session.state = session.state.PLAYER_TURN
+    session.player_color = chess.WHITE
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(
+                False,
+                True,
+                ReasonCode.ENGINE_FAIL,
+                'Rejected by engine.',
+                best_move_uci='e2e4',
+                best_move_san='e4',
+                played_move_uci='d2d4',
+                played_move_san='d4',
+                cp_loss=190,
+                metadata={'engine_available': True},
+            )
+        ),
+    )
+    session.submit_user_move_uci('d2d4')
+    created = [candidate for candidate in session.review_storage.load_items(session.active_profile_id) if candidate.position_fen_normalized == chess.Board().fen() and candidate.side_to_move == 'white']
+    assert created
+    descendant = created[0]
+    assert descendant.manual_reach_policy_inherited is True
+    assert descendant.manual_parent_review_item_id == item.review_item_id

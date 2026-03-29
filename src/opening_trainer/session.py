@@ -18,7 +18,16 @@ from .evaluator import MoveEvaluator
 from .models import EvaluationResult, MoveHistoryEntry, SessionOutcome, SessionState, SessionView
 from .opening_names import OpeningNameDataset
 from .opponent import OpponentProvider
-from .review.models import ReviewItem, ReviewPathMove, RoutingDecision
+from .review.models import (
+    ManualForcedPlayerColor,
+    ManualPresentationMode,
+    ReviewItem,
+    ReviewItemOrigin,
+    ReviewPathMove,
+    RoutingDecision,
+    RoutingSource,
+    utc_now_iso,
+)
 from .review.manual_target import create_manual_target_item, validate_manual_target
 from .review.profile_service import ProfileService
 from .review.router import ReviewRouter
@@ -233,11 +242,14 @@ class TrainingSession:
         predecessor_line_uci: str | None,
         urgency_tier: str,
         allow_below_threshold_reach: bool,
+        manual_presentation_mode: str = ManualPresentationMode.PLAY_TO_POSITION.value,
+        manual_forced_player_color: str = ManualForcedPlayerColor.AUTO.value,
         operator_note: str | None = None,
     ) -> ReviewItem:
         target_board, predecessor_path, normalized_line = validate_manual_target(
             target_fen=target_fen,
             predecessor_line_uci=predecessor_line_uci,
+            presentation_mode=manual_presentation_mode,
         )
         item = create_manual_target_item(
             profile_id=self.active_profile_id,
@@ -246,11 +258,47 @@ class TrainingSession:
             predecessor_line_uci=normalized_line,
             urgency_tier=urgency_tier,
             allow_below_threshold_reach=allow_below_threshold_reach,
+            manual_presentation_mode=manual_presentation_mode,
+            manual_forced_player_color=manual_forced_player_color,
             operator_note=operator_note,
         )
         items = self._items()
         items = [existing for existing in items if existing.review_item_id != item.review_item_id]
         items.append(item)
+        self._save_items(items)
+        return item
+
+    def edit_review_item(self, review_item_id: str, **changes) -> ReviewItem:
+        items = self._items()
+        item = next((candidate for candidate in items if candidate.review_item_id == review_item_id), None)
+        if item is None:
+            raise ValueError('Review item not found.')
+        if item.origin_kind == ReviewItemOrigin.MANUAL_TARGET.value:
+            target_fen = changes.get('target_fen', item.manual_target_fen or item.position_fen_normalized)
+            predecessor_line_uci = changes.get('predecessor_line_uci', item.predecessor_line_uci)
+            manual_presentation_mode = changes.get('manual_presentation_mode', item.manual_presentation_mode)
+            target_board, predecessor_path, normalized_line = validate_manual_target(
+                target_fen=target_fen,
+                predecessor_line_uci=predecessor_line_uci,
+                presentation_mode=manual_presentation_mode,
+            )
+            item.position_fen_normalized = target_board.fen()
+            item.position_key = normalize_builder_position_key(target_board)
+            item.side_to_move = 'white' if target_board.turn == chess.WHITE else 'black'
+            item.predecessor_line_uci = normalized_line
+            item.predecessor_line_notation_kind = 'uci' if normalized_line else None
+            item.predecessor_path = [asdict(move) for move in predecessor_path]
+            item.line_preview_san = ' '.join(move.san for move in predecessor_path[-6:])
+            item.manual_target_fen = target_board.fen()
+            item.allow_below_threshold_reach = bool(changes.get('allow_below_threshold_reach', item.allow_below_threshold_reach))
+            item.manual_presentation_mode = manual_presentation_mode
+            item.manual_forced_player_color = changes.get('manual_forced_player_color', item.manual_forced_player_color)
+            item.operator_note = changes.get('operator_note', item.operator_note)
+        item.urgency_tier = changes.get('urgency_tier', item.urgency_tier)
+        item.frequency_state = item.urgency_tier
+        if item.origin_kind == ReviewItemOrigin.MANUAL_TARGET.value:
+            item.manual_initial_urgency_tier = item.urgency_tier
+        item.updated_at_utc = utc_now_iso()
         self._save_items(items)
         return item
 
@@ -278,6 +326,7 @@ class TrainingSession:
         self.active_review_plan = self.current_routing.review_plan
         if self.active_review_plan and self.active_review_plan.root_fen != 'startpos':
             self.board.board = chess.Board(self.active_review_plan.root_fen)
+        self._apply_manual_forced_color(items)
         self._print_new_game_banner()
         log_line(self.opponent.status_message, tag='startup')
         self._print_startup_summary()
@@ -306,6 +355,23 @@ class TrainingSession:
             self.corpus_summary_text(),
             self.opening_name,
             self.opening_name_frozen,
+        )
+
+    def _apply_manual_forced_color(self, items: list[ReviewItem]) -> None:
+        if not self.current_routing or self.current_routing.routing_source != RoutingSource.MANUAL_TARGET.value:
+            return
+        item = next((candidate for candidate in items if candidate.review_item_id == self.current_review_item_id), None)
+        if item is None:
+            return
+        forced_color = item.manual_forced_player_color or ManualForcedPlayerColor.AUTO.value
+        if forced_color == ManualForcedPlayerColor.WHITE.value:
+            self.player_color = chess.WHITE
+        elif forced_color == ManualForcedPlayerColor.BLACK.value:
+            self.player_color = chess.BLACK
+        log_line(
+            f"Manual target presentation={item.manual_presentation_mode}; "
+            f"forced_color={forced_color}; allow_below_threshold_reach={item.allow_below_threshold_reach}",
+            tag='review',
         )
 
     def _clear_opening_name_state(self, *, reason: str) -> None:
@@ -793,12 +859,31 @@ class TrainingSession:
         existing = next((item for item in items if item.position_key == position_key and item.side_to_move == side), None)
         accepted = list(evaluation.metadata.get('candidate_moves', [])) if isinstance(evaluation.metadata, dict) else []
         line_preview = ' '.join(move.san for move in self.run_path[-6:])
+        inherited_manual_metadata = self._manual_inherited_failure_metadata(board_before_move, items)
         if existing is None:
             item = ReviewItem.create(self.active_profile_id, position_key, board_before_move.fen(), side, evaluation.reason_text, evaluation.preferred_move_uci, accepted, self.run_path)
+            if inherited_manual_metadata is not None:
+                item.origin_kind = ReviewItemOrigin.MANUAL_TARGET.value
+                item.allow_below_threshold_reach = inherited_manual_metadata['allow_below_threshold_reach']
+                item.predecessor_line_uci = inherited_manual_metadata['predecessor_line_uci']
+                item.predecessor_line_notation_kind = 'uci' if item.predecessor_line_uci else None
+                item.manual_parent_review_item_id = inherited_manual_metadata['manual_parent_review_item_id']
+                item.manual_reach_policy_inherited = True
+                item.manual_presentation_mode = ManualPresentationMode.PLAY_TO_POSITION.value
+                item.manual_forced_player_color = inherited_manual_metadata['manual_forced_player_color']
             items.append(item)
             impact_summary = 'Created new review item and scheduled immediate retry.'
         else:
             item = apply_failure(existing, evaluation.reason_text, evaluation.preferred_move_uci, [asdict(move) for move in self.run_path], line_preview, self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')
+            if inherited_manual_metadata is not None:
+                item.origin_kind = ReviewItemOrigin.MANUAL_TARGET.value
+                item.allow_below_threshold_reach = inherited_manual_metadata['allow_below_threshold_reach']
+                item.predecessor_line_uci = inherited_manual_metadata['predecessor_line_uci']
+                item.predecessor_line_notation_kind = 'uci' if item.predecessor_line_uci else None
+                item.manual_parent_review_item_id = inherited_manual_metadata['manual_parent_review_item_id']
+                item.manual_reach_policy_inherited = True
+                item.manual_presentation_mode = ManualPresentationMode.PLAY_TO_POSITION.value
+                item.manual_forced_player_color = inherited_manual_metadata['manual_forced_player_color']
             impact_summary = f'Updated review item; urgency is now {item.urgency_tier}.'
         decision = self.router.stubborn_extreme_repeat(self.active_profile_id, item) if item.pending_forced_stubborn_repeat else self.router.immediate_retry(self.active_profile_id, item)
         item.pending_forced_stubborn_repeat = False
@@ -816,6 +901,27 @@ class TrainingSession:
             ),
         )
         return item, impact_summary, decision.routing_source
+
+    def _manual_inherited_failure_metadata(self, board_before_move: chess.Board, items: list[ReviewItem]) -> dict[str, object] | None:
+        if not self.current_routing or self.current_routing.routing_source != RoutingSource.MANUAL_TARGET.value:
+            return None
+        if not self.active_review_plan or len(board_before_move.move_stack) >= len(self.active_review_plan.predecessor_path):
+            return None
+        if not self.current_review_item_id:
+            return None
+        parent = next((item for item in items if item.review_item_id == self.current_review_item_id), None)
+        if parent is None or not parent.allow_below_threshold_reach:
+            return None
+        log_line(
+            f"Manual reach-policy inheritance applied; parent={parent.review_item_id}; reason=route_construction_failure",
+            tag='review',
+        )
+        return {
+            'allow_below_threshold_reach': True,
+            'predecessor_line_uci': parent.predecessor_line_uci,
+            'manual_parent_review_item_id': parent.review_item_id,
+            'manual_forced_player_color': parent.manual_forced_player_color,
+        }
 
     def _capture_success_if_needed(self):
         if not self.current_review_item_id:

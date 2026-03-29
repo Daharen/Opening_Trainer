@@ -11,6 +11,9 @@ class ReviewInspector(ttk.Frame):
         'position',
         'side',
         'origin',
+        'manual_mode',
+        'manual_color',
+        'manual_reach',
         'urgency',
         'frequency_state',
         'due',
@@ -63,6 +66,7 @@ class ReviewInspector(ttk.Frame):
         button_row = ttk.Frame(self)
         button_row.pack(fill='x', pady=4)
         ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
+        ttk.Button(button_row, text='Edit item', command=self._edit_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
 
@@ -91,6 +95,9 @@ class ReviewInspector(ttk.Frame):
                     item.position_key[:24],
                     item.side_to_move,
                     item.origin_kind,
+                    item.manual_presentation_mode if item.origin_kind == 'manual_target' else '—',
+                    item.manual_forced_player_color if item.origin_kind == 'manual_target' else '—',
+                    item.allow_below_threshold_reach if item.origin_kind == 'manual_target' else '—',
                     item.urgency_tier,
                     item.frequency_state,
                     'due' if item.due_at_utc <= item.updated_at_utc else 'scheduled',
@@ -160,4 +167,62 @@ class ReviewInspector(ttk.Frame):
             self.refresh_callback()
             messagebox.showinfo('Manual target', 'Manual target item saved.')
 
-        ManualTargetDialog(self, _save_manual_target)
+        ManualTargetDialog(self, _save_manual_target, title='Add Manual Target')
+
+    def _edit_item(self):
+        item_id = self.tree.focus()
+        if not item_id:
+            return
+        items = self.session.review_storage.load_items(self.session.active_profile_id)
+        item = next((candidate for candidate in items if candidate.review_item_id == item_id), None)
+        if item is None:
+            messagebox.showerror('Edit item', 'Selected item no longer exists.')
+            return
+        if item.origin_kind == 'manual_target':
+            initial = {
+                'target_fen': item.manual_target_fen or item.position_fen_normalized,
+                'predecessor_line_uci': item.predecessor_line_uci or '',
+                'urgency_tier': item.urgency_tier,
+                'allow_below_threshold_reach': item.allow_below_threshold_reach,
+                'manual_presentation_mode': item.manual_presentation_mode,
+                'manual_forced_player_color': item.manual_forced_player_color,
+                'operator_note': item.operator_note or '',
+            }
+
+            def _save_edit(**payload):
+                try:
+                    self.session.edit_review_item(item.review_item_id, **payload)
+                except ValueError as exc:
+                    messagebox.showerror('Edit manual target', str(exc))
+                    return
+                self.refresh_callback()
+                messagebox.showinfo('Edit manual target', 'Manual target item updated.')
+
+            ManualTargetDialog(self, _save_edit, title='Edit Manual Target', initial=initial)
+            return
+
+        urgency = tk.StringVar(value=item.urgency_tier)
+        dialog = tk.Toplevel(self)
+        dialog.title('Edit Review Item')
+        dialog.transient(self)
+        dialog.grab_set()
+        frame = ttk.Frame(dialog, padding=12)
+        frame.grid(row=0, column=0)
+        ttk.Label(frame, text='Urgency').grid(row=0, column=0, sticky='w')
+        ttk.Combobox(
+            frame,
+            state='readonly',
+            textvariable=urgency,
+            values=['ordinary_review', 'boosted_review', 'extreme_urgency'],
+            width=20,
+        ).grid(row=0, column=1, sticky='w')
+
+        def _save_ordinary():
+            self.session.edit_review_item(item.review_item_id, urgency_tier=urgency.get().strip())
+            dialog.destroy()
+            self.refresh_callback()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=1, column=0, columnspan=2, sticky='e', pady=(12, 0))
+        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=(8, 0))
+        ttk.Button(buttons, text='Save', command=_save_ordinary).pack(side='right')
