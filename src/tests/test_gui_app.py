@@ -2847,6 +2847,53 @@ def test_acknowledge_ready_overlay_consumes_gate_and_schedules_opponent(monkeypa
     assert any('GUI_READY_OVERLAY_ACKNOWLEDGED' in line for line in seen)
 
 
+
+
+def test_acknowledge_ready_overlay_uses_game_board_turn_method(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag=None: seen.append(message))
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.ready_overlay_visible = True
+    gui.session = type(
+        'Session',
+        (),
+        {
+            'board': type('GameBoardLike', (), {'turn': lambda self: chess.BLACK})(),
+            'player_color': chess.WHITE,
+            'state': SessionState.OPPONENT_TURN,
+        },
+    )()
+    gui._leave_time_freeze = lambda **kwargs: None
+    gui._schedule_pending_opponent_commit = lambda: None
+    gui._refresh_view = lambda transient_status=None: None
+
+    gui._acknowledge_ready_overlay()
+
+    assert any('starts=opponent' in line for line in seen)
+
+
+def test_schedule_pending_opponent_commit_initializes_missing_live_flow_state():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = type(
+        'Session',
+        (),
+        {
+            'state': SessionState.OPPONENT_TURN,
+            'pending_opponent_action': type('Pending', (), {'visible_delay_seconds': 0.0})(),
+            'prepare_pending_opponent_action': lambda self: self.pending_opponent_action,
+        },
+    )()
+    committed = {'count': 0}
+    gui._commit_scheduled_opponent_action = lambda: committed.__setitem__('count', committed['count'] + 1)
+    gui._schedule_after = lambda delay_ms, callback: 'h1'
+    gui._cancel_pending_opponent_callback = lambda keep_session_pending=False: None
+
+    gui._schedule_pending_opponent_commit()
+
+    assert committed['count'] == 1
+    assert gui.paused is False
+    assert gui.ready_overlay_visible is False
+
 def test_cancel_pending_opponent_callback_can_keep_session_pending():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui._pending_opponent_after_handle = None

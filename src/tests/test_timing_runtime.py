@@ -1059,6 +1059,21 @@ def test_start_new_game_gui_player_start_does_not_start_clock(monkeypatch):
     assert session._player_turn_started_at is None
 
 
+
+
+def test_first_explicit_player_move_starts_clock_anchor(monkeypatch):
+    session = TrainingSession(mode='gui')
+    monkeypatch.setattr('opening_trainer.session.random.choice', lambda choices: chess.WHITE)
+    clock = {'now': 100.0}
+    monkeypatch.setattr('opening_trainer.session.time.monotonic', lambda: clock['now'])
+
+    session.start_new_game()
+
+    assert session._player_turn_started_at is None
+    clock['now'] = 137.5
+    session.submit_user_move_uci('e2e4')
+    assert session._player_turn_started_at == 137.5
+
 def test_start_new_game_gui_opponent_start_does_not_auto_advance(monkeypatch):
     session = TrainingSession(mode='gui')
     monkeypatch.setattr('opening_trainer.session.random.choice', lambda choices: chess.BLACK)
