@@ -2788,6 +2788,66 @@ def test_training_depth_summary_reports_updated_bundle_cap(tmp_path):
     assert 'Bundle max: 15 player moves' in summary
 
 
+
+def test_apply_loaded_bundle_applies_post_boot_gate():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = type('Session', (), {'settings': type('Settings', (), {'training_panel_visible_columns': ()})()})()
+    payload_session = type('PayloadSession', (), {'settings': type('Settings', (), {'training_panel_visible_columns': ()})()})()
+    gui.inspector = type(
+        'InspectorStub',
+        (),
+        {
+            'session': None,
+            'set_visible_columns': lambda self, _columns: None,
+        },
+    )()
+    gui.panel_visible = False
+    gui.move_list_visible = False
+    gui.selected_square = object()
+    gui.pending_restart = True
+    gui._deferred_outcome_view = object()
+    calls: list[str] = []
+    gui._cancel_pending_opponent_callback = lambda: calls.append('cancel')
+    gui._load_panel_visibility_preference = lambda: True
+    gui._load_move_list_visibility_preference = lambda: True
+    gui._set_last_bundle_path = lambda _path: calls.append('set_last')
+    gui._update_bundle_summary = lambda: calls.append('summary')
+    gui._apply_shell_layout = lambda initializing=False: calls.append(f'layout:{initializing}')
+    gui._refresh_top_control_strip = lambda: calls.append('top')
+    gui._hide_bundle_picker = lambda: calls.append('hide_picker')
+    gui._clear_board_transients = lambda reason='': calls.append(f'clear:{reason}')
+    gui._refresh_view = lambda: calls.append('refresh')
+    gui._apply_post_boot_live_gate = lambda: calls.append('gate')
+
+    OpeningTrainerGUI._apply_loaded_bundle(gui, {'session': payload_session, 'bundle_path': '/tmp/bundle'})
+
+    assert gui.session is payload_session
+    assert calls[-1] == 'gate'
+    assert 'clear:bundle_load' in calls
+    assert gui.selected_square is None
+    assert gui.pending_restart is False
+    assert gui._deferred_outcome_view is None
+
+
+def test_apply_post_boot_live_gate_logs_and_schedules_path(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr('opening_trainer.ui.gui_app.log_line', lambda message, tag=None: seen.append(message))
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.first_boot_ready_required = False
+    gui.paused = False
+    gui.ready_overlay_visible = False
+    gui.session = type('Session', (), {'timed_state': object(), 'state': SessionState.OPPONENT_TURN})()
+    scheduled = {'count': 0}
+    gui._show_ready_overlay = lambda: None
+    gui._schedule_pending_opponent_commit = lambda: scheduled.__setitem__('count', scheduled['count'] + 1)
+
+    gui._apply_post_boot_live_gate()
+
+    assert scheduled['count'] == 1
+    assert any('GUI_READY_GATE_EVALUATED' in line for line in seen)
+    assert any('GUI_READY_GATE_PATH action=schedule_opponent' in line for line in seen)
+
+
 def test_apply_post_boot_live_gate_shows_ready_overlay_on_first_timed_opponent_start():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.first_boot_ready_required = True
