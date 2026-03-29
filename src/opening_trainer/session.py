@@ -116,6 +116,7 @@ class TrainingSession:
         self.timed_state: TimedSessionState | None = None
         self._player_turn_started_at: float | None = None
         self.pending_opponent_action: PendingOpponentAction | None = None
+        self._pending_smart_level_change: tuple[int, int] | None = None
 
     @property
     def timing_diagnostics(self) -> LiveTimingDebugState:
@@ -578,6 +579,8 @@ class TrainingSession:
     def _record_smart_profile_outcome(self, passed: bool) -> None:
         if self.settings.training_mode != SMART_PROFILE_MODE:
             return
+        track_state, _contract = self.smart_profile.current_track_state()
+        previous_level = int(track_state.current_level)
         time_control_id, rating_band = self._timing_contract_metadata()
         routing_source = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
         eligibility = self.smart_profile.evaluate_eligibility(
@@ -595,6 +598,16 @@ class TrainingSession:
             bundle_time_control_id=time_control_id,
             bundle_rating_band=rating_band,
         )
+        refreshed_track_state, _updated_contract = self.smart_profile.current_track_state()
+        new_level = int(refreshed_track_state.current_level)
+        if new_level != previous_level:
+            self._pending_smart_level_change = (previous_level, new_level)
+            self._apply_settings(self.settings)
+
+    def consume_pending_smart_level_change(self) -> tuple[int, int] | None:
+        pending = self._pending_smart_level_change
+        self._pending_smart_level_change = None
+        return pending
 
     def _lookup_punishment_line(self, max_plies: int = 5) -> list[tuple[str, str, str]]:
         board_after_fail = self.board.board.copy(stack=True)

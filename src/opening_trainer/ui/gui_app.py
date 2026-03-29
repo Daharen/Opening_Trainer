@@ -1236,8 +1236,75 @@ class OpeningTrainerGUI:
         self._deferred_outcome_view = None
         self.selected_square = None
         self._clear_board_transients(reason='acknowledge_outcome')
+        self._sync_smart_contract_after_ladder_change()
         self.session.start_new_game()
+        self._refresh_top_control_strip()
         self._refresh_view()
+
+    def _sync_smart_contract_after_ladder_change(self) -> None:
+        consume_change = getattr(self.session, 'consume_pending_smart_level_change', None)
+        if not callable(consume_change):
+            return
+        level_change = consume_change()
+        if level_change is None:
+            return
+        previous_level, new_level = level_change
+        log_line(
+            f'GUI_SMART_LEVEL_CHANGED old_level=L{previous_level} new_level=L{new_level} '
+            f'track={self.session.settings.selected_smart_track} tc={self.session.settings.selected_time_control_id}',
+            tag='smart_profile',
+        )
+        if self.session.settings.training_mode != 'smart_profile':
+            return
+        self.session._apply_settings(self.session.settings)
+        status = self.session.smart_profile_status()
+        expected_band = getattr(status, 'expected_rating_band', None)
+        contract_turns = getattr(status, 'contract_turns', None)
+        contract_good = getattr(status, 'contract_good_accepted', None)
+        expected_summary = getattr(status, 'expected_bundle_summary', 'n/a')
+        category_id = getattr(status, 'category_id', None)
+        log_line(
+            f'GUI_SMART_CONTRACT_REAPPLY_BEGIN level=L{new_level} expected={expected_band} '
+            f'turns={contract_turns} good={contract_good}',
+            tag='smart_profile',
+        )
+        updated_settings = self.session.settings
+        resolved_bundle_path, blocked_message = self._resolve_bundle_for_top_contract(updated_settings)
+        if resolved_bundle_path:
+            remembered_path = self._remembered_bundle_path()
+            switched = self._bundle_token(remembered_path) != self._bundle_token(resolved_bundle_path)
+            if switched:
+                self._load_selected_bundle(resolved_bundle_path)
+            log_line(
+                f'GUI_SMART_BUNDLE_REEVALUATED expected={expected_summary} '
+                f'resolved={Path(resolved_bundle_path).name} switched={str(switched).lower()}',
+                tag='smart_profile',
+            )
+        else:
+            log_line(
+                f'GUI_SMART_BUNDLE_REEVALUATED expected={expected_summary} '
+                f"switched=false reason={blocked_message or 'missing'}",
+                tag='smart_profile',
+            )
+            if blocked_message:
+                self._prepend_recent_status(blocked_message)
+        self._refresh_top_control_strip()
+        refreshed = self.session.smart_profile_status()
+        refreshed_level = getattr(refreshed, 'level', None)
+        refreshed_band = getattr(refreshed, 'expected_rating_band', None)
+        refreshed_turns = getattr(refreshed, 'contract_turns', None)
+        refreshed_good = getattr(refreshed, 'contract_good_accepted', None)
+        refreshed_control = getattr(refreshed, 'category_id', category_id)
+        log_line(
+            f'GUI_SMART_CONTRACT_REAPPLY_APPLIED level=L{refreshed_level} band={refreshed_band} '
+            f'turns={refreshed_turns} good={refreshed_good} control={refreshed_control}',
+            tag='smart_profile',
+        )
+        log_line(
+            f'GUI_SMART_CONTRACT_STRIP_REFRESHED level={self.top_level_var.get()} '
+            f'elo={self.top_elo_var.get()} depth={self.top_depth_var.get()} good={self.top_good_var.get()}',
+            tag='smart_profile',
+        )
 
     def _on_board_press(self, event: tk.Event) -> None:
         view = self.session.get_view()
