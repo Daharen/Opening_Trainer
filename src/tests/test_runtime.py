@@ -38,6 +38,9 @@ class StubBookAuthority:
     def evaluate(self, board_before_move, played_move):
         return self.result
 
+    def opening_name_for_position(self, _board):
+        return None
+
 
 class StubEngineAuthority:
     def __init__(self, result):
@@ -258,11 +261,45 @@ def test_book_authority_uses_polyglot_membership(monkeypatch, tmp_path):
     monkeypatch.setattr("chess.polyglot.open_reader", lambda path: Reader())
 
     result = OpeningBookAuthority(book_path).evaluate(board, played_move)
-
     assert result.accepted is True
     assert result.available is True
     assert result.reason_code == ReasonCode.BOOK_HIT
     assert result.metadata["candidate_moves"] == ["e2e4", "d2d4"]
+
+
+def test_opening_name_state_updates_freezes_and_resets(monkeypatch, tmp_path):
+    runtime = load_runtime_config(RuntimeOverrides(opening_book_path=str(tmp_path / "missing.bin")))
+    session = TrainingSession(runtime_context=runtime)
+    session.state = SessionState.PLAYER_TURN
+    session.player_color = chess.WHITE
+
+    position_names = {
+        OpeningBookAuthority.normalized_position_key(chess.Board()): "King's Pawn Game",
+    }
+    board_after_e4 = chess.Board()
+    board_after_e4.push(chess.Move.from_uci("e2e4"))
+    position_names[OpeningBookAuthority.normalized_position_key(board_after_e4)] = "King's Pawn Game: Leonardis Variation"
+
+    session.evaluator.book_authority.opening_name_for_position = (
+        lambda board: position_names.get(OpeningBookAuthority.normalized_position_key(board))
+    )
+
+    session._refresh_opening_name_state(reason="position_refresh")
+    assert session.opening_name == "King's Pawn Game"
+    assert session.opening_name_frozen is False
+
+    session.submit_user_move_uci("e2e4")
+    assert session.opening_name == "King's Pawn Game: Leonardis Variation"
+    assert session.opening_name_frozen is False
+
+    position_names.pop(OpeningBookAuthority.normalized_position_key(board_after_e4))
+    session._refresh_opening_name_state(reason="position_refresh")
+    assert session.opening_name_frozen is True
+    assert session.opening_name == "King's Pawn Game: Leonardis Variation"
+
+    session._clear_opening_name_state(reason="new_game_start")
+    assert session.opening_name is None
+    assert session.opening_name_frozen is False
 
 
 def test_startup_diagnostics_reflect_active_authorities(tmp_path):

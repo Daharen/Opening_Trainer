@@ -9,8 +9,17 @@ from ..models import MoveHistoryEntry
 class MoveListPanel(ttk.LabelFrame):
     def __init__(self, master):
         super().__init__(master, text='Move list')
+        self.opening_name_var = tk.StringVar(value='')
+        self.opening_name_label = ttk.Label(self, textvariable=self.opening_name_var)
+        self.opening_name_label.pack(fill='x', padx=6, pady=(2, 4))
         self.text = tk.Text(self, height=10, width=28, state='disabled', wrap='none')
         self.text.pack(fill='both', expand=True)
+
+    def update_opening_name(self, opening_name: str | None) -> None:
+        if isinstance(opening_name, str) and opening_name.strip():
+            self.opening_name_var.set(f'Opening: {opening_name.strip()}')
+        else:
+            self.opening_name_var.set('')
 
     def update_moves(self, moves: tuple[MoveHistoryEntry, ...]) -> None:
         lines: list[str] = []

@@ -61,6 +61,8 @@ class SessionView:
     routing_state: object | None = None
     move_history: tuple[MoveHistoryEntry, ...] = ()
     corpus_summary: str = ''
+    opening_name: str | None = None
+    opening_name_frozen: bool = False
 
     @property
     def awaiting_user_input(self) -> bool:
