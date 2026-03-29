@@ -426,7 +426,10 @@ class ReviewRouter:
         if manual_targets:
             selected_item = sorted(manual_targets, key=self._queue_sort_key)[0]
             presentation_mode = selected_item.manual_presentation_mode or ManualPresentationMode.PLAY_TO_POSITION.value
-            use_force_start = presentation_mode == ManualPresentationMode.FORCE_TARGET_START.value
+            use_force_start = presentation_mode in {
+                ManualPresentationMode.FORCE_TARGET_START.value,
+                ManualPresentationMode.MANUAL_SETUP_START.value,
+            }
             plan = ReviewPlan(
                 root_fen=selected_item.position_fen_normalized if use_force_start else 'startpos',
                 target_review_item_id=selected_item.review_item_id,

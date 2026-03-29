@@ -500,6 +500,24 @@ def test_manual_target_without_predecessor_uses_direct_target_root(tmp_path):
     assert decision.review_plan.root_fen == item.position_fen_normalized
 
 
+def test_manual_setup_start_without_predecessor_uses_direct_target_root(tmp_path):
+    session = _session(tmp_path)
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci=None,
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=False,
+        manual_presentation_mode='manual_setup_start',
+        manual_forced_player_color='black',
+    )
+    decision = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
+    assert decision.routing_source == 'manual_target'
+    assert decision.review_plan.root_fen == item.position_fen_normalized
+    assert item.predecessor_line_uci is None
+    assert item.predecessor_path == []
+    assert item.manual_forced_player_color == 'black'
+
+
 def test_manual_target_defaults_to_play_to_position(tmp_path):
     session = _session(tmp_path)
     item = session.add_manual_target(
@@ -526,6 +544,19 @@ def test_manual_target_play_to_position_autoresolves_predecessor_line(tmp_path):
     assert item.predecessor_path
 
 
+def test_manual_setup_start_does_not_autoresolve_predecessor_line(tmp_path):
+    session = _session(tmp_path)
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci=None,
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=False,
+        manual_presentation_mode='manual_setup_start',
+    )
+    assert item.predecessor_line_uci is None
+    assert item.predecessor_path == []
+
+
 def test_editing_ordinary_item_with_manual_fields_converts_origin(tmp_path):
     session = _session(tmp_path)
     session.evaluator = MoveEvaluator(
@@ -550,6 +581,27 @@ def test_editing_ordinary_item_with_manual_fields_converts_origin(tmp_path):
     )
     assert updated.origin_kind == 'manual_target'
     assert updated.predecessor_line_uci == 'e2e4 e7e5'
+    assert updated.manual_forced_player_color == 'white'
+
+
+def test_editing_item_can_convert_to_manual_setup_start_without_predecessor(tmp_path):
+    session = _session(tmp_path)
+    item = session.add_manual_target(
+        target_fen='rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',
+        predecessor_line_uci='e2e4 e7e5',
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=True,
+        manual_presentation_mode='play_to_position',
+    )
+    updated = session.edit_review_item(
+        item.review_item_id,
+        manual_presentation_mode='manual_setup_start',
+        predecessor_line_uci=None,
+        manual_forced_player_color='white',
+    )
+    assert updated.manual_presentation_mode == 'manual_setup_start'
+    assert updated.predecessor_line_uci is None
+    assert updated.predecessor_path == []
     assert updated.manual_forced_player_color == 'white'
 
 

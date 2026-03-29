@@ -109,23 +109,25 @@ def validate_manual_target(
         raise ValueError('Target FEN does not describe a valid chess position.')
 
     cleaned_line = (predecessor_line_uci or '').strip()
+    normalized_presentation_mode = (presentation_mode or ManualPresentationMode.PLAY_TO_POSITION.value).strip()
+    auto_resolve_allowed = auto_resolve_predecessor and normalized_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value
     predecessor_path: list[ReviewPathMove] = []
     if cleaned_line:
         try:
             predecessor_path, reached = _parse_predecessor_path_uci(cleaned_line)
         except ValueError:
-            if not auto_resolve_predecessor:
+            if not auto_resolve_allowed:
                 raise
             predecessor_path = _canonical_predecessor_path_from_start(target_board)
             cleaned_line = ' '.join(move.move_uci for move in predecessor_path)
             reached = target_board
         if _position_identity(reached) != _position_identity(target_board):
-            if not auto_resolve_predecessor:
+            if not auto_resolve_allowed:
                 raise ValueError('Predecessor line does not reach the target position identity.')
             predecessor_path = _canonical_predecessor_path_from_start(target_board)
             cleaned_line = ' '.join(move.move_uci for move in predecessor_path)
-    if presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value and not predecessor_path:
-        if not auto_resolve_predecessor:
+    if normalized_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value and not predecessor_path:
+        if not auto_resolve_allowed:
             raise ValueError('Play-to-position mode requires a predecessor line that reaches the target.')
         predecessor_path = _canonical_predecessor_path_from_start(target_board)
         cleaned_line = ' '.join(move.move_uci for move in predecessor_path)
