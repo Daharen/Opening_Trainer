@@ -11,9 +11,10 @@ class OutcomeArrowContract:
 
 
 @dataclass(frozen=True)
-class PunishmentSlideContract:
+class ReviewSlideContract:
     step_index: int
     total_steps: int
+    line_label: str
     board_fen: str
     current_move_uci: str
     current_move_san: str
@@ -41,7 +42,8 @@ class OutcomeModalContract:
     impact_summary: str
     requires_acknowledgement: bool = True
     review_boards: tuple[OutcomeBoardContract, ...] = ()
-    punishment_slides: tuple[PunishmentSlideContract, ...] = ()
+    punishment_slides: tuple[ReviewSlideContract, ...] = ()
+    corrective_slides: tuple[ReviewSlideContract, ...] = ()
 
 
 @dataclass(frozen=True)

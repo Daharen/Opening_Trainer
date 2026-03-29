@@ -473,7 +473,7 @@ def test_bundle_rejects_unsupported_move_key_format(tmp_path, monkeypatch):
 
     choice = provider.choose_move_with_context(board)
 
-    assert choice.selected_via == "random_legal_move"
+    assert choice.selected_via == "random_legal_fallback"
     assert choice.fallback_applied is True
     assert "Stockfish fallback failed" in (choice.sparse_reason or "")
 
@@ -493,7 +493,7 @@ def test_directory_artifact_path_is_not_loaded_as_legacy_corpus(tmp_path, monkey
     choice = provider.choose_move_with_context(board)
 
     assert provider.corpus_provider is None
-    assert choice.selected_via == "random_legal_move"
+    assert choice.selected_via == "random_legal_fallback"
     assert choice.fallback_applied is True
 
 
@@ -504,7 +504,7 @@ def test_no_corpus_and_engine_unavailable_uses_random_fallback(monkeypatch):
 
     choice = provider.choose_move_with_context(board)
 
-    assert choice.selected_via == "random_legal_move"
+    assert choice.selected_via == "random_legal_fallback"
     assert choice.fallback_applied is True
 
 
