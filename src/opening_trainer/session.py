@@ -117,6 +117,8 @@ class TrainingSession:
         self._player_turn_started_at: float | None = None
         self.pending_opponent_action: PendingOpponentAction | None = None
         self._pending_smart_level_change: tuple[int, int] | None = None
+        self.opening_name: str | None = None
+        self.opening_name_frozen = False
 
     @property
     def timing_diagnostics(self) -> LiveTimingDebugState:
@@ -217,6 +219,7 @@ class TrainingSession:
         self.cancel_pending_opponent_action()
         self.state = SessionState.STARTING_GAME
         self.board.reset()
+        self._clear_opening_name_state(reason='new_game_start')
         self.player_color = random.choice([chess.WHITE, chess.BLACK])
         self.player_move_count = 0
         self.last_evaluation = None
@@ -244,6 +247,7 @@ class TrainingSession:
         else:
             self.state = SessionState.OPPONENT_TURN
             self.advance_until_user_turn()
+        self._refresh_opening_name_state(reason='position_refresh')
         return self.get_view()
 
     def get_view(self) -> SessionView:
@@ -258,7 +262,40 @@ class TrainingSession:
             self.current_routing,
             tuple(self.move_history()),
             self.corpus_summary_text(),
+            self.opening_name,
+            self.opening_name_frozen,
         )
+
+    def _clear_opening_name_state(self, *, reason: str) -> None:
+        if self.opening_name is not None or self.opening_name_frozen:
+            log_line(f"GUI_OPENING_NAME_CLEARED old_value={self.opening_name!r}; reason={reason}", tag='gui')
+        self.opening_name = None
+        self.opening_name_frozen = False
+
+    def _refresh_opening_name_state(self, *, reason: str) -> None:
+        if self.opening_name_frozen:
+            return
+        resolver = getattr(self.evaluator.book_authority, 'opening_name_for_position', None)
+        opening_name = resolver(self.board.board) if callable(resolver) else None
+        if isinstance(opening_name, str):
+            opening_name = opening_name.strip() or None
+        else:
+            opening_name = None
+        if opening_name is not None:
+            if opening_name != self.opening_name:
+                update_reason = 'refined' if self.opening_name else 'book_hit'
+                log_line(
+                    f"GUI_OPENING_NAME_UPDATED old_value={self.opening_name!r}; new_value={opening_name!r}; reason={update_reason}",
+                    tag='gui',
+                )
+                self.opening_name = opening_name
+            return
+        if self.opening_name is not None:
+            self.opening_name_frozen = True
+            log_line(
+                f"GUI_OPENING_NAME_FROZEN final_value={self.opening_name!r}; reason=book_exit; trigger={reason}",
+                tag='gui',
+            )
 
     def current_board(self) -> chess.Board:
         return self.board.board.copy(stack=True)
@@ -482,6 +519,7 @@ class TrainingSession:
         self.player_move_count += 1
         evaluation = self.evaluator.evaluate(board_before_move, move, self.player_move_count)
         self.last_evaluation = evaluation
+        self._refresh_opening_name_state(reason='position_refresh')
         self._print_evaluation_feedback(evaluation)
         if evaluation.canonical_judgment == CanonicalJudgment.AUTHORITY_UNAVAILABLE:
             self.last_outcome = SessionOutcome(False, evaluation.reason_text, None, evaluation, 'authority_unavailable', self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play', 'ordinary_corpus_play', self._profile_name(), 'No review item recorded because the authority was unavailable.')
@@ -814,6 +852,7 @@ class TrainingSession:
         san = self.board.board.san(move)
         self.board.board.push(move)
         self._record_path_move(pending.board_before, move)
+        self._refresh_opening_name_state(reason='position_refresh')
         self._update_timing_diagnostics(
             choice,
             native_components=pending.native_components,

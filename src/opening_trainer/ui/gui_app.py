@@ -1042,6 +1042,7 @@ class OpeningTrainerGUI:
         self.recent_var.set(self._build_recent_status_text(routing_summary))
         self.inspector.refresh()
         view = self.session.get_view()
+        self.move_list_panel.update_opening_name(view.opening_name)
         self.move_list_panel.update_moves(view.move_history)
         board = chess.Board(view.board_fen)
         self._refresh_clock_display(board=board, view=view)

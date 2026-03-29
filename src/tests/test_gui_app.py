@@ -166,6 +166,18 @@ class BoardViewStub:
         return None
 
 
+class FakeMoveListPanel:
+    def __init__(self):
+        self.opening_name = None
+        self.moves = None
+
+    def update_opening_name(self, opening_name):
+        self.opening_name = opening_name
+
+    def update_moves(self, moves):
+        self.moves = moves
+
+
 class FakeStringVar:
     def __init__(self, value: str = ""):
         self._value = value
@@ -200,6 +212,56 @@ class FakeBoolVar:
 
     def set(self, value):
         self._value = bool(value)
+
+
+def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
+    move_history = (
+        MoveHistoryEntry(0, "white", "e2e4", "e4", "player"),
+        MoveHistoryEntry(1, "black", "e7e5", "e5", "opponent"),
+    )
+    view = SessionView(
+        board_fen=chess.STARTING_FEN,
+        player_color=chess.WHITE,
+        state=SessionState.PLAYER_TURN,
+        player_move_count=1,
+        required_player_moves=6,
+        last_evaluation=None,
+        last_outcome=None,
+        move_history=move_history,
+        opening_name="King's Pawn Game",
+    )
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.session = type(
+        "SessionStub",
+        (),
+        {
+            "review_storage": type(
+                "ReviewStorageStub",
+                (),
+                {
+                    "load_items": lambda self, _profile_id: [],
+                    "load_profile_meta": lambda self, _profile_id: type("Meta", (), {"display_name": "Default"})(),
+                },
+            )(),
+            "active_profile_id": "default",
+            "current_routing": type("RoutingStub", (), {"routing_source": "ordinary_corpus_play"})(),
+            "get_view": lambda self: view,
+        },
+    )()
+    gui.top_summary_var = FakeStringVar()
+    gui.recent_var = FakeStringVar()
+    gui.inspector = type("InspectorStub", (), {"refresh": lambda self: None})()
+    gui.move_list_panel = FakeMoveListPanel()
+    gui._refresh_clock_display = lambda board=None, view=None: None
+    gui._update_bundle_summary = lambda: None
+    gui._build_top_summary_row = lambda **kwargs: "summary"
+    gui._build_recent_status_text = lambda _routing_summary: "recent"
+    gui._build_routing_summary = lambda _routing, _explain: "route"
+
+    gui._refresh_supporting_surfaces()
+
+    assert gui.move_list_panel.opening_name == "King's Pawn Game"
+    assert gui.move_list_panel.moves == move_history
 
 
 def _build_gui(tmp_path):
