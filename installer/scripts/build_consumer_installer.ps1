@@ -27,6 +27,15 @@ if ([string]::IsNullOrWhiteSpace([string]$manifest.download_url)) {
 if (-not ([string]$manifest.download_url -match '^https://[^/]*s3')) {
     throw "Manifest download_url must point to an S3 host. Found: $($manifest.download_url)"
 }
+if ([string]::IsNullOrWhiteSpace([string]$manifest.content_version)) {
+    throw 'Manifest content_version cannot be empty.'
+}
+if ([string]::IsNullOrWhiteSpace([string]$manifest.archive_filename)) {
+    throw 'Manifest archive_filename cannot be empty.'
+}
+if (-not $manifest.required_entries -or $manifest.required_entries.Count -eq 0) {
+    throw 'Manifest required_entries cannot be empty.'
+}
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 if (-not $iscc) {
