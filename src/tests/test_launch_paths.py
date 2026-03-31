@@ -154,6 +154,21 @@ def test_duplicate_instance_launch_exits_without_cli_fallback(monkeypatch, runti
     assert cli_calls == []
 
 
+def test_apply_update_flag_uses_updater_helper(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="consumer", runtime_mode_source="cli")
+    helper_calls: list[dict] = []
+    monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
+    monkeypatch.setattr(
+        "opening_trainer.main.launch_updater_helper",
+        lambda manifest_path_or_url, **kwargs: helper_calls.append({"manifest": manifest_path_or_url, **kwargs}),
+    )
+
+    run(["--runtime-mode", "consumer", "--apply-update", "https://example.invalid/manifest.json"])
+
+    assert len(helper_calls) == 1
+    assert helper_calls[0]["manifest"] == "https://example.invalid/manifest.json"
+
+
 def test_startup_failure_path_uses_local_app_data(monkeypatch, tmp_path):
     runtime_context = type("RuntimeContext", (), {})()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))

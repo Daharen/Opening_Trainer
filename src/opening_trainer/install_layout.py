@@ -100,12 +100,14 @@ def write_installed_app_manifest(
     payload_filename: str,
     payload_sha256: str | None,
     bootstrap_version: str | None,
+    build_id: str | None = None,
 ) -> Path:
     app_state_root.mkdir(parents=True, exist_ok=True)
     path = installed_app_manifest_path(app_state_root)
     payload = {
         "installed_app_manifest_version": 1,
         "app_version": app_version,
+        "build_id": build_id,
         "channel": channel,
         "mutable_app_root": str(mutable_app_root),
         "payload_filename": payload_filename,

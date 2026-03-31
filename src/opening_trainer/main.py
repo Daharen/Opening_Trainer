@@ -15,7 +15,7 @@ from .runtime import RuntimeOverrides, load_runtime_config
 from .session import TrainingSession
 from .session_logging import get_session_logger, initialize_session_logging, log_line
 from .single_instance import INSTANCE_DIAGNOSTICS_PATH_ENV
-from .updater import apply_update, check_for_update
+from .updater import check_for_update, launch_updater_helper, resolve_manifest_path_or_url
 
 
 def _apply_runtime_environment(runtime_context) -> None:
@@ -228,22 +228,24 @@ def run(argv: list[str] | None = None) -> None:
     if args.check_for_update:
         local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
         app_state_root = local_app_data / "OpeningTrainer"
-        has_update, manifest, installed = check_for_update(args.check_for_update, app_state_root=app_state_root)
+        manifest_ref = resolve_manifest_path_or_url(args.check_for_update, app_state_root=app_state_root)
+        has_update, manifest, installed = check_for_update(manifest_ref, app_state_root=app_state_root)
         print(
-            f"UPDATE_CHECK channel={manifest.channel} installed={None if not installed else installed.get('app_version')} latest={manifest.app_version} has_update={has_update}"
+            f"UPDATE_CHECK channel={manifest.channel} installed={None if not installed else installed.get('app_version')} installed_build={None if not installed else installed.get('build_id')} latest={manifest.app_version} latest_build={manifest.build_id} has_update={has_update}"
         )
         return
 
     if args.apply_update:
         local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
         app_state_root = local_app_data / "OpeningTrainer"
-        launched = apply_update(
+        launch_updater_helper(
             args.apply_update,
             app_state_root=app_state_root,
-            relaunch=True,
+            wait_for_pid=os.getpid(),
+            relaunch_exe_path=Path(sys.executable),
             relaunch_args=["--runtime-mode", "consumer"],
         )
-        print(f"UPDATE_APPLY_OK launched={launched}")
+        print("UPDATE_APPLY_HELPER_LAUNCHED")
         return
 
     if args.build_corpus:

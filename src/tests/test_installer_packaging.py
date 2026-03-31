@@ -40,6 +40,7 @@ def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
     assert 'Source: "app_update_manifest.json"' in script
     assert 'Source: "scripts\\install_consumer_content.ps1"' in script
     assert 'Source: "scripts\\install_consumer_app.ps1"' in script
+    assert 'Source: "scripts\\apply_app_update.ps1"' in script
     assert "runhidden" not in script
     assert "SetupLogging=yes" in script
     assert "{localappdata}\\OpeningTrainer" in script
@@ -47,7 +48,9 @@ def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
     assert 'Filename: "{localappdata}\\OpeningTrainer\\App\\{#MyAppExeName}"' in script
     assert 'WorkingDir: "{localappdata}\\OpeningTrainer\\App"' in script
     assert "install_consumer_app.ps1" in script
-    assert "{userprofile}\\OpeningTrainer\\App" in script
+    assert "UpdaterHelperScriptPath" in script
+    assert "DefaultManifestUrl" in script
+    assert "{%USERPROFILE}\\OpeningTrainer\\App" in script or "{userprofile}\\OpeningTrainer\\App" in script
     assert "CurUninstallStepChanged" in script
     assert "Remove downloaded opening content" in script
 
@@ -129,6 +132,7 @@ def test_app_update_manifest_schema() -> None:
     assert payload["manifest_version"] >= 1
     assert payload["channel"] in {"dev", "canary", "release"}
     assert isinstance(payload["app_version"], str) and payload["app_version"]
+    assert isinstance(payload["build_id"], str) and payload["build_id"]
     assert isinstance(payload["payload_filename"], str) and payload["payload_filename"].endswith(".zip")
     assert isinstance(payload["payload_url"], str) and payload["payload_url"].startswith("https://")
     assert isinstance(payload["payload_sha256"], str) and payload["payload_sha256"]
@@ -143,6 +147,28 @@ def test_install_consumer_app_has_probe_and_fallback_policy() -> None:
     assert "No writable mutable app roots passed probe" in script
     assert "orderedCandidates = @($DefaultAppRoot, $SecondaryAppRoot)" in script
     assert "installed_app_manifest.json" in script
+    assert "updater_config.json" in script
+    assert "build_id = $BuildId" in script
+    assert "UpdaterHelperScriptPath" in script
+
+
+def test_updater_helper_and_publish_script_exist() -> None:
+    repo_root = _repo_root()
+    helper_script = repo_root / "installer" / "scripts" / "apply_app_update.ps1"
+    publish_script = repo_root / "installer" / "scripts" / "publish_dev_update.ps1"
+
+    assert helper_script.exists()
+    assert publish_script.exists()
+
+    helper_text = helper_script.read_text(encoding="utf-8")
+    publish_text = publish_script.read_text(encoding="utf-8")
+    assert "Wait-ForProcessExit" in helper_text
+    assert "payload_sha256" in helper_text
+    assert "mutable_app_root" in helper_text
+    assert "build_id" in helper_text
+    assert "build_consumer_app_payload.ps1" in publish_text
+    assert "Get-FileHash" in publish_text
+    assert "build_id" in publish_text
 
 
 def test_content_bootstrap_reuse_does_not_require_installed_manifest_match() -> None:
