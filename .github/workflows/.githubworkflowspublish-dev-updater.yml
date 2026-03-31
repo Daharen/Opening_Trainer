@@ -1,0 +1,67 @@
+# .github/workflows/publish-dev-updater.yml
+name: Publish Dev Updater Artifacts
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'installer/app_update_manifest.json'
+      - 'installer/payloads/dev/**'
+      - 'dist/**'
+      - 'logs/**'
+      - 'runtime/**'
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: 'Optional app version override (example: 0.1.2)'
+        required: false
+        default: '0.1.1'
+
+concurrency:
+  group: publish-dev-updater-main
+  cancel-in-progress: true
+
+jobs:
+  publish-dev-updater:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure git identity
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish dev updater artifacts
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.app_version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "0.1.1"
+          }
+          .\installer\scripts\publish_dev_update.ps1 -AppVersion $version
+
+      - name: Commit manifest and payload if changed
+        shell: pwsh
+        run: |
+          git add installer/app_update_manifest.json installer/payloads/dev/OpeningTrainer-app.zip
+          if (git diff --cached --quiet) {
+            Write-Host "No updater artifact changes to commit."
+            exit 0
+          }
+          git commit -m "chore(updater): publish dev artifacts for $env:GITHUB_SHA"
+          git push origin HEAD:main
