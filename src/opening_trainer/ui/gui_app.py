@@ -148,7 +148,15 @@ class OpeningTrainerGUI:
 
         toolbar = tk.Frame(self.root)
         toolbar.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 4))
-        self.start_button = tk.Button(toolbar, text='Start drill', command=self._start_game)
+        self.start_button = tk.Button(
+            toolbar,
+            text='Start drill',
+            command=self._start_game,
+            bg='#90EE90',
+            activebackground='#7edc7e',
+            fg='black',
+            activeforeground='black',
+        )
         self.start_button.pack(side='left')
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
@@ -1343,7 +1351,15 @@ class OpeningTrainerGUI:
         frame.place(relx=0.5, rely=0.5, anchor='center')
         ttk.Label(frame, text='Ready?', font=('TkDefaultFont', 14, 'bold')).pack(anchor='center', pady=(0, 4))
         ttk.Label(frame, text='Opponent starts. Click Begin to start live play.').pack(anchor='center', pady=(0, 12))
-        ttk.Button(frame, text='Begin', command=self._acknowledge_ready_overlay).pack(fill='x')
+        tk.Button(
+            frame,
+            text='Begin',
+            command=self._acknowledge_ready_overlay,
+            bg='#90EE90',
+            activebackground='#7edc7e',
+            fg='black',
+            activeforeground='black',
+        ).pack(fill='x')
         self._ready_overlay_frame = frame
 
     def _acknowledge_ready_overlay(self) -> None:
