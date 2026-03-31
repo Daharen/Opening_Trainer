@@ -7,6 +7,14 @@ from opening_trainer.install_layout import choose_mutable_app_root, write_instal
 from opening_trainer.updater import check_for_update, resolve_manifest_path_or_url
 
 
+def test_apply_helper_avoids_reserved_pid_variable_name():
+    script_path = Path("installer/scripts/apply_app_update.ps1")
+    script = script_path.read_text(encoding="utf-8")
+
+    assert "param([int]$Pid" not in script
+    assert "Wait-ForProcessExit -Pid" not in script
+
+
 def test_mutable_app_root_fallback_order(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "User"))

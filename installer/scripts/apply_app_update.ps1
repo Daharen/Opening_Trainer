@@ -41,13 +41,13 @@ function Resolve-Manifest {
 }
 
 function Wait-ForProcessExit {
-    param([int]$Pid, [int]$TimeoutSeconds = 180)
+    param([int]$WaitForProcessId, [int]$TimeoutSeconds = 180)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ($true) {
-        $proc = Get-Process -Id $Pid -ErrorAction SilentlyContinue
+        $proc = Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue
         if (-not $proc) { return }
         if ((Get-Date) -gt $deadline) {
-            throw "Timed out waiting for process $Pid to exit."
+            throw "Timed out waiting for process $WaitForProcessId to exit."
         }
         Start-Sleep -Milliseconds 300
     }
@@ -86,7 +86,7 @@ try {
     New-Item -ItemType Directory -Path $nextRoot -Force | Out-Null
     Copy-Item -Path (Join-Path $stagingRoot '*') -Destination $nextRoot -Recurse -Force
 
-    Wait-ForProcessExit -Pid $WaitForPid
+    Wait-ForProcessExit -WaitForProcessId $WaitForPid
     if (Test-Path -LiteralPath $prevRoot) { Remove-Item -LiteralPath $prevRoot -Recurse -Force }
     if (Test-Path -LiteralPath $mutableRoot) {
         Move-Item -LiteralPath $mutableRoot -Destination $prevRoot -Force
