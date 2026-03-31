@@ -6,7 +6,7 @@ A local chess opening-discipline trainer focused on rapid early-game repetition.
 
 For a normal consumer install, download **`OpeningTrainerSetup.exe`** from the GitHub releases page:
 
-- [https://github.com/Opening-Trainer/Opening_Trainer/releases/latest](https://github.com/Opening-Trainer/Opening_Trainer/releases/latest](https://github.com/Daharen/Opening_Trainer/releases/download/v0.1.1/OpeningTrainerSetup.exe)
+- [https://github.com/Opening-Trainer/Opening_Trainer/releases/latest](https://github.com/Daharen/Opening_Trainer/releases/download/v0.1.1/OpeningTrainerSetup.exe)
 
 The installer:
 
