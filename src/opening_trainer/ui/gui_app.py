@@ -152,10 +152,6 @@ class OpeningTrainerGUI:
             toolbar,
             text='Start drill',
             command=self._start_game,
-            bg='#90EE90',
-            activebackground='#7edc7e',
-            fg='black',
-            activeforeground='black',
         )
         self.start_button.pack(side='left')
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
@@ -1355,10 +1351,6 @@ class OpeningTrainerGUI:
             frame,
             text='Begin',
             command=self._acknowledge_ready_overlay,
-            bg='#90EE90',
-            activebackground='#7edc7e',
-            fg='black',
-            activeforeground='black',
         ).pack(fill='x')
         self._ready_overlay_frame = frame
 
