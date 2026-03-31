@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 from opening_trainer.main import _startup_failure_log_path, run
 from opening_trainer.ui.gui_app import DuplicateInstanceLaunchBlockedError
@@ -253,3 +254,19 @@ def test_powershell_ordinary_failure_message_points_to_session_log_and_dev_launc
     assert 'Startup failed' in script
     assert 'See session log:' in script
     assert 'Launch_Opening_Trainer_Dev.cmd' in script
+
+
+def test_strict_assets_does_not_exit_when_only_corpus_bundle_is_unavailable(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="consumer")
+    runtime_context.config = SimpleNamespace(strict_assets=True)
+    runtime_context.corpus = SimpleNamespace(label="corpus bundle directory", path=Path("/missing/catalog-root"), available=False)
+    runtime_context.engine = SimpleNamespace(label="engine", path=Path("/engine"), available=True)
+    runtime_context.book = SimpleNamespace(label="opening book", path=Path("/book"), available=True)
+
+    launched = CaptureCalls()
+    monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.launch_gui", lambda runtime_context=None: launched(runtime_context))
+
+    run(["--runtime-mode", "consumer"])
+
+    assert launched.calls == [((runtime_context,), {})]
