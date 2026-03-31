@@ -1,6 +1,7 @@
 param(
     [switch]$SkipDependencyInstall,
-    [switch]$SkipSmokeTest
+    [switch]$SkipSmokeTest,
+    [switch]$DebugConsole
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,7 +47,19 @@ New-Item -ItemType Directory -Path $consumerDist -Force | Out-Null
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 
 Write-Host 'Building consumer payload with PyInstaller...'
-& $venvPython -m PyInstaller --noconfirm --clean --distpath $consumerDist --workpath $buildRoot $specPath
+$pyInstallerArgs = @(
+    "-m", "PyInstaller",
+    "--noconfirm",
+    "--clean",
+    "--distpath", $consumerDist,
+    "--workpath", $buildRoot
+)
+if ($DebugConsole) {
+    Write-Host "Debug console build enabled for local diagnostics."
+    $pyInstallerArgs += "--console"
+}
+$pyInstallerArgs += $specPath
+& $venvPython @pyInstallerArgs
 
 $outputExe = Join-Path $consumerDist 'OpeningTrainer.exe'
 if (-not (Test-Path -LiteralPath $outputExe)) {
@@ -86,6 +99,12 @@ if (-not $SkipSmokeTest) {
         if (Test-Path -LiteralPath $smokeRoot) {
             Remove-Item -LiteralPath $smokeRoot -Recurse -Force
         }
+    }
+
+    Write-Host 'Running consumer payload GUI bootstrap smoke test...'
+    & $outputExe --runtime-mode consumer --probe-gui-bootstrap
+    if ($LASTEXITCODE -ne 0) {
+        throw "Consumer payload GUI bootstrap smoke test failed with exit code $LASTEXITCODE."
     }
 }
 

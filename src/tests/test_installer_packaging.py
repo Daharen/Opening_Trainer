@@ -99,6 +99,8 @@ def test_packaging_build_scripts_exist() -> None:
     assert "--show-runtime --runtime-mode dev" in payload_text
     assert "OPENING_TRAINER_ASSUME_INSTALLED" in payload_text
     assert "runtime mode inference smoke test" in payload_text
+    assert "--probe-gui-bootstrap" in payload_text
+    assert "DebugConsole" in payload_text
     assert "build_consumer_payload.ps1" in installer_text
     assert "ISCC.exe" in installer_text
 

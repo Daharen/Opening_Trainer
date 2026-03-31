@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import os
+import traceback
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
 
 from .corpus import CorpusIngestor, DEFAULT_ARTIFACT_PATH, save_artifact
 from .runtime import RuntimeOverrides, load_runtime_config
@@ -41,6 +47,80 @@ def run_cli(runtime_overrides: RuntimeOverrides | None = None) -> None:
         session.run_session()
 
 
+def _is_frozen_consumer_launch(runtime_context) -> bool:
+    runtime_mode = getattr(getattr(runtime_context, "runtime_mode", None), "value", "")
+    return bool(getattr(sys, "frozen", False)) and runtime_mode == "consumer"
+
+
+def _startup_failure_log_path(runtime_context) -> Path:
+    runtime_paths = getattr(runtime_context, "runtime_paths", None)
+    if runtime_paths is not None:
+        app_state_root = getattr(runtime_paths, "app_state_root", None)
+        if app_state_root is not None:
+            return Path(app_state_root) / "startup_failure.log"
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    return local_app_data / "OpeningTrainer" / "startup_failure.log"
+
+
+def _write_startup_failure_artifact(runtime_context, stage: str, exc: Exception) -> Path:
+    log_path = _startup_failure_log_path(runtime_context)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    details = [
+        f"timestamp_utc={datetime.now(timezone.utc).isoformat()}",
+        f"stage={stage}",
+        f"runtime_mode={getattr(getattr(runtime_context, 'runtime_mode', None), 'value', 'unknown')}",
+        f"runtime_mode_source={getattr(runtime_context, 'runtime_mode_source', 'unknown')}",
+        f"runtime_mode_reason={getattr(runtime_context, 'runtime_mode_reason', 'unknown')}",
+        f"executable={sys.executable}",
+        f"frozen={bool(getattr(sys, 'frozen', False))}",
+        "",
+        "traceback:",
+        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+    ]
+    log_path.write_text("\n".join(details), encoding="utf-8")
+    return log_path
+
+
+def _show_startup_failure_dialog(stage: str, exc: Exception, log_path: Path) -> None:
+    message = (
+        "Opening Trainer failed to start.\n\n"
+        f"Failure stage: {stage}\n"
+        f"Error: {exc}\n\n"
+        f"Details were written to:\n{log_path}"
+    )
+    if os.name == "nt":
+        try:
+            ctypes.windll.user32.MessageBoxW(0, message, "Opening Trainer Startup Failure", 0x10 | 0x0)
+            return
+        except Exception:
+            pass
+    print(message, file=sys.stderr)
+
+
+def _handle_frozen_consumer_gui_failure(runtime_context, stage: str, exc: Exception) -> None:
+    log_path = _write_startup_failure_artifact(runtime_context, stage, exc)
+    log_line(f"GUI_STARTUP_FATAL: stage={stage}; log_path={log_path}; error={exc}", tag="error")
+    _show_startup_failure_dialog(stage, exc, log_path)
+    raise SystemExit(1)
+
+
+def _probe_gui_bootstrap(runtime_context) -> None:
+    try:
+        from .ui import gui_app  # noqa: F401
+    except Exception as exc:
+        raise SystemExit(f"GUI probe import failed: {exc}") from exc
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        root.destroy()
+    except Exception as exc:
+        raise SystemExit(f"GUI probe bootstrap failed: {exc}") from exc
+    log_line("GUI probe succeeded.", tag="startup")
+
+
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Opening Trainer")
     mode = parser.add_mutually_exclusive_group()
@@ -56,6 +136,11 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("--engine-time-limit", type=float, help="Override engine analysis time limit in seconds.")
     parser.add_argument("--strict-assets", action="store_true", help="Exit if configured runtime assets are missing.")
     parser.add_argument("--show-runtime", action="store_true", help="Print resolved runtime asset diagnostics and exit.")
+    parser.add_argument(
+        "--probe-gui-bootstrap",
+        action="store_true",
+        help="Perform lightweight GUI import/bootstrap validation and exit.",
+    )
     parser.add_argument(
         "--build-corpus",
         nargs="+",
@@ -90,6 +175,9 @@ def run(argv: list[str] | None = None) -> None:
         log_line(runtime_context.book.detail, tag="startup")
         log_line(runtime_context.engine.detail, tag="startup")
         return
+    if args.probe_gui_bootstrap:
+        _probe_gui_bootstrap(runtime_context)
+        return
 
     if runtime_context.config.strict_assets:
         missing = [asset.label for asset in (runtime_context.corpus, runtime_context.engine, runtime_context.book) if asset.path is not None and not asset.available]
@@ -103,8 +191,16 @@ def run(argv: list[str] | None = None) -> None:
     try:
         from .ui.gui_app import launch_gui
     except Exception as exc:
+        if _is_frozen_consumer_launch(runtime_context):
+            _handle_frozen_consumer_gui_failure(runtime_context, "gui_import", exc)
         log_line(f"GUI unavailable ({exc}). Falling back to CLI.", tag="error")
         run_cli(runtime_overrides)
         return
 
-    launch_gui(runtime_context=runtime_context)
+    try:
+        launch_gui(runtime_context=runtime_context)
+    except Exception as exc:
+        if _is_frozen_consumer_launch(runtime_context):
+            _handle_frozen_consumer_gui_failure(runtime_context, "gui_bootstrap", exc)
+        log_line(f"GUI launch failed ({exc}). Falling back to CLI.", tag="error")
+        run_cli(runtime_overrides)
