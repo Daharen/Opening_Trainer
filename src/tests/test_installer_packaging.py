@@ -13,11 +13,19 @@ def test_consumer_content_manifest_has_required_fields() -> None:
 
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert payload["manifest_version"] == 1
+    assert payload["manifest_version"] >= 1
     assert isinstance(payload["content_version"], str) and payload["content_version"]
     assert isinstance(payload["download_url"], str) and payload["download_url"].startswith("https://")
     assert "s3" in payload["download_url"].lower()
     assert isinstance(payload["archive_filename"], str) and payload["archive_filename"]
+    assert isinstance(payload["manifest_url"], str) and payload["manifest_url"].startswith("https://")
+    assert "s3" in payload["manifest_url"].lower()
+    assert "archive_sha256" in payload
+    assert isinstance(payload["update_channel"], str) and payload["update_channel"]
+    assert isinstance(payload["install_root_mode"], str) and payload["install_root_mode"]
+    assert isinstance(payload["wrapper_folder_name"], str) and payload["wrapper_folder_name"]
+    assert isinstance(payload["installed_manifest_filename"], str) and payload["installed_manifest_filename"]
+    assert isinstance(payload["required_entries"], list) and payload["required_entries"]
 
 
 def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
@@ -43,17 +51,24 @@ def test_content_bootstrap_writes_consumer_runtime_config_and_logging() -> None:
     script = bootstrap_path.read_text(encoding="utf-8")
 
     assert "runtime.consumer.json" in script
+    assert "installed_content_manifest.json" in script
     assert "corpus_bundle_dir" in script
     assert "predecessor_master_db_path" in script
     assert "opening_book_path" in script
     assert "engine_executable_path" in script
     assert "install.log" in script
+    assert "Checking existing content" in script
+    assert "Reusing installed content" in script
+    assert "Migrating wrapper-folder content" in script
     assert "Downloading content package" in script
-    assert "Verifying package" in script
+    assert "Verifying archive" in script
     assert "Extracting content" in script
     assert "Writing runtime configuration" in script
-    assert "Finalizing installation" in script
+    assert "Finalizing install" in script
     assert "Download-FileWithProgress" in script
+    assert "LocalArchivePath" in script
+    assert "wrapper_folder_name" in script
+    assert "required_entries" in script
 
 
 def test_packaging_build_scripts_exist() -> None:
@@ -70,5 +85,8 @@ def test_packaging_build_scripts_exist() -> None:
     assert "Join-Path $distRoot 'consumer'" in payload_text
     assert "PyInstaller" in payload_text
     assert "opening_trainer_consumer.spec" in payload_text
+    assert ".venv\\Scripts\\python.exe" in payload_text
+    assert "import chess" in payload_text
+    assert "--show-runtime --runtime-mode dev" in payload_text
     assert "build_consumer_payload.ps1" in installer_text
     assert "ISCC.exe" in installer_text

@@ -11,7 +11,7 @@ a = Analysis(
     pathex=[str(repo_root), str(repo_root / 'src')],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['chess'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -35,5 +35,5 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
 )

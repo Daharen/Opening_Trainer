@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipDependencyInstall
+    [switch]$SkipDependencyInstall,
+    [switch]$SkipSmokeTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,9 +12,14 @@ $consumerDist = Join-Path $distRoot 'consumer'
 $buildRoot = Join-Path $repoRoot 'build\pyinstaller'
 $specPath = Join-Path $repoRoot 'installer\packaging\opening_trainer_consumer.spec'
 $entrypoint = Join-Path $repoRoot 'main.py'
+$venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 
 Write-Host "Repository root: $repoRoot"
 Write-Host "Consumer payload output: $consumerDist"
+
+if (-not (Test-Path -LiteralPath $venvPython)) {
+    throw "Repo-local virtual environment interpreter not found at '$venvPython'. Create it first (for example: py -3.11 -m venv .venv; .\.venv\Scripts\python.exe -m pip install -r requirements.txt)."
+}
 
 if (-not (Test-Path -LiteralPath $entrypoint)) {
     throw "Entrypoint not found: $entrypoint"
@@ -21,11 +27,13 @@ if (-not (Test-Path -LiteralPath $entrypoint)) {
 
 if (-not $SkipDependencyInstall) {
     Write-Host 'Ensuring PyInstaller is installed...'
-    python -m pip install --upgrade pyinstaller
+    & $venvPython -m pip install --upgrade pyinstaller
 }
 
 Write-Host 'Verifying PyInstaller availability...'
-python -m PyInstaller --version | Out-Null
+& $venvPython -m PyInstaller --version | Out-Null
+Write-Host 'Verifying python-chess availability in repo virtual environment...'
+& $venvPython -c "import chess; print(chess.__version__)" | Out-Null
 
 if (Test-Path -LiteralPath $consumerDist) {
     Remove-Item -LiteralPath $consumerDist -Recurse -Force
@@ -38,11 +46,19 @@ New-Item -ItemType Directory -Path $consumerDist -Force | Out-Null
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 
 Write-Host 'Building consumer payload with PyInstaller...'
-python -m PyInstaller --noconfirm --clean --distpath $consumerDist --workpath $buildRoot $specPath
+& $venvPython -m PyInstaller --noconfirm --clean --distpath $consumerDist --workpath $buildRoot $specPath
 
 $outputExe = Join-Path $consumerDist 'OpeningTrainer.exe'
 if (-not (Test-Path -LiteralPath $outputExe)) {
     throw "Consumer payload build failed. Missing expected executable: $outputExe"
+}
+
+if (-not $SkipSmokeTest) {
+    Write-Host 'Running consumer payload smoke test...'
+    & $outputExe --show-runtime --runtime-mode dev
+    if ($LASTEXITCODE -ne 0) {
+        throw "Consumer payload smoke test failed with exit code $LASTEXITCODE."
+    }
 }
 
 Write-Host "Consumer payload build complete: $outputExe"
