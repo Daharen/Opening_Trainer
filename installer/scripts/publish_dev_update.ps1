@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$PayloadRepoRelativePath = 'installer/payloads/dev/OpeningTrainer-app.zip',
     [Parameter(Mandatory = $false)]
-    [string]$PayloadBaseUrl = 'https://raw.githubusercontent.com/eric-gitta-moore/Opening_Trainer/main'
+    [string]$PayloadBaseUrl = 'https://raw.githubusercontent.com/daharen/Opening_Trainer/main'
 )
 
 $ErrorActionPreference = 'Stop'

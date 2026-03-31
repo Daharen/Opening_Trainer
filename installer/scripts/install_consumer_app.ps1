@@ -20,7 +20,7 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$PayloadSha256 = '',
     [Parameter(Mandatory = $false)]
-    [string]$DefaultManifestUrl = 'https://raw.githubusercontent.com/eric-gitta-moore/Opening_Trainer/main/installer/app_update_manifest.json',
+    [string]$DefaultManifestUrl = 'https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json',
     [Parameter(Mandatory = $false)]
     [string]$UpdaterHelperScriptPath = ''
 )
