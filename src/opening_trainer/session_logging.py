@@ -108,6 +108,7 @@ class SessionLogger:
 
 
 _active_logger: SessionLogger | None = None
+_initialized_session_log_dir: Path | None = None
 
 
 def _default_session_id() -> str:
@@ -121,11 +122,36 @@ def _default_log_dir() -> Path:
     return Path("logs") / "sessions"
 
 
+def _resolve_session_log_dir() -> tuple[Path, str]:
+    if _initialized_session_log_dir is not None:
+        return _initialized_session_log_dir, "runtime-initialization"
+
+    env_value = os.getenv(SESSION_LOG_DIR_ENV)
+    if env_value:
+        return Path(env_value), "env-override"
+
+    return Path("logs") / "sessions", "fallback-relative"
+
+
 def _session_log_path(session_id: str) -> Path:
     explicit = os.getenv(SESSION_LOG_PATH_ENV)
     if explicit:
         return Path(explicit)
-    return _default_log_dir() / f"session_{session_id}.log"
+    resolved_dir, _ = _resolve_session_log_dir()
+    return resolved_dir / f"session_{session_id}.log"
+
+
+def initialize_session_logging(session_log_dir: Path) -> Path:
+    """Bind session logging to an authoritative runtime-owned directory."""
+
+    global _initialized_session_log_dir, _active_logger
+    resolved = Path(session_log_dir)
+    resolved.mkdir(parents=True, exist_ok=True)
+    if _initialized_session_log_dir != resolved:
+        _active_logger = None
+    _initialized_session_log_dir = resolved
+    os.environ[SESSION_LOG_DIR_ENV] = str(resolved)
+    return resolved
 
 
 def _prune_old_session_files(log_dir: Path, active_log_path: Path | None = None) -> None:
@@ -150,9 +176,14 @@ def get_session_logger() -> SessionLogger:
         session_id = os.getenv(SESSION_ID_ENV) or _default_session_id()
         os.environ.setdefault(SESSION_ID_ENV, session_id)
         log_path = _session_log_path(session_id)
+        resolved_log_dir, resolved_source = _resolve_session_log_dir()
         mirror = os.getenv(CONSOLE_MIRROR_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}
         _active_logger = SessionLogger(session_id=session_id, log_path=log_path, mirror_to_console=mirror)
         _prune_old_session_files(log_path.parent, active_log_path=log_path)
+        _active_logger.append(
+            f"Session logging bound dir={resolved_log_dir} source={resolved_source} log_path={log_path}",
+            tag="startup",
+        )
     return _active_logger
 
 
@@ -161,5 +192,6 @@ def log_line(message: str, tag: str = DEFAULT_TAG) -> str:
 
 
 def reset_logger_for_tests() -> None:
-    global _active_logger
+    global _active_logger, _initialized_session_log_dir
     _active_logger = None
+    _initialized_session_log_dir = None
