@@ -2,6 +2,19 @@
 
 A local chess opening-discipline trainer focused on rapid early-game repetition.
 
+## Download (Windows Installer)
+
+For a normal consumer install, download **`OpeningTrainerSetup.exe`** from the GitHub releases page:
+
+- https://github.com/Opening-Trainer/Opening_Trainer/releases/latest
+
+The installer:
+
+- installs the consumer app under `C:\Program Files\Opening Trainer`
+- downloads required content automatically to `%LocalAppData%\OpeningTrainerContent`
+- writes consumer runtime state under `%LocalAppData%\OpeningTrainer`
+- includes uninstall support (no Python/manual repo setup required)
+
 ## Project Goal
 
 The trainer enforces move-quality discipline during the first five player moves.
