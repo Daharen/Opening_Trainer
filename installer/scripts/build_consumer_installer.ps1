@@ -7,13 +7,16 @@ $ErrorActionPreference = 'Stop'
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
 $payloadBuildScript = Join-Path $repoRoot 'installer\scripts\build_consumer_payload.ps1'
+$appPayloadBuildScript = Join-Path $repoRoot 'installer\scripts\build_consumer_app_payload.ps1'
 $manifestPath = Join-Path $repoRoot 'installer\consumer_content_manifest.json'
+$appUpdateManifestPath = Join-Path $repoRoot 'installer\app_update_manifest.json'
 $issPath = Join-Path $repoRoot 'installer\opening_trainer_installer.iss'
 $outputInstaller = Join-Path $repoRoot 'installer\dist\OpeningTrainerSetup.exe'
 $payloadExe = Join-Path $repoRoot 'dist\consumer\OpeningTrainer.exe'
 
 if (-not $SkipPayloadBuild) {
     & $payloadBuildScript
+    & $appPayloadBuildScript -SkipPayloadBuild
 }
 
 if (-not (Test-Path -LiteralPath $payloadExe)) {
@@ -35,6 +38,14 @@ if ([string]::IsNullOrWhiteSpace([string]$manifest.archive_filename)) {
 }
 if (-not $manifest.required_entries -or $manifest.required_entries.Count -eq 0) {
     throw 'Manifest required_entries cannot be empty.'
+}
+
+$appManifest = Get-Content -LiteralPath $appUpdateManifestPath -Raw | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace([string]$appManifest.payload_filename)) {
+    throw 'App update manifest payload_filename cannot be empty.'
+}
+if ([string]::IsNullOrWhiteSpace([string]$appManifest.payload_url)) {
+    throw 'App update manifest payload_url cannot be empty.'
 }
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue

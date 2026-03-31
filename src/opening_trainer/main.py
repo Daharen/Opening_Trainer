@@ -15,6 +15,7 @@ from .runtime import RuntimeOverrides, load_runtime_config
 from .session import TrainingSession
 from .session_logging import get_session_logger, initialize_session_logging, log_line
 from .single_instance import INSTANCE_DIAGNOSTICS_PATH_ENV
+from .updater import apply_update, check_for_update
 
 
 def _apply_runtime_environment(runtime_context) -> None:
@@ -201,6 +202,16 @@ def run(argv: list[str] | None = None) -> None:
         help="Exercise real GUI startup path without entering the full mainloop.",
     )
     parser.add_argument(
+        "--check-for-update",
+        metavar="MANIFEST_PATH_OR_URL",
+        help="Check app_update_manifest.json and print update status.",
+    )
+    parser.add_argument(
+        "--apply-update",
+        metavar="MANIFEST_PATH_OR_URL",
+        help="Apply app update payload from manifest and relaunch the app.",
+    )
+    parser.add_argument(
         "--build-corpus",
         nargs="+",
         metavar="PGN",
@@ -213,6 +224,27 @@ def run(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     runtime_overrides = _build_runtime_overrides(args)
+
+    if args.check_for_update:
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        app_state_root = local_app_data / "OpeningTrainer"
+        has_update, manifest, installed = check_for_update(args.check_for_update, app_state_root=app_state_root)
+        print(
+            f"UPDATE_CHECK channel={manifest.channel} installed={None if not installed else installed.get('app_version')} latest={manifest.app_version} has_update={has_update}"
+        )
+        return
+
+    if args.apply_update:
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        app_state_root = local_app_data / "OpeningTrainer"
+        launched = apply_update(
+            args.apply_update,
+            app_state_root=app_state_root,
+            relaunch=True,
+            relaunch_args=["--runtime-mode", "consumer"],
+        )
+        print(f"UPDATE_APPLY_OK launched={launched}")
+        return
 
     if args.build_corpus:
         artifact = CorpusIngestor().build_artifact(args.build_corpus)

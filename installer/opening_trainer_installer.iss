@@ -24,20 +24,27 @@ SetupLogging=yes
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\dist\consumer\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "..\dist\consumer\*"; DestDir: "{app}\bootstrap_payload"; Flags: recursesubdirs ignoreversion
+Source: "..\dist\consumer_app_payload\OpeningTrainer-app.zip"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "consumer_content_manifest.json"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "app_update_manifest.json"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "scripts\install_consumer_content.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "scripts\install_consumer_app.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{app}"
-Name: "{autodesktop}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"
+Name: "{autodesktop}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"; Tasks: desktopicon
 
 [Run]
+Filename: "powershell.exe"; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -SecondaryAppRoot ""{userprofile}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"""; \
+    StatusMsg: "Installing Opening Trainer app payload..."; \
+    Flags: waituntilterminated
 Filename: "powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_content.ps1"" -ManifestPath ""{app}\installer\consumer_content_manifest.json"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install.log"""; \
     StatusMsg: "Installing Opening Trainer content..."; \
     Flags: waituntilterminated
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{app}"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent
+Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent
 
 [Code]
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
