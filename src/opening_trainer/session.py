@@ -104,7 +104,8 @@ class TrainingSession:
             engine_authority=EngineAuthority(self.config),
         )
         self.required_player_moves = self.config.active_envelope_player_moves
-        self.review_storage = review_storage or ReviewStorage()
+        default_review_root = self.runtime_context.runtime_paths.profile_root
+        self.review_storage = review_storage or ReviewStorage(default_review_root)
         self.profile_service = ProfileService(self.review_storage)
         self.router = ReviewRouter()
         self.active_profile_id = self.profile_service.get_active_profile_id()

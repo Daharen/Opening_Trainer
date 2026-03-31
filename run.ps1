@@ -28,6 +28,7 @@ if ([string]::IsNullOrWhiteSpace($SessionId)) {
 $SessionLogPath = Join-Path $SessionLogsDir ("session_{0}.log" -f $SessionId)
 $env:OPENING_TRAINER_SESSION_LOG_DIR = $SessionLogsDir
 $env:OPENING_TRAINER_SESSION_LOG_PATH = $SessionLogPath
+$env:OPENING_TRAINER_RUNTIME_MODE = "dev"
 $AutoSafeValidationTimeoutSeconds = 90
 $DevFastValidationTimeoutSeconds = 150
 $DevFullValidationTimeoutSeconds = 600

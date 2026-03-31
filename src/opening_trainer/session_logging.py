@@ -76,6 +76,7 @@ class SessionLogger:
             if len(self._persisted) >= SESSION_FILE_MAX_LINES:
                 self._rewrite_persisted()
             else:
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
                 with self.log_path.open("a", encoding="utf-8") as handle:
                     handle.write(line + "\n")
         if self.mirror_to_console:
