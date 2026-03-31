@@ -1,8 +1,19 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "content_version": "rapid600-v1",
-  "download_url": "https://opening-trainer-consumer-content.s3.amazonaws.com/opening_trainer_content_seed_rapid600_v1.zip",
   "archive_filename": "opening_trainer_content_seed_rapid600_v1.zip",
-  "sha256": "",
-  "update_channel": "stable"
+  "download_url": "https://opening-trainer-content.s3.us-west-2.amazonaws.com/opening_trainer_content_seed_rapid600_v1.zip",
+  "manifest_url": "https://opening-trainer-content.s3.us-west-2.amazonaws.com/opening_trainer_content_manifest.json",
+  "archive_sha256": "",
+  "update_channel": "stable",
+  "install_root_mode": "single_wrapper_folder",
+  "wrapper_folder_name": "opening_trainer_content_seed_rapid600_v1",
+  "installed_manifest_filename": "installed_content_manifest.json",
+  "required_entries": [
+    "canonical_predecessor_master.sqlite",
+    "opening_book.bin",
+    "opening_book_names.zip",
+    "stockfish",
+    "Timing Conditioned Corpus Bundles"
+  ]
 }
