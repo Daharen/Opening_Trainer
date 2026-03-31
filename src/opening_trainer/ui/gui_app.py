@@ -5,6 +5,7 @@ import queue
 import subprocess
 import sys
 import threading
+import ctypes
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
@@ -2355,7 +2356,45 @@ class OpeningTrainerGUI:
             log_line(f'APP_SHUTDOWN_WINDOW_DESTROY_FAILED: {exc}', tag='error')
 
 
-def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
+class DuplicateInstanceLaunchBlockedError(RuntimeError):
+    """Raised when GUI startup is blocked by an existing instance guard."""
+
+
+def _is_frozen_or_consumer_runtime(runtime_context: RuntimeContext | None) -> bool:
+    runtime_mode_value = getattr(getattr(runtime_context, "runtime_mode", None), "value", "")
+    return bool(getattr(sys, "frozen", False)) or runtime_mode_value == "consumer"
+
+
+def _format_duplicate_instance_message(diagnostics) -> str:
+    details = ["Opening Trainer is already starting or running."]
+    if diagnostics is not None:
+        details.append("")
+        details.append(f"Existing PID: {diagnostics.pid}")
+        if diagnostics.startup_utc:
+            details.append(f"Started (UTC): {diagnostics.startup_utc}")
+        if diagnostics.session_log_path:
+            details.append(f"Session log: {diagnostics.session_log_path}")
+        if diagnostics.session_id:
+            details.append(f"Session ID: {diagnostics.session_id}")
+    return "\n".join(details)
+
+
+def _show_duplicate_instance_dialog(message: str) -> None:
+    if os.name == "nt":
+        try:
+            ctypes.windll.user32.MessageBoxW(0, message, "Opening Trainer", 0x10 | 0x0)
+            return
+        except Exception:
+            pass
+    try:
+        messagebox.showerror("Opening Trainer", message)
+        return
+    except Exception:
+        pass
+    print(message, file=sys.stderr)
+
+
+def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup: bool = False) -> None:
     log_line("APP_BOOT_BEGIN", tag="startup")
     if not acquire_single_instance_guard():
         log_line("APP_DUPLICATE_BLOCKED", tag="startup")
@@ -2369,6 +2408,12 @@ def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
         else:
             log_line("APP_DUPLICATE_OWNER_INFO_MISSING", tag="startup")
         log_line("INSTANCE_DUPLICATE: Opening Trainer is already starting or running.", tag="startup")
+        duplicate_message = _format_duplicate_instance_message(diagnostics)
+        if _is_frozen_or_consumer_runtime(runtime_context):
+            _show_duplicate_instance_dialog(duplicate_message)
+            raise DuplicateInstanceLaunchBlockedError(duplicate_message)
+        if probe_real_startup:
+            raise DuplicateInstanceLaunchBlockedError(duplicate_message)
         return
     repo_root = Path(__file__).resolve().parents[3]
     log_line(
@@ -2379,6 +2424,13 @@ def launch_gui(runtime_context: RuntimeContext | None = None) -> None:
     try:
         app = OpeningTrainerGUI(runtime_context=runtime_context)
         write_instance_diagnostics(window_title='Opening Trainer')
+        if probe_real_startup:
+            app.root.update_idletasks()
+            app.root.destroy()
+            remove_instance_diagnostics()
+            release_single_instance_guard()
+            log_line("GUI_PROBE_REAL_STARTUP_OK", tag="startup")
+            return
         log_line("GUI_READY: Opening Trainer GUI initialized.", tag="startup")
         app.run()
     except Exception as exc:
