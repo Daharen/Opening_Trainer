@@ -40,6 +40,7 @@ from ..single_instance import (
     remove_instance_diagnostics,
     write_instance_diagnostics,
 )
+from ..updater import check_for_update, launch_updater_helper, resolve_manifest_path_or_url
 from .board_view import BoardView
 from .captured_material_panel import CapturedMaterialPanel
 from .dev_console import DevConsoleWindow
@@ -152,6 +153,7 @@ class OpeningTrainerGUI:
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
         tk.Button(toolbar, text='Corpus Selection', command=self._open_bundle_picker).pack(side='left', padx=6)
+        tk.Button(toolbar, text='Update', command=self._check_for_updates_from_gui).pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
@@ -1903,6 +1905,7 @@ class OpeningTrainerGUI:
     def _build_menubar(self) -> None:
         menubar = tk.Menu(self.root)
         file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label='Check for Updates', command=self._check_for_updates_from_gui)
         file_menu.add_command(label='Exit', command=self._request_shutdown)
         menubar.add_cascade(label='File', menu=file_menu)
         dev_menu = tk.Menu(menubar, tearoff=0)
@@ -1917,6 +1920,53 @@ class OpeningTrainerGUI:
         dev_menu.add_command(label='Set Smart Profile Level…', command=self._set_smart_profile_level)
         menubar.add_cascade(label='Developer', menu=dev_menu)
         self.root.config(menu=menubar)
+
+    def _app_state_root(self) -> Path:
+        runtime_paths = getattr(getattr(self.session, "runtime_context", None), "runtime_paths", None)
+        if runtime_paths is not None and getattr(runtime_paths, "app_state_root", None) is not None:
+            return Path(runtime_paths.app_state_root)
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return local_app_data / "OpeningTrainer"
+
+    def _check_for_updates_from_gui(self) -> None:
+        try:
+            app_state_root = self._app_state_root()
+            manifest_ref = resolve_manifest_path_or_url(None, app_state_root=app_state_root)
+            has_update, manifest, installed = check_for_update(manifest_ref, app_state_root=app_state_root)
+            installed_version = "unknown" if not installed else str(installed.get("app_version") or "unknown")
+            installed_build = "unknown" if not installed else str(installed.get("build_id") or "unknown")
+            latest = f"{manifest.app_version} ({manifest.build_id or 'no-build-id'})"
+            current = f"{installed_version} ({installed_build})"
+            if not has_update:
+                messagebox.showinfo(
+                    "Check for Updates",
+                    f"No updates are available.\n\nInstalled: {current}\nLatest: {latest}",
+                    parent=self.root,
+                )
+                return
+            confirm = messagebox.askyesno(
+                "Update Available",
+                f"Installed: {current}\nAvailable: {latest}\n\nDownload and apply update now?",
+                parent=self.root,
+            )
+            if not confirm:
+                return
+            launch_updater_helper(
+                manifest_ref,
+                app_state_root=app_state_root,
+                wait_for_pid=os.getpid(),
+                relaunch_exe_path=Path(sys.executable),
+                relaunch_args=["--runtime-mode", "consumer"],
+            )
+            messagebox.showinfo(
+                "Updater",
+                "Updater launched. Opening Trainer will now close so the payload can be replaced.",
+                parent=self.root,
+            )
+            self._shutdown_coordinator(reason="apply_update")
+        except Exception as exc:  # noqa: BLE001
+            log_line(f"GUI_UPDATE_FAILED: {exc}", tag="error")
+            messagebox.showerror("Update Error", f"Update check/apply failed.\n{exc}", parent=self.root)
 
     def _open_board_setup_editor(self) -> None:
         self.inspector.open_board_setup_editor()

@@ -34,6 +34,16 @@ This script:
 - compiles `installer/opening_trainer_installer.iss` via `ISCC.exe`
 - emits `installer/dist/OpeningTrainerSetup.exe`
 
+### 3) Publish a dev-channel app update (no installer rebuild)
+
+Run:
+
+```powershell
+.\installer\scripts\publish_dev_update.ps1
+```
+
+This script rebuilds the app payload zip, computes SHA-256, updates `installer/app_update_manifest.json` (including `build_id`), and copies the payload into `installer/payloads/dev/`.
+
 ## Consumer content bootstrap
 
 During install, the wizard runs `installer/scripts/install_consumer_content.ps1` visibly. The bootstrap:

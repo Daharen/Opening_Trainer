@@ -14,7 +14,15 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$AppVersion = '0.1.0',
     [Parameter(Mandatory = $false)]
-    [string]$PayloadFilename = 'OpeningTrainer-app.zip'
+    [string]$BuildId = 'bootstrap',
+    [Parameter(Mandatory = $false)]
+    [string]$PayloadFilename = 'OpeningTrainer-app.zip',
+    [Parameter(Mandatory = $false)]
+    [string]$PayloadSha256 = '',
+    [Parameter(Mandatory = $false)]
+    [string]$DefaultManifestUrl = 'https://raw.githubusercontent.com/eric-gitta-moore/Opening_Trainer/main/installer/app_update_manifest.json',
+    [Parameter(Mandatory = $false)]
+    [string]$UpdaterHelperScriptPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,19 +90,34 @@ $logsRoot = Join-Path $AppStateRoot 'logs'
 New-Item -ItemType Directory -Path $AppStateRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $logsRoot -Force | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($UpdaterHelperScriptPath) -and (Test-Path -LiteralPath $UpdaterHelperScriptPath)) {
+    Copy-Item -LiteralPath $UpdaterHelperScriptPath -Destination (Join-Path $updaterRoot 'apply_app_update.ps1') -Force
+}
 
 $manifestPath = Join-Path $AppStateRoot 'installed_app_manifest.json'
 $installedManifest = [ordered]@{
     installed_app_manifest_version = 1
     app_version = $AppVersion
+    build_id = $BuildId
     channel = $Channel
     mutable_app_root = $targetRoot
     payload_filename = $PayloadFilename
+    payload_sha256 = $PayloadSha256
     installed_at_utc = (Get-Date).ToUniversalTime().ToString('o')
     bootstrap_version = $AppVersion
 }
 
+$updaterConfigPath = Join-Path $updaterRoot 'updater_config.json'
+$updaterConfig = [ordered]@{
+    config_version = 1
+    channel = $Channel
+    manifest_url = $DefaultManifestUrl
+    last_checked_utc = $null
+}
+
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText($manifestPath, ($installedManifest | ConvertTo-Json -Depth 8), $utf8NoBom)
+[System.IO.File]::WriteAllText($updaterConfigPath, ($updaterConfig | ConvertTo-Json -Depth 8), $utf8NoBom)
 Write-Host "Installed app payload root: $targetRoot"
 Write-Host "Installed app manifest: $manifestPath"
+Write-Host "Updater config: $updaterConfigPath"
