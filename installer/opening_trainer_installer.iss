@@ -29,15 +29,15 @@ Source: "consumer_content_manifest.json"; DestDir: "{app}\installer"; Flags: ign
 Source: "scripts\install_consumer_content.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"
-Name: "{autodesktop}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; Tasks: desktopicon
+Name: "{group}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{app}"
+Name: "{autodesktop}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_content.ps1"" -ManifestPath ""{app}\installer\consumer_content_manifest.json"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install.log"""; \
     StatusMsg: "Installing Opening Trainer content..."; \
     Flags: waituntilterminated
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{app}"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent
 
 [Code]
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

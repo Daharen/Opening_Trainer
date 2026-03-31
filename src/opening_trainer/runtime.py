@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .runtime_mode import ENV_RUNTIME_MODE, RuntimeMode, resolve_runtime_mode
+from .runtime_mode import ENV_RUNTIME_MODE, RuntimeMode, resolve_runtime_mode_with_source
 from .runtime_paths import RuntimePaths, resolve_runtime_paths
 from .bundle_contract import (
     BUNDLE_AGGREGATE_RELATIVE_PATH,
@@ -129,6 +129,8 @@ class RuntimeStartupStatus:
 @dataclass(frozen=True)
 class RuntimeContext:
     runtime_mode: RuntimeMode
+    runtime_mode_source: str
+    runtime_mode_reason: str
     runtime_paths: RuntimePaths
     config: RuntimeConfig
     evaluator_config: EvaluatorConfig
@@ -172,9 +174,15 @@ class RuntimeContext:
 
 def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeContext:
     overrides = overrides or RuntimeOverrides()
-    runtime_mode = resolve_runtime_mode(overrides.runtime_mode)
     repo_root = _repo_root()
     workspace_root = _workspace_root()
+    local_app_data_root = _default_local_app_data_root()
+    runtime_mode_resolution = resolve_runtime_mode_with_source(
+        overrides.runtime_mode,
+        app_state_root=local_app_data_root / "OpeningTrainer",
+        content_root=local_app_data_root / "OpeningTrainerContent",
+    )
+    runtime_mode = runtime_mode_resolution.mode
     resolved_runtime_paths = resolve_runtime_paths(runtime_mode, repo_root=repo_root, workspace_root=workspace_root)
     config_resolution = _resolve_config_file_path(
         override_path=overrides.runtime_config_path,
@@ -320,6 +328,8 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
 
     return RuntimeContext(
         runtime_mode=runtime_mode,
+        runtime_mode_source=runtime_mode_resolution.source,
+        runtime_mode_reason=runtime_mode_resolution.reason,
         runtime_paths=resolved_runtime_paths.paths,
         config=config,
         evaluator_config=EvaluatorConfig(
@@ -803,6 +813,14 @@ def _configured_asset_source(
     return None
 
 
+
+
+
+def _default_local_app_data_root() -> Path:
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data)
+    return Path.home() / "AppData" / "Local"
 
 def _repo_root() -> Path:
     return Path.cwd().resolve()

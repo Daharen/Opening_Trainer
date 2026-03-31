@@ -1119,7 +1119,20 @@ def test_main_run_defaults_to_gui_without_interactive_bundle_prompt(monkeypatch)
 
     calls = {}
 
-    monkeypatch.setattr(trainer_main, 'load_runtime_config', lambda overrides: type('Runtime', (), {'config': type('Config', (), {'strict_assets': False})()})())
+    monkeypatch.setattr(
+        trainer_main,
+        'load_runtime_config',
+        lambda overrides: type(
+            'Runtime',
+            (),
+            {
+                'config': type('Config', (), {'strict_assets': False})(),
+                'runtime_mode': type('Mode', (), {'value': 'dev'})(),
+                'runtime_mode_source': 'default',
+                'runtime_mode_reason': 'test',
+            },
+        )(),
+    )
 
     def fake_launch_gui(runtime_context=None):
         calls['runtime_context'] = runtime_context

@@ -59,6 +59,34 @@ if (-not $SkipSmokeTest) {
     if ($LASTEXITCODE -ne 0) {
         throw "Consumer payload smoke test failed with exit code $LASTEXITCODE."
     }
+
+    Write-Host 'Running consumer payload runtime mode inference smoke test...'
+    $smokeRoot = Join-Path $env:TEMP "OpeningTrainerConsumerModeSmoke_$([guid]::NewGuid().ToString('N'))"
+    $smokeLocalAppData = Join-Path $smokeRoot "LocalAppData"
+    $smokeState = Join-Path $smokeLocalAppData "OpeningTrainer"
+    $smokeContent = Join-Path $smokeLocalAppData "OpeningTrainerContent"
+    $originalLocalAppData = $env:LOCALAPPDATA
+    $originalAssumeInstalled = $env:OPENING_TRAINER_ASSUME_INSTALLED
+    try {
+        New-Item -ItemType Directory -Path $smokeState -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $smokeContent "stockfish") -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $smokeContent "Timing Conditioned Corpus Bundles") -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $smokeState "runtime.consumer.json") -Value "{}" -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $smokeContent "opening_book.bin") -Value "book" -Encoding utf8
+        $env:LOCALAPPDATA = $smokeLocalAppData
+        $env:OPENING_TRAINER_ASSUME_INSTALLED = "1"
+        & $outputExe --show-runtime
+        if ($LASTEXITCODE -ne 0) {
+            throw "Consumer payload runtime mode inference smoke test failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        $env:LOCALAPPDATA = $originalLocalAppData
+        $env:OPENING_TRAINER_ASSUME_INSTALLED = $originalAssumeInstalled
+        if (Test-Path -LiteralPath $smokeRoot) {
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+        }
+    }
 }
 
 Write-Host "Consumer payload build complete: $outputExe"
