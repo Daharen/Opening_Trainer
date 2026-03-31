@@ -11,13 +11,22 @@ from .board_setup_editor import BoardSetupEditorDialog
 
 
 class ManualTargetDialog(tk.Toplevel):
-    def __init__(self, master, on_save, *, title: str = 'Add Manual Target', initial: dict | None = None):
+    def __init__(
+        self,
+        master,
+        on_save,
+        *,
+        title: str = 'Add Manual Target',
+        initial: dict | None = None,
+        predecessor_master_db_path: str | None = None,
+    ):
         super().__init__(master)
         self.title(title)
         self.resizable(False, False)
         self.transient(master)
         self.grab_set()
         self.on_save = on_save
+        self.predecessor_master_db_path = predecessor_master_db_path
         initial = initial or {}
 
         self.fen_var = tk.StringVar(value=initial.get('target_fen', ''))
@@ -152,6 +161,7 @@ class ManualTargetDialog(tk.Toplevel):
                 predecessor_line_uci=predecessor,
                 presentation_mode=selected_mode,
                 auto_resolve_predecessor=selected_mode == ManualPresentationMode.PLAY_TO_POSITION.value,
+                predecessor_master_db_path=self.predecessor_master_db_path,
             )
         except ValueError as exc:
             self.error_var.set(str(exc))
