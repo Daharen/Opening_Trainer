@@ -1,5 +1,5 @@
 from pathlib import Path
-import builtins
+import sys
 
 from opening_trainer.main import _startup_failure_log_path, run
 from opening_trainer.ui.gui_app import DuplicateInstanceLaunchBlockedError
@@ -14,18 +14,9 @@ class CaptureCalls:
 
 
 
-def test_default_run_launches_gui_without_cli_flag(monkeypatch):
+def test_default_run_launches_gui_without_cli_flag(monkeypatch, runtime_context_factory):
     launched = CaptureCalls()
-    runtime_context = type(
-        "RuntimeContext",
-        (),
-        {
-            "config": type("Config", (), {"strict_assets": False})(),
-            "runtime_mode": type("Mode", (), {"value": "dev"})(),
-            "runtime_mode_source": "default",
-            "runtime_mode_reason": "test",
-        },
-    )()
+    runtime_context = runtime_context_factory(runtime_mode="dev")
     monkeypatch.setattr('opening_trainer.main.load_runtime_config', lambda overrides: runtime_context)
     monkeypatch.setattr('opening_trainer.ui.gui_app.launch_gui', lambda runtime_context=None: launched(runtime_context))
 
@@ -34,17 +25,8 @@ def test_default_run_launches_gui_without_cli_flag(monkeypatch):
     assert launched.calls == [((runtime_context,), {})]
 
 
-def test_probe_gui_bootstrap_flag_runs_and_returns(monkeypatch):
-    runtime_context = type(
-        "RuntimeContext",
-        (),
-        {
-            "config": type("Config", (), {"strict_assets": False})(),
-            "runtime_mode": type("Mode", (), {"value": "dev"})(),
-            "runtime_mode_source": "default",
-            "runtime_mode_reason": "test",
-        },
-    )()
+def test_probe_gui_bootstrap_flag_runs_and_returns(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="dev")
     probe_calls: list[str] = []
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main._probe_gui_bootstrap", lambda context: probe_calls.append(context.runtime_mode.value))
@@ -54,17 +36,8 @@ def test_probe_gui_bootstrap_flag_runs_and_returns(monkeypatch):
     assert probe_calls == ["dev"]
 
 
-def test_probe_real_gui_startup_flag_runs_and_returns(monkeypatch):
-    runtime_context = type(
-        "RuntimeContext",
-        (),
-        {
-            "config": type("Config", (), {"strict_assets": False})(),
-            "runtime_mode": type("Mode", (), {"value": "consumer"})(),
-            "runtime_mode_source": "cli",
-            "runtime_mode_reason": "test",
-        },
-    )()
+def test_probe_real_gui_startup_flag_runs_and_returns(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="consumer", runtime_mode_source="cli")
     probe_calls: list[str] = []
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main._probe_real_gui_startup", lambda context: probe_calls.append(context.runtime_mode.value))
@@ -97,30 +70,14 @@ def test_probe_real_gui_startup_runs_from_temp_cwd(monkeypatch, tmp_path):
     monkeypatch.chdir(original_cwd)
 
 
-def test_frozen_consumer_gui_failure_writes_artifact_and_exits(monkeypatch, tmp_path):
-    runtime_context = type(
-        "RuntimeContext",
-        (),
-        {
-            "config": type("Config", (), {"strict_assets": False})(),
-            "runtime_mode": type("Mode", (), {"value": "consumer"})(),
-            "runtime_mode_source": "auto-consumer",
-            "runtime_mode_reason": "test",
-            "runtime_paths": type(
-                "RuntimePaths",
-                (),
-                {
-                    "app_state_root": tmp_path / "OpeningTrainer",
-                    "log_root": tmp_path / "OpeningTrainer" / "logs",
-                },
-            )(),
-        },
-    )()
+def test_frozen_consumer_gui_import_failure_writes_artifact_and_exits(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="consumer", runtime_mode_source="auto-consumer")
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main.run_cli", lambda overrides=None: (_ for _ in ()).throw(AssertionError("run_cli must not be used")))
     monkeypatch.setattr("opening_trainer.main.log_line", lambda *args, **kwargs: None)
     monkeypatch.setattr("opening_trainer.main._show_startup_failure_dialog", lambda stage, exc, path: None)
     monkeypatch.setattr("opening_trainer.main.sys.frozen", True, raising=False)
+    monkeypatch.setitem(sys.modules, "opening_trainer.ui.gui_app", None)
 
     try:
         run([])
@@ -129,35 +86,19 @@ def test_frozen_consumer_gui_failure_writes_artifact_and_exits(monkeypatch, tmp_
     else:
         raise AssertionError("SystemExit expected")
 
-    artifact = (tmp_path / "OpeningTrainer" / "startup_failure.log").read_text(encoding="utf-8")
-    assert "stage=gui_" in artifact
+    artifact = (runtime_context.runtime_paths.app_state_root / "startup_failure.log").read_text(encoding="utf-8")
+    assert "stage=gui_import" in artifact
     assert "runtime_mode=consumer" in artifact
     assert "traceback:" in artifact
 
 
-def test_dev_gui_import_failure_still_falls_back_to_cli(monkeypatch):
-    runtime_context = type(
-        "RuntimeContext",
-        (),
-        {
-            "config": type("Config", (), {"strict_assets": False})(),
-            "runtime_mode": type("Mode", (), {"value": "dev"})(),
-            "runtime_mode_source": "default",
-            "runtime_mode_reason": "test",
-        },
-    )()
+def test_dev_gui_import_failure_still_falls_back_to_cli(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="dev")
     cli_calls: list[str] = []
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main.run_cli", lambda overrides=None: cli_calls.append("cli"))
     monkeypatch.setattr("opening_trainer.main.log_line", lambda *args, **kwargs: None)
-    original_import = builtins.__import__
-
-    def _failing_import(name, *args, **kwargs):
-        if name == "opening_trainer.ui.gui_app":
-            raise RuntimeError("gui import failed")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.__import__", _failing_import)
+    monkeypatch.setitem(sys.modules, "opening_trainer.ui.gui_app", None)
     monkeypatch.setattr("opening_trainer.main.sys.frozen", False, raising=False)
 
     run([])
@@ -165,17 +106,8 @@ def test_dev_gui_import_failure_still_falls_back_to_cli(monkeypatch):
     assert cli_calls == ["cli"]
 
 
-def test_duplicate_instance_launch_exits_without_cli_fallback(monkeypatch):
-    runtime_context = type(
-        "RuntimeContext",
-        (),
-        {
-            "config": type("Config", (), {"strict_assets": False})(),
-            "runtime_mode": type("Mode", (), {"value": "consumer"})(),
-            "runtime_mode_source": "cli",
-            "runtime_mode_reason": "test",
-        },
-    )()
+def test_duplicate_instance_launch_exits_without_cli_fallback(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="consumer", runtime_mode_source="cli")
     cli_calls: list[str] = []
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main.run_cli", lambda overrides=None: cli_calls.append("cli"))
@@ -203,23 +135,11 @@ def test_startup_failure_path_uses_local_app_data(monkeypatch, tmp_path):
     assert path == tmp_path / "Local" / "OpeningTrainer" / "startup_failure.log"
 
 
-def test_run_binds_session_logging_before_logger_creation(monkeypatch, tmp_path):
+def test_run_binds_session_logging_before_logger_creation(monkeypatch, tmp_path, runtime_context_factory):
     calls: list[str] = []
-    runtime_context = type(
-        "RuntimeContext",
-        (),
-        {
-            "config": type("Config", (), {"strict_assets": False})(),
-            "runtime_paths": type("RuntimePaths", (), {"log_root": tmp_path / "runtime" / "logs"})(),
-            "config_source": "test",
-            "corpus": type("Corpus", (), {"detail": "corpus"})(),
-            "book": type("Book", (), {"detail": "book"})(),
-            "engine": type("Engine", (), {"detail": "engine"})(),
-            "runtime_mode": type("Mode", (), {"value": "dev"})(),
-            "runtime_mode_source": "default",
-            "runtime_mode_reason": "test",
-        },
-    )()
+    runtime_context = runtime_context_factory(runtime_mode="dev")
+    runtime_context.runtime_paths.log_root = tmp_path / "runtime" / "logs"
+    runtime_context.config_source = "test"
 
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main.initialize_session_logging", lambda path: calls.append(f"init:{path}"))
