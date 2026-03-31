@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .runtime_mode import ENV_RUNTIME_MODE, RuntimeMode, resolve_runtime_mode
+from .runtime_paths import RuntimePaths, resolve_runtime_paths
 from .bundle_contract import (
     BUNDLE_AGGREGATE_RELATIVE_PATH,
     BUNDLE_MANIFEST_NAME,
@@ -60,7 +62,6 @@ ENV_ENGINE_DEPTH = "OPENING_TRAINER_ENGINE_DEPTH"
 ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
 ENV_OPPONENT_FALLBACK_MODE = "OPENING_TRAINER_OPPONENT_FALLBACK_MODE"
 ENV_PREDECESSOR_MASTER_DB_PATH = "OPENING_TRAINER_PREDECESSOR_MASTER_DB_PATH"
-DEFAULT_PREDECESSOR_MASTER_DB_PATH = r"F:\Opening Trainer Large Data File\Work Surface\opening_trainer_content_seed_rapid600_v1\canonical_predecessor_master.sqlite"
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ class RuntimeConfig:
     opening_book_path: str | None = None
     engine_depth: int | None = None
     engine_time_limit_seconds: float | None = None
-    predecessor_master_db_path: str | None = DEFAULT_PREDECESSOR_MASTER_DB_PATH
+    predecessor_master_db_path: str | None = None
     strict_assets: bool = False
     opponent_fallback_mode: str = "current_bundle_only"
 
@@ -93,7 +94,7 @@ class RuntimeConfig:
             opening_book_path=payload.get("opening_book_path"),
             engine_depth=payload.get("engine_depth"),
             engine_time_limit_seconds=payload.get("engine_time_limit_seconds"),
-            predecessor_master_db_path=payload.get("predecessor_master_db_path", DEFAULT_PREDECESSOR_MASTER_DB_PATH),
+            predecessor_master_db_path=payload.get("predecessor_master_db_path"),
             strict_assets=bool(payload.get("strict_assets", False)),
             opponent_fallback_mode=str(payload.get("opponent_fallback_mode", "current_bundle_only")),
         )
@@ -101,6 +102,7 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class RuntimeOverrides:
+    runtime_mode: str | None = None
     corpus_bundle_dir: str | None = None
     corpus_artifact_path: str | None = None
     engine_executable_path: str | None = None
@@ -126,6 +128,8 @@ class RuntimeStartupStatus:
 
 @dataclass(frozen=True)
 class RuntimeContext:
+    runtime_mode: RuntimeMode
+    runtime_paths: RuntimePaths
     config: RuntimeConfig
     evaluator_config: EvaluatorConfig
     corpus: ResolvedAssetPath
@@ -168,7 +172,15 @@ class RuntimeContext:
 
 def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeContext:
     overrides = overrides or RuntimeOverrides()
-    config_resolution = _resolve_config_file_path(overrides.runtime_config_path)
+    runtime_mode = resolve_runtime_mode(overrides.runtime_mode)
+    repo_root = _repo_root()
+    workspace_root = _workspace_root()
+    resolved_runtime_paths = resolve_runtime_paths(runtime_mode, repo_root=repo_root, workspace_root=workspace_root)
+    config_resolution = _resolve_config_file_path(
+        override_path=overrides.runtime_config_path,
+        runtime_mode=runtime_mode,
+        runtime_paths=resolved_runtime_paths.paths,
+    )
     file_config = RuntimeConfig()
     if config_resolution.path is not None and config_resolution.path.exists():
         file_config = RuntimeConfig.from_mapping(json.loads(config_resolution.path.read_text(encoding="utf-8")))
@@ -226,7 +238,8 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
             file_value=file_config.predecessor_master_db_path,
             env_value=os.getenv(ENV_PREDECESSOR_MASTER_DB_PATH),
             prefer_file_value=config_prefers_file_assets,
-        ),
+        )
+        or str(resolved_runtime_paths.paths.predecessor_master_db_path),
         strict_assets=strict_assets,
         opponent_fallback_mode=str(
             _pick_asset_value(
@@ -257,6 +270,8 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     )
 
     corpus = _resolve_corpus_asset(
+        runtime_mode=runtime_mode,
+        runtime_paths=resolved_runtime_paths.paths,
         bundle_dir=config.corpus_bundle_dir,
         bundle_source=_configured_asset_source(
             override_value=overrides.corpus_bundle_dir,
@@ -275,6 +290,8 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         ),
     )
     engine = _resolve_engine_asset(
+        runtime_mode=runtime_mode,
+        runtime_paths=resolved_runtime_paths.paths,
         selected_path=config.engine_executable_path,
         selected_source=_configured_asset_source(
             override_value=overrides.engine_executable_path,
@@ -285,6 +302,8 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         ),
     )
     book = _resolve_file_asset(
+        runtime_mode=runtime_mode,
+        runtime_paths=resolved_runtime_paths.paths,
         selected_path=config.opening_book_path,
         selected_source=_configured_asset_source(
             override_value=overrides.opening_book_path,
@@ -300,6 +319,8 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     )
 
     return RuntimeContext(
+        runtime_mode=runtime_mode,
+        runtime_paths=resolved_runtime_paths.paths,
         config=config,
         evaluator_config=EvaluatorConfig(
             **{**evaluator_config.snapshot(), "engine_path": str(engine.path) if engine.path else evaluator_config.engine_path}
@@ -481,35 +502,50 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
     )
 
 
-def _resolve_config_file_path(override_path: str | None) -> ResolvedConfigFile:
+def _resolve_config_file_path(
+    override_path: str | None,
+    runtime_mode: RuntimeMode,
+    runtime_paths: RuntimePaths,
+) -> ResolvedConfigFile:
     if override_path:
         return ResolvedConfigFile(Path(override_path), f"CLI flag --runtime-config: {override_path}", "explicit", "runtime-config")
     env_path = os.getenv(ENV_RUNTIME_CONFIG)
     if env_path:
         return ResolvedConfigFile(Path(env_path), f"environment variable {ENV_RUNTIME_CONFIG}: {env_path}", "explicit", "runtime-config")
 
-    workspace_root = _workspace_root()
-    workspace_candidate = workspace_root / WORKSPACE_RUNTIME_CONFIG_PATH
-    if workspace_candidate.exists():
-        return ResolvedConfigFile(
-            workspace_candidate,
-            f"workspace-root default runtime config: {workspace_candidate}",
-            "auto-workspace",
-            "workspace-runtime-config",
-        )
+    if runtime_mode is RuntimeMode.CONSUMER:
+        consumer_candidate = runtime_paths.runtime_config_path
+        if consumer_candidate is not None and consumer_candidate.exists():
+            return ResolvedConfigFile(
+                consumer_candidate,
+                f"consumer app-state runtime config: {consumer_candidate}",
+                "auto-consumer",
+                "consumer-runtime-config",
+            )
+    else:
+        workspace_candidate = runtime_paths.workspace_root / WORKSPACE_RUNTIME_CONFIG_PATH
+        if workspace_candidate.exists():
+            return ResolvedConfigFile(
+                workspace_candidate,
+                f"workspace-root default runtime config: {workspace_candidate}",
+                "auto-workspace",
+                "workspace-runtime-config",
+            )
 
-    repo_candidate = _repo_root() / DEFAULT_RUNTIME_CONFIG_PATH
-    if repo_candidate.exists():
-        return ResolvedConfigFile(
-            repo_candidate,
-            f"repo-local default runtime config: {repo_candidate}",
-            "auto-repo",
-            "repo-runtime-config",
-        )
+        repo_candidate = runtime_paths.repo_root / DEFAULT_RUNTIME_CONFIG_PATH
+        if repo_candidate.exists():
+            return ResolvedConfigFile(
+                repo_candidate,
+                f"repo-local default runtime config: {repo_candidate}",
+                "auto-repo",
+                "repo-runtime-config",
+            )
     return ResolvedConfigFile(None, "built-in defaults", "defaults", None)
 
 
 def _resolve_corpus_asset(
+    runtime_mode: RuntimeMode,
+    runtime_paths: RuntimePaths,
     bundle_dir: str | None,
     bundle_source: str | None,
     legacy_artifact_path: str | None,
@@ -520,6 +556,8 @@ def _resolve_corpus_asset(
         if bundle_resolution.available:
             return bundle_resolution
         legacy_resolution = _resolve_file_asset(
+            runtime_mode=runtime_mode,
+            runtime_paths=runtime_paths,
             selected_path=legacy_artifact_path,
             selected_source=legacy_source,
             env_name=ENV_CORPUS_PATH,
@@ -544,6 +582,8 @@ def _resolve_corpus_asset(
         )
 
     legacy_resolution = _resolve_file_asset(
+        runtime_mode=runtime_mode,
+        runtime_paths=runtime_paths,
         selected_path=legacy_artifact_path,
         selected_source=legacy_source,
         env_name=ENV_CORPUS_PATH,
@@ -583,6 +623,8 @@ def _resolve_explicit_bundle_dir(selected_path: str | None, selected_source: str
 
 
 def _resolve_file_asset(
+    runtime_mode: RuntimeMode,
+    runtime_paths: RuntimePaths,
     selected_path: str | None,
     selected_source: str | None,
     env_name: str,
@@ -594,8 +636,31 @@ def _resolve_file_asset(
     if winning_explicit is not None:
         return winning_explicit
 
-    workspace_root = _workspace_root()
-    repo_root = _repo_root()
+    workspace_root = runtime_paths.workspace_root
+    repo_root = runtime_paths.repo_root
+    if runtime_mode is RuntimeMode.CONSUMER:
+        if label == "opening book":
+            consumer_path = runtime_paths.opening_book_path
+        elif label == "legacy corpus artifact":
+            consumer_path = runtime_paths.content_root / "opening_corpus.json"
+        else:
+            consumer_path = runtime_paths.content_root / f"{label.replace(' ', '_')}"
+        if consumer_path.exists():
+            return ResolvedAssetPath(
+                label=label,
+                path=consumer_path.resolve(),
+                source="consumer-default",
+                available=True,
+                detail=f"{label} loaded from consumer content-root path {consumer_path.resolve()}",
+            )
+        return ResolvedAssetPath(
+            label=label,
+            path=consumer_path,
+            source="consumer-default",
+            available=False,
+            detail=f"{label} missing at consumer content-root path {consumer_path}",
+        )
+
     workspace_probes = tuple(workspace_root / candidate for candidate in workspace_candidates)
     repo_probes = tuple(repo_root / candidate for candidate in repo_candidates)
     for candidate in workspace_probes:
@@ -626,13 +691,36 @@ def _resolve_file_asset(
     )
 
 
-def _resolve_engine_asset(selected_path: str | None, selected_source: str | None) -> ResolvedAssetPath:
+def _resolve_engine_asset(
+    runtime_mode: RuntimeMode,
+    runtime_paths: RuntimePaths,
+    selected_path: str | None,
+    selected_source: str | None,
+) -> ResolvedAssetPath:
     winning_explicit = _resolve_explicit_engine_path(selected_path=selected_path, selected_source=selected_source)
     if winning_explicit is not None:
         return winning_explicit
 
-    workspace_root = _workspace_root()
-    repo_root = _repo_root()
+    if runtime_mode is RuntimeMode.CONSUMER:
+        stockfish_root = runtime_paths.stockfish_root
+        if stockfish_root.exists():
+            return ResolvedAssetPath(
+                "engine",
+                stockfish_root.resolve(),
+                "consumer-default",
+                True,
+                f"engine resolved from consumer stockfish root {stockfish_root.resolve()}",
+            )
+        return ResolvedAssetPath(
+            "engine",
+            stockfish_root,
+            "consumer-default",
+            False,
+            f"engine missing at consumer stockfish root {stockfish_root}",
+        )
+
+    workspace_root = runtime_paths.workspace_root
+    repo_root = runtime_paths.repo_root
     for candidate in tuple(workspace_root / path for path in WORKSPACE_ENGINE_PATHS):
         if candidate.exists():
             return ResolvedAssetPath(
@@ -810,6 +898,8 @@ def _winner_label(selected_source: str | None) -> str:
         return "workspace runtime.local.json winner"
     if selected_source == "repo-runtime-config":
         return "repo runtime config winner"
+    if selected_source == "consumer-runtime-config":
+        return "consumer runtime config winner"
     if selected_source == "environment":
         return "environment winner"
     return "configured winner"

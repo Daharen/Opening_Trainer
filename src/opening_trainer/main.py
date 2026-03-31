@@ -5,11 +5,22 @@ import argparse
 from .corpus import CorpusIngestor, DEFAULT_ARTIFACT_PATH, save_artifact
 from .runtime import RuntimeOverrides, load_runtime_config
 from .session import TrainingSession
-from .session_logging import get_session_logger, log_line
+from .session_logging import SESSION_LOG_DIR_ENV, get_session_logger, log_line
+
+
+def _apply_runtime_environment(runtime_context) -> None:
+    runtime_mode = getattr(getattr(runtime_context, "runtime_mode", None), "value", "dev")
+    if runtime_mode == "consumer":
+        session_log_dir = runtime_context.runtime_paths.log_root / "sessions"
+        session_log_dir.mkdir(parents=True, exist_ok=True)
+        import os
+
+        os.environ[SESSION_LOG_DIR_ENV] = str(session_log_dir)
 
 
 def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:
     return RuntimeOverrides(
+        runtime_mode=args.runtime_mode,
         corpus_bundle_dir=args.corpus_bundle_dir,
         corpus_artifact_path=args.corpus_artifact,
         engine_executable_path=args.engine_path,
@@ -23,6 +34,7 @@ def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:
 
 def run_cli(runtime_overrides: RuntimeOverrides | None = None) -> None:
     runtime_context = load_runtime_config(runtime_overrides)
+    _apply_runtime_environment(runtime_context)
     get_session_logger()
     log_line("Opening Trainer v2 (CLI)", tag="startup")
     session = TrainingSession(runtime_context=runtime_context, mode="cli")
@@ -37,6 +49,7 @@ def run(argv: list[str] | None = None) -> None:
     mode.add_argument("--gui", action="store_true", help="Launch the local Tkinter board GUI.")
     mode.add_argument("--cli", action="store_true", help="Run the console trainer.")
     parser.add_argument("--runtime-config", help="Optional JSON runtime config path.")
+    parser.add_argument("--runtime-mode", choices=("dev", "consumer"), help="Select runtime lane mode (default: dev).")
     parser.add_argument("--corpus-bundle-dir", help="Override the builder corpus bundle directory.")
     parser.add_argument("--corpus-artifact", help="Override the legacy corpus artifact path.")
     parser.add_argument("--engine-path", help="Override the engine executable path.")
@@ -57,7 +70,6 @@ def run(argv: list[str] | None = None) -> None:
         help="Output path for --build-corpus (default: data/opening_corpus.json).",
     )
     args = parser.parse_args(argv)
-    get_session_logger()
     runtime_overrides = _build_runtime_overrides(args)
 
     if args.build_corpus:
@@ -68,6 +80,8 @@ def run(argv: list[str] | None = None) -> None:
         return
 
     runtime_context = load_runtime_config(runtime_overrides)
+    _apply_runtime_environment(runtime_context)
+    get_session_logger()
     if args.show_runtime:
         log_line(f"Runtime config source: {runtime_context.config_source}", tag="startup")
         log_line(runtime_context.corpus.detail, tag="startup")
