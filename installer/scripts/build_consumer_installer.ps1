@@ -72,7 +72,15 @@ if (-not $iscc) {
 
 Push-Location $repoRoot
 try {
+    if (Test-Path -LiteralPath $outputInstaller -PathType Leaf) {
+        Remove-Item -LiteralPath $outputInstaller -Force
+    }
+
     & $iscc.Source $issPath
+    $isccExitCode = $LASTEXITCODE
+    if ($isccExitCode -ne 0) {
+        throw "Installer build failed: ISCC exited with code $isccExitCode"
+    }
 }
 finally {
     Pop-Location

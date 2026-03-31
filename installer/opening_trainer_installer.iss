@@ -37,7 +37,7 @@ Name: "{autodesktop}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\
 
 [Run]
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -SecondaryAppRoot ""{userprofile}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"""; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -SecondaryAppRoot ""{%USERPROFILE}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"""; \
     StatusMsg: "Installing Opening Trainer app payload..."; \
     Flags: waituntilterminated
 Filename: "powershell.exe"; \
