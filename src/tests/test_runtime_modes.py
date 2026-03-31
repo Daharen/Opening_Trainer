@@ -79,6 +79,65 @@ def test_consumer_runtime_loader_accepts_bom_prefixed_runtime_config(monkeypatch
     assert runtime.config.engine_executable_path == str(stockfish_dir / "stockfish-windows-x86-64.exe")
 
 
+def test_runtime_mode_resolution_precedence_cli_wins_over_env_and_artifacts(monkeypatch, tmp_path):
+    local_app_data = tmp_path / "LocalAppData"
+    app_state_root = local_app_data / "OpeningTrainer"
+    app_state_root.mkdir(parents=True)
+    (app_state_root / "runtime.consumer.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("OPENING_TRAINER_RUNTIME_MODE", "consumer")
+    monkeypatch.setenv("OPENING_TRAINER_ASSUME_INSTALLED", "1")
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
+
+    assert runtime.runtime_mode.value == "dev"
+    assert runtime.runtime_mode_source == "cli"
+
+
+def test_runtime_mode_resolution_precedence_env_wins_over_artifacts(monkeypatch, tmp_path):
+    local_app_data = tmp_path / "LocalAppData"
+    app_state_root = local_app_data / "OpeningTrainer"
+    app_state_root.mkdir(parents=True)
+    (app_state_root / "runtime.consumer.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("OPENING_TRAINER_RUNTIME_MODE", "dev")
+    monkeypatch.setenv("OPENING_TRAINER_ASSUME_INSTALLED", "1")
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.runtime_mode.value == "dev"
+    assert runtime.runtime_mode_source == "environment"
+
+
+def test_installed_consumer_artifacts_infer_consumer_mode_and_local_logs(monkeypatch, tmp_path):
+    local_app_data = tmp_path / "LocalAppData"
+    app_state_root = local_app_data / "OpeningTrainer"
+    content_root = local_app_data / "OpeningTrainerContent"
+    app_state_root.mkdir(parents=True)
+    content_root.mkdir(parents=True)
+    (app_state_root / "runtime.consumer.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("OPENING_TRAINER_ASSUME_INSTALLED", "1")
+    monkeypatch.delenv("OPENING_TRAINER_RUNTIME_MODE", raising=False)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.runtime_mode.value == "consumer"
+    assert runtime.runtime_mode_source == "auto-consumer"
+    assert runtime.runtime_paths.log_root == local_app_data / "OpeningTrainer" / "logs"
+
+
+def test_no_artifacts_defaults_to_dev_even_when_installed_assumption_is_set(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setenv("OPENING_TRAINER_ASSUME_INSTALLED", "1")
+    monkeypatch.delenv("OPENING_TRAINER_RUNTIME_MODE", raising=False)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.runtime_mode.value == "dev"
+    assert runtime.runtime_mode_source == "default"
+
+
 def test_apply_runtime_environment_binds_session_log_dir_from_runtime_paths(monkeypatch, tmp_path):
     bound_paths: list[Path] = []
     runtime_context = type(

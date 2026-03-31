@@ -14,7 +14,16 @@ class CaptureCalls:
 
 def test_default_run_launches_gui_without_cli_flag(monkeypatch):
     launched = CaptureCalls()
-    runtime_context = type('RuntimeContext', (), {'config': type('Config', (), {'strict_assets': False})()})()
+    runtime_context = type(
+        "RuntimeContext",
+        (),
+        {
+            "config": type("Config", (), {"strict_assets": False})(),
+            "runtime_mode": type("Mode", (), {"value": "dev"})(),
+            "runtime_mode_source": "default",
+            "runtime_mode_reason": "test",
+        },
+    )()
     monkeypatch.setattr('opening_trainer.main.load_runtime_config', lambda overrides: runtime_context)
     monkeypatch.setattr('opening_trainer.ui.gui_app.launch_gui', lambda runtime_context=None: launched(runtime_context))
 
@@ -35,6 +44,9 @@ def test_run_binds_session_logging_before_logger_creation(monkeypatch, tmp_path)
             "corpus": type("Corpus", (), {"detail": "corpus"})(),
             "book": type("Book", (), {"detail": "book"})(),
             "engine": type("Engine", (), {"detail": "engine"})(),
+            "runtime_mode": type("Mode", (), {"value": "dev"})(),
+            "runtime_mode_source": "default",
+            "runtime_mode_reason": "test",
         },
     )()
 

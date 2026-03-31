@@ -80,6 +80,10 @@ def run(argv: list[str] | None = None) -> None:
     runtime_context = load_runtime_config(runtime_overrides)
     _apply_runtime_environment(runtime_context)
     get_session_logger()
+    log_line(
+        f"Runtime mode resolution: mode={runtime_context.runtime_mode.value}; source={runtime_context.runtime_mode_source}; reason={runtime_context.runtime_mode_reason}",
+        tag="startup",
+    )
     if args.show_runtime:
         log_line(f"Runtime config source: {runtime_context.config_source}", tag="startup")
         log_line(runtime_context.corpus.detail, tag="startup")

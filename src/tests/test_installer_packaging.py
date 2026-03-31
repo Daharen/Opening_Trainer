@@ -42,6 +42,7 @@ def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
     assert "{localappdata}\\OpeningTrainer" in script
     assert "{localappdata}\\OpeningTrainerContent" in script
     assert "--runtime-mode consumer" in script
+    assert 'WorkingDir: "{app}"' in script
     assert "CurUninstallStepChanged" in script
     assert "Remove downloaded opening content" in script
 
@@ -96,6 +97,8 @@ def test_packaging_build_scripts_exist() -> None:
     assert ".venv\\Scripts\\python.exe" in payload_text
     assert "import chess" in payload_text
     assert "--show-runtime --runtime-mode dev" in payload_text
+    assert "OPENING_TRAINER_ASSUME_INSTALLED" in payload_text
+    assert "runtime mode inference smoke test" in payload_text
     assert "build_consumer_payload.ps1" in installer_text
     assert "ISCC.exe" in installer_text
 
