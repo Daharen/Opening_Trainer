@@ -10,7 +10,7 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\Opening Trainer
 DefaultGroupName=Opening Trainer
-OutputDir=installer\dist
+OutputDir=dist
 OutputBaseFilename=OpeningTrainerSetup
 Compression=lzma
 SolidCompression=yes
@@ -18,14 +18,15 @@ WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupLogging=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "dist\consumer\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
-Source: "installer\consumer_content_manifest.json"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "installer\scripts\install_consumer_content.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "..\dist\consumer\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "consumer_content_manifest.json"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "scripts\install_consumer_content.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"
@@ -33,9 +34,9 @@ Name: "{autodesktop}\Opening Trainer"; Filename: "{app}\{#MyAppExeName}"; Parame
 
 [Run]
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_content.ps1"" -ManifestPath ""{app}\installer\consumer_content_manifest.json"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -ContentRoot ""{localappdata}\OpeningTrainerContent"""; \
-    StatusMsg: "Downloading and installing Opening Trainer content..."; \
-    Flags: waituntilterminated runhidden
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_content.ps1"" -ManifestPath ""{app}\installer\consumer_content_manifest.json"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install.log"""; \
+    StatusMsg: "Installing Opening Trainer content..."; \
+    Flags: waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent
 
 [Code]

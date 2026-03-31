@@ -1,42 +1,52 @@
 # Windows Consumer Installer Baseline
 
-This folder contains the first consumer installer lane for Opening Trainer.
+This folder contains the consumer installer lane for Opening Trainer.
 
-## Inputs
+## One-command packaging flow
 
-The Inno Setup script expects a prebuilt consumer app payload at:
+### 1) Build consumer payload
 
-- `dist/consumer/`
-
-At minimum that payload must include `OpeningTrainer.exe` and everything it needs to launch.
-
-## Build the installer
-
-1. Install [Inno Setup 6](https://jrsoftware.org/isinfo.php).
-2. Build or copy the consumer app payload into `dist/consumer/`.
-3. Compile `installer/opening_trainer_installer.iss` with Inno Setup.
-
-Example (ISCC on PATH):
+Run:
 
 ```powershell
-ISCC.exe installer\opening_trainer_installer.iss
+.\installer\scripts\build_consumer_payload.ps1
 ```
 
-Output artifact:
+This script:
 
-- `installer/dist/OpeningTrainerSetup.exe`
+- ensures PyInstaller is available
+- builds from the repo entrypoint using `installer/packaging/opening_trainer_consumer.spec`
+- cleans stale build outputs deterministically
+- emits `dist/consumer/OpeningTrainer.exe`
+
+### 2) Build installer
+
+Run:
+
+```powershell
+.\installer\scripts\build_consumer_installer.ps1
+```
+
+This script:
+
+- ensures/produces the payload
+- validates `installer/consumer_content_manifest.json`
+- compiles `installer/opening_trainer_installer.iss` via `ISCC.exe`
+- emits `installer/dist/OpeningTrainerSetup.exe`
 
 ## Consumer content bootstrap
 
-During install, the wizard runs `installer/scripts/install_consumer_content.ps1` which:
+During install, the wizard runs `installer/scripts/install_consumer_content.ps1` visibly. The bootstrap:
 
 1. Reads `installer/consumer_content_manifest.json`.
-2. Downloads the content archive from `download_url`.
+2. Downloads the content archive from `download_url` with live progress.
 3. Optionally verifies SHA-256 when `sha256` is provided.
 4. Extracts content to `%LocalAppData%\OpeningTrainerContent`.
-5. Writes `%LocalAppData%\OpeningTrainer\runtime.consumer.json`.
+5. Handles one optional wrapper directory in the archive layout.
+6. Writes `%LocalAppData%\OpeningTrainer\runtime.consumer.json`.
+7. Writes bootstrap logs to `%LocalAppData%\OpeningTrainer\install.log`.
 
-The installer fails clearly if download/extract/validation fails.
+The installer fails clearly if download, checksum, extraction, or required-content validation fails.
 
 ## Uninstall behavior
 
