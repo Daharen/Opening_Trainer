@@ -67,6 +67,7 @@ def resolve_runtime_paths(mode: RuntimeMode, *, repo_root: Path, workspace_root:
         )
 
     content_root = repo_root
+    dev_app_payload_root = repo_root / "runtime" / "app_payload"
     return ResolvedRuntimePaths(
         paths=RuntimePaths(
             mode=mode,
@@ -84,7 +85,7 @@ def resolve_runtime_paths(mode: RuntimeMode, *, repo_root: Path, workspace_root:
             opening_book_path=repo_root / "runtime" / "opening_book.bin",
             opening_names_path=repo_root / "data" / "opening_book_names.zip",
             stockfish_root=repo_root / "tools" / "stockfish",
-            app_payload_root=None,
+            app_payload_root=dev_app_payload_root,
         ),
         source="dev-workspace-defaults",
     )

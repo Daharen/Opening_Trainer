@@ -16,6 +16,7 @@ def test_dev_mode_default_and_profile_root_stays_repo_runtime(tmp_path, monkeypa
     assert runtime.runtime_mode.value == "dev"
     assert runtime.runtime_paths.app_state_root == tmp_path / "runtime"
     assert runtime.runtime_paths.profile_root == tmp_path / "runtime" / "profiles"
+    assert runtime.runtime_paths.app_payload_root == tmp_path / "runtime" / "app_payload"
 
 
 def test_consumer_mode_uses_local_app_data_roots(monkeypatch, tmp_path):

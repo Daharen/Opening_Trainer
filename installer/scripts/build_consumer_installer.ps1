@@ -13,6 +13,7 @@ $appUpdateManifestPath = Join-Path $repoRoot 'installer\app_update_manifest.json
 $issPath = Join-Path $repoRoot 'installer\opening_trainer_installer.iss'
 $outputInstaller = Join-Path $repoRoot 'installer\dist\OpeningTrainerSetup.exe'
 $payloadExe = Join-Path $repoRoot 'dist\consumer\OpeningTrainer.exe'
+$appPayloadDist = Join-Path $repoRoot 'dist\consumer_app_payload'
 
 if (-not $SkipPayloadBuild) {
     & $payloadBuildScript
@@ -21,6 +22,12 @@ if (-not $SkipPayloadBuild) {
 
 if (-not (Test-Path -LiteralPath $payloadExe)) {
     throw "Consumer payload is missing. Expected: $payloadExe"
+}
+if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    throw "Consumer content manifest is missing: $manifestPath"
+}
+if (-not (Test-Path -LiteralPath $appUpdateManifestPath -PathType Leaf)) {
+    throw "App update manifest is missing: $appUpdateManifestPath"
 }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -46,6 +53,10 @@ if ([string]::IsNullOrWhiteSpace([string]$appManifest.payload_filename)) {
 }
 if ([string]::IsNullOrWhiteSpace([string]$appManifest.payload_url)) {
     throw 'App update manifest payload_url cannot be empty.'
+}
+$expectedAppPayloadZip = Join-Path $appPayloadDist $appManifest.payload_filename
+if (-not (Test-Path -LiteralPath $expectedAppPayloadZip -PathType Leaf)) {
+    throw "App payload zip is missing. Expected: $expectedAppPayloadZip"
 }
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
