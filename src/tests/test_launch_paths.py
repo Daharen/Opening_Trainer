@@ -51,6 +51,7 @@ def test_probe_real_gui_startup_runs_from_temp_cwd(monkeypatch, tmp_path):
     runtime_context = object()
     original_cwd = Path.cwd()
     observed_cwd: list[Path] = []
+    logs: list[str] = []
     monkeypatch.chdir(tmp_path)
 
     def _fake_launch_gui(runtime_context=None, probe_real_startup=False):
@@ -58,7 +59,7 @@ def test_probe_real_gui_startup_runs_from_temp_cwd(monkeypatch, tmp_path):
         assert probe_real_startup is True
 
     monkeypatch.setattr("opening_trainer.ui.gui_app.launch_gui", _fake_launch_gui)
-    monkeypatch.setattr("opening_trainer.main.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.main.log_line", lambda message, **kwargs: logs.append(message))
 
     from opening_trainer.main import _probe_real_gui_startup
 
@@ -67,7 +68,33 @@ def test_probe_real_gui_startup_runs_from_temp_cwd(monkeypatch, tmp_path):
     assert len(observed_cwd) == 1
     assert observed_cwd[0] != tmp_path
     assert Path.cwd() == tmp_path
+    assert any("GUI_PROBE_TEMP_CWD_CREATED" in message for message in logs)
+    assert any("GUI_PROBE_TEMP_CWD_RESTORED" in message for message in logs)
+    assert "GUI_PROBE_REAL_STARTUP_OK" in logs
     monkeypatch.chdir(original_cwd)
+
+
+def test_probe_real_gui_startup_tolerates_temp_dir_cleanup_permission_error(monkeypatch, tmp_path):
+    runtime_context = object()
+    log_messages: list[str] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("opening_trainer.main.time.sleep", lambda _: None)
+
+    def _fake_launch_gui(runtime_context=None, probe_real_startup=False):
+        assert probe_real_startup is True
+
+    monkeypatch.setattr("opening_trainer.ui.gui_app.launch_gui", _fake_launch_gui)
+    monkeypatch.setattr("opening_trainer.main.shutil.rmtree", lambda path: (_ for _ in ()).throw(PermissionError("locked")))
+    monkeypatch.setattr("opening_trainer.main.log_line", lambda message, **kwargs: log_messages.append(message))
+
+    from opening_trainer.main import _probe_real_gui_startup
+
+    _probe_real_gui_startup(runtime_context)
+
+    assert Path.cwd() == tmp_path
+    assert any("GUI_PROBE_TEMP_CWD_CLEANUP_RETRY" in message for message in log_messages)
+    assert any("GUI_PROBE_TEMP_CWD_CLEANUP_DEFERRED" in message for message in log_messages)
+    assert "GUI_PROBE_REAL_STARTUP_OK" in log_messages
 
 
 def test_frozen_consumer_gui_import_failure_writes_artifact_and_exits(monkeypatch, runtime_context_factory):

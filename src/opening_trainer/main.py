@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import shutil
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,15 +131,48 @@ def _probe_real_gui_startup(runtime_context) -> None:
     import tempfile
 
     previous_cwd = Path.cwd()
+    probe_temp_dir = Path(tempfile.mkdtemp(prefix="opening_trainer_probe_"))
+    log_line(f"GUI_PROBE_TEMP_CWD_CREATED: path={probe_temp_dir}", tag="startup")
     try:
-        with tempfile.TemporaryDirectory(prefix="opening_trainer_probe_") as temp_dir:
-            os.chdir(temp_dir)
-            launch_gui(runtime_context=runtime_context, probe_real_startup=True)
+        os.chdir(probe_temp_dir)
+        launch_gui(runtime_context=runtime_context, probe_real_startup=True)
     except Exception as exc:
         raise SystemExit(f"Real GUI startup probe failed: {exc}") from exc
     finally:
         os.chdir(previous_cwd)
+        log_line(f"GUI_PROBE_TEMP_CWD_RESTORED: path={previous_cwd}", tag="startup")
+        _cleanup_probe_temp_dir(probe_temp_dir)
+    log_line("GUI_PROBE_REAL_STARTUP_OK", tag="startup")
     log_line("Real GUI startup probe succeeded.", tag="startup")
+
+
+def _cleanup_probe_temp_dir(path: Path, *, retries: int = 4, retry_delay_seconds: float = 0.1) -> None:
+    if not path.exists():
+        return
+    for attempt in range(1, retries + 1):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as exc:
+            if attempt == retries:
+                log_line(f"GUI_PROBE_TEMP_CWD_CLEANUP_DEFERRED: path={path}; error={exc}", tag="warning")
+                return
+            log_line(
+                f"GUI_PROBE_TEMP_CWD_CLEANUP_RETRY: path={path}; attempt={attempt}/{retries}; error={exc}",
+                tag="warning",
+            )
+            time.sleep(retry_delay_seconds)
+        except OSError as exc:
+            if attempt == retries:
+                log_line(f"GUI_PROBE_TEMP_CWD_CLEANUP_DEFERRED: path={path}; error={exc}", tag="warning")
+                return
+            log_line(
+                f"GUI_PROBE_TEMP_CWD_CLEANUP_RETRY: path={path}; attempt={attempt}/{retries}; error={exc}",
+                tag="warning",
+            )
+            time.sleep(retry_delay_seconds)
 
 
 def run(argv: list[str] | None = None) -> None:
