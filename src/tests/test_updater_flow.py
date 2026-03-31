@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from opening_trainer.install_layout import choose_mutable_app_root, write_installed_app_manifest
-from opening_trainer.updater import check_for_update, resolve_manifest_path_or_url
+from opening_trainer.updater import check_for_update, launch_updater_helper, resolve_manifest_path_or_url
 
 
 def test_apply_helper_avoids_reserved_pid_variable_name():
@@ -127,3 +127,63 @@ def test_resolve_manifest_path_uses_installed_updater_config(tmp_path):
     )
 
     assert resolve_manifest_path_or_url(None, app_state_root=app_state) == expected
+
+
+def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    helper_path = updater_root / "apply_app_update.ps1"
+    helper_path.write_text("Write-Host helper", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "channel": "dev",
+                "app_version": "2.0.0",
+                "build_id": "build-2",
+                "payload_filename": "OpeningTrainer-app.zip",
+                "payload_url": "https://example.invalid/dev/OpeningTrainer-app.zip",
+                "payload_sha256": "abc123",
+                "published_at_utc": "2026-03-31T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    popen_calls: list[dict] = []
+    log_messages: list[str] = []
+
+    class DummyProcess:
+        pass
+
+    def _fake_popen(cmd, cwd=None):
+        popen_calls.append({"cmd": cmd, "cwd": cwd})
+        return DummyProcess()
+
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("opening_trainer.updater.log_line", lambda message, tag="startup": log_messages.append(message))
+
+    launch_updater_helper(
+        str(manifest_path),
+        app_state_root=app_state_root,
+        wait_for_pid=1234,
+        relaunch_exe_path=None,
+        relaunch_args=None,
+    )
+
+    assert len(popen_calls) == 1
+    assert popen_calls[0]["cwd"] == str(app_state_root / "updater")
+    assert any("UPDATER_HELPER_LAUNCH" in msg for msg in log_messages)
+
+
+def test_apply_helper_logs_cwd_relocation_and_swap_retries():
+    script_path = Path("installer/scripts/apply_app_update.ps1")
+    script = script_path.read_text(encoding="utf-8")
+
+    assert "HELPER_CWD_BEFORE_RELOCATE" in script
+    assert "HELPER_CWD_AFTER_RELOCATE" in script
+    assert "SWAP_TARGETS mutable_root=" in script
+    assert "SWAP_MOVE_ATTEMPT attempt=" in script
+    assert "SWAP_MOVE_ATTEMPT_FAILED attempt=" in script
