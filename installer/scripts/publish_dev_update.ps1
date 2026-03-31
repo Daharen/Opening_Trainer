@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $false)]
-    [string]$AppVersion = '0.1.2',
+    [string]$AppVersion = '0.1.3',
     [Parameter(Mandatory = $false)]
     [string]$Channel = 'dev',
     [Parameter(Mandatory = $false)]
