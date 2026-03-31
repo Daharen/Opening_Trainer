@@ -1,0 +1,8 @@
+{
+  "manifest_version": 1,
+  "content_version": "rapid600-v1",
+  "download_url": "https://github.com/Opening-Trainer/Opening_Trainer/releases/latest/download/opening_trainer_content_seed_rapid600_v1.zip",
+  "archive_filename": "opening_trainer_content_seed_rapid600_v1.zip",
+  "sha256": "",
+  "update_channel": "stable"
+}
