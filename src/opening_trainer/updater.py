@@ -12,7 +12,7 @@ from .install_layout import (
 
 DEFAULT_UPDATE_CHANNEL = "dev"
 DEFAULT_UPDATE_MANIFEST_URL = (
-    "https://raw.githubusercontent.com/eric-gitta-moore/Opening_Trainer/main/installer/app_update_manifest.json"
+    "https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"
 )
 UPDATER_CONFIG_FILENAME = "updater_config.json"
 
