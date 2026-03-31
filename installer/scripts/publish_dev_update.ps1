@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $false)]
-    [string]$AppVersion = '0.1.0',
+    [string]$AppVersion = '0.1.1',
     [Parameter(Mandatory = $false)]
     [string]$Channel = 'dev',
     [Parameter(Mandatory = $false)]
@@ -15,8 +15,9 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $repoRoot
 
-& (Join-Path $repoRoot 'installer/scripts/build_consumer_payload.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'build_consumer_payload.ps1 failed.' }
+# build_consumer_app_payload.ps1 already owns the consumer payload build flow.
+# Do not call build_consumer_payload.ps1 separately here or Windows may still
+# have OpeningTrainer.exe locked when the second build tries to clean dist/consumer.
 & (Join-Path $repoRoot 'installer/scripts/build_consumer_app_payload.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'build_consumer_app_payload.ps1 failed.' }
 
@@ -34,7 +35,7 @@ if ([string]::IsNullOrWhiteSpace($commit)) {
     $commit = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
 }
 $publishedAtUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-$payloadUrl = ($PayloadBaseUrl.TrimEnd('/') + '/' + $PayloadRepoRelativePath.Replace('\\', '/'))
+$payloadUrl = ($PayloadBaseUrl.TrimEnd('/') + '/' + $PayloadRepoRelativePath.Replace('\', '/'))
 
 $manifestObj = [ordered]@{
     manifest_version = 1
