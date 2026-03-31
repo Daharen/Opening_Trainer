@@ -69,6 +69,14 @@ def test_content_bootstrap_writes_consumer_runtime_config_and_logging() -> None:
     assert "LocalArchivePath" in script
     assert "wrapper_folder_name" in script
     assert "required_entries" in script
+    assert "Write-JsonFileNoBom" in script
+    assert "WriteAllText" in script
+    assert "utf8-no-bom" in script
+    assert "JSON write (utf8-no-bom)" in script
+    assert "installed_manifest_present=" in script
+    assert "installed_manifest_matches=" in script
+    assert "direct required-entry validation" in script
+    assert "Reuse not accepted; proceeding to archive acquisition path." in script
 
 
 def test_packaging_build_scripts_exist() -> None:
@@ -90,3 +98,12 @@ def test_packaging_build_scripts_exist() -> None:
     assert "--show-runtime --runtime-mode dev" in payload_text
     assert "build_consumer_payload.ps1" in installer_text
     assert "ISCC.exe" in installer_text
+
+
+def test_content_bootstrap_reuse_does_not_require_installed_manifest_match() -> None:
+    bootstrap_path = _repo_root() / "installer" / "scripts" / "install_consumer_content.ps1"
+    script = bootstrap_path.read_text(encoding="utf-8")
+
+    assert "if ($canReuseCurrentRoot) {" in script
+    assert "if ($canReuseCurrentRoot -and $installedManifestMatches)" not in script
+    assert "Installed manifest is missing" in script

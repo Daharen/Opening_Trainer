@@ -183,7 +183,7 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
     )
     file_config = RuntimeConfig()
     if config_resolution.path is not None and config_resolution.path.exists():
-        file_config = RuntimeConfig.from_mapping(json.loads(config_resolution.path.read_text(encoding="utf-8")))
+        file_config = RuntimeConfig.from_mapping(_load_json_file(config_resolution.path))
 
     config_prefers_file_assets = config_resolution.kind == "explicit"
     strict_assets = _resolve_bool(
@@ -436,7 +436,7 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         return BundleCompatibility(resolved_dir, manifest_path, default_payload_path, False, f"bundle directory {resolved_dir} missing manifest.json", "manifest.json is missing")
 
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _load_json_file(manifest_path)
     except json.JSONDecodeError as exc:
         return BundleCompatibility(resolved_dir, manifest_path, default_payload_path, False, f"bundle manifest could not be parsed: {exc}", "manifest.json is not valid JSON")
 
@@ -500,6 +500,10 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         payload_format=str(payload_format),
         bundle_kind=bundle_kind,
     )
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _resolve_config_file_path(

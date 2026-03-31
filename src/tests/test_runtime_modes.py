@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from opening_trainer.runtime import RuntimeOverrides, load_runtime_config
@@ -49,3 +50,29 @@ def test_consumer_missing_content_fails_clearly(monkeypatch, tmp_path):
     assert runtime.engine.available is False
     assert "consumer content-root path" in runtime.book.detail
     assert "consumer stockfish root" in runtime.engine.detail
+
+
+def test_consumer_runtime_loader_accepts_bom_prefixed_runtime_config(monkeypatch, tmp_path):
+    local_app_data = tmp_path / "LocalAppData"
+    app_state_root = local_app_data / "OpeningTrainer"
+    content_root = local_app_data / "OpeningTrainerContent"
+    stockfish_dir = content_root / "stockfish"
+    stockfish_dir.mkdir(parents=True)
+    (stockfish_dir / "stockfish-windows-x86-64.exe").write_bytes(b"engine")
+    (content_root / "opening_book.bin").write_bytes(b"book")
+
+    runtime_payload = {
+        "engine_executable_path": str(stockfish_dir / "stockfish-windows-x86-64.exe"),
+        "opening_book_path": str(content_root / "opening_book.bin"),
+    }
+    app_state_root.mkdir(parents=True)
+    (app_state_root / "runtime.consumer.json").write_text(
+        "\ufeff" + json.dumps(runtime_payload),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="consumer"))
+
+    assert runtime.runtime_mode.value == "consumer"
+    assert runtime.config.engine_executable_path == str(stockfish_dir / "stockfish-windows-x86-64.exe")
