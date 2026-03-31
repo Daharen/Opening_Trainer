@@ -44,7 +44,12 @@ def _default_mutex_name() -> str:
 
 
 def _default_diagnostics_path() -> Path:
-    return Path("logs") / "opening_trainer_instance.json"
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        app_state_root = Path(local_app_data) / "OpeningTrainer"
+    else:
+        app_state_root = Path.home() / "AppData" / "Local" / "OpeningTrainer"
+    return app_state_root / "logs" / "instance" / "opening_trainer_instance.json"
 
 
 def _diagnostics_path() -> Path:
