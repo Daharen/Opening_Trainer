@@ -106,6 +106,12 @@ if (-not $SkipSmokeTest) {
     if ($LASTEXITCODE -ne 0) {
         throw "Consumer payload GUI bootstrap smoke test failed with exit code $LASTEXITCODE."
     }
+
+    Write-Host 'Running consumer payload real GUI startup probe...'
+    & $outputExe --runtime-mode consumer --probe-real-gui-startup
+    if ($LASTEXITCODE -ne 0) {
+        throw "Consumer payload real GUI startup probe failed with exit code $LASTEXITCODE."
+    }
 }
 
 Write-Host "Consumer payload build complete: $outputExe"

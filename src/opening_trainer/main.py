@@ -121,6 +121,16 @@ def _probe_gui_bootstrap(runtime_context) -> None:
     log_line("GUI probe succeeded.", tag="startup")
 
 
+def _probe_real_gui_startup(runtime_context) -> None:
+    from .ui.gui_app import launch_gui
+
+    try:
+        launch_gui(runtime_context=runtime_context, probe_real_startup=True)
+    except Exception as exc:
+        raise SystemExit(f"Real GUI startup probe failed: {exc}") from exc
+    log_line("Real GUI startup probe succeeded.", tag="startup")
+
+
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Opening Trainer")
     mode = parser.add_mutually_exclusive_group()
@@ -140,6 +150,11 @@ def run(argv: list[str] | None = None) -> None:
         "--probe-gui-bootstrap",
         action="store_true",
         help="Perform lightweight GUI import/bootstrap validation and exit.",
+    )
+    parser.add_argument(
+        "--probe-real-gui-startup",
+        action="store_true",
+        help="Exercise real GUI startup path without entering the full mainloop.",
     )
     parser.add_argument(
         "--build-corpus",
@@ -178,6 +193,9 @@ def run(argv: list[str] | None = None) -> None:
     if args.probe_gui_bootstrap:
         _probe_gui_bootstrap(runtime_context)
         return
+    if args.probe_real_gui_startup:
+        _probe_real_gui_startup(runtime_context)
+        return
 
     if runtime_context.config.strict_assets:
         missing = [asset.label for asset in (runtime_context.corpus, runtime_context.engine, runtime_context.book) if asset.path is not None and not asset.available]
@@ -189,7 +207,7 @@ def run(argv: list[str] | None = None) -> None:
         return
 
     try:
-        from .ui.gui_app import launch_gui
+        from .ui.gui_app import DuplicateInstanceLaunchBlockedError, launch_gui
     except Exception as exc:
         if _is_frozen_consumer_launch(runtime_context):
             _handle_frozen_consumer_gui_failure(runtime_context, "gui_import", exc)
@@ -199,6 +217,9 @@ def run(argv: list[str] | None = None) -> None:
 
     try:
         launch_gui(runtime_context=runtime_context)
+    except DuplicateInstanceLaunchBlockedError as exc:
+        log_line(f"GUI launch blocked by duplicate instance ({exc}).", tag="error")
+        raise SystemExit(1)
     except Exception as exc:
         if _is_frozen_consumer_launch(runtime_context):
             _handle_frozen_consumer_gui_failure(runtime_context, "gui_bootstrap", exc)

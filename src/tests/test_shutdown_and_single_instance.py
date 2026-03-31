@@ -3,7 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from opening_trainer.single_instance import cleanup_stale_instance_diagnostics
-from opening_trainer.ui.gui_app import ANIMATION_IMPL_MARKER, OpeningTrainerGUI, launch_gui
+from opening_trainer.ui.gui_app import (
+    ANIMATION_IMPL_MARKER,
+    DuplicateInstanceLaunchBlockedError,
+    OpeningTrainerGUI,
+    launch_gui,
+)
 
 
 class FakeRoot:
@@ -229,6 +234,62 @@ def test_launch_gui_logs_animation_implementation_marker(monkeypatch):
     launch_gui()
 
     assert any(line.startswith("GUI_ANIM_IMPL_VERSION:") and f"marker={ANIMATION_IMPL_MARKER}" in line for line in lines)
+
+
+def test_launch_gui_duplicate_instance_in_consumer_mode_shows_dialog_and_raises(monkeypatch):
+    runtime_context = type("RuntimeContext", (), {"runtime_mode": type("Mode", (), {"value": "consumer"})()})()
+    owner = SimpleNamespace(
+        pid=1337,
+        startup_utc="2026-03-31T00:00:00Z",
+        session_log_path="logs/sessions/session_duplicate.log",
+        session_id="dup-session",
+    )
+    dialog_messages: list[str] = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.acquire_single_instance_guard", lambda: False)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.read_instance_diagnostics", lambda: owner)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app._show_duplicate_instance_dialog", lambda message: dialog_messages.append(message))
+
+    try:
+        launch_gui(runtime_context=runtime_context)
+    except DuplicateInstanceLaunchBlockedError as exc:
+        assert "already starting or running" in str(exc)
+    else:
+        raise AssertionError("DuplicateInstanceLaunchBlockedError expected for consumer duplicate launch.")
+
+    assert len(dialog_messages) == 1
+    assert "Existing PID: 1337" in dialog_messages[0]
+    assert "Session log: logs/sessions/session_duplicate.log" in dialog_messages[0]
+
+
+def test_launch_gui_probe_real_startup_constructs_gui_and_releases_guard(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.acquire_single_instance_guard", lambda: True)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.ui.gui_app.write_instance_diagnostics", lambda **kwargs: calls.append("write"))
+    monkeypatch.setattr("opening_trainer.ui.gui_app.remove_instance_diagnostics", lambda: calls.append("remove"))
+    monkeypatch.setattr("opening_trainer.ui.gui_app.release_single_instance_guard", lambda: calls.append("release"))
+
+    class FakeRoot:
+        def update_idletasks(self):
+            calls.append("update")
+
+        def destroy(self):
+            calls.append("destroy")
+
+    class FakeApp:
+        def __init__(self, runtime_context=None):
+            calls.append("construct")
+            self.root = FakeRoot()
+
+        def run(self):
+            calls.append("run")
+
+    monkeypatch.setattr("opening_trainer.ui.gui_app.OpeningTrainerGUI", FakeApp)
+
+    launch_gui(probe_real_startup=True)
+
+    assert calls == ["construct", "write", "update", "destroy", "remove", "release"]
 
 
 def test_cleanup_stale_instance_diagnostics_when_mutex_is_free(monkeypatch, tmp_path):

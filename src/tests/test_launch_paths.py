@@ -2,6 +2,7 @@ from pathlib import Path
 import builtins
 
 from opening_trainer.main import _startup_failure_log_path, run
+from opening_trainer.ui.gui_app import DuplicateInstanceLaunchBlockedError
 
 
 class CaptureCalls:
@@ -51,6 +52,26 @@ def test_probe_gui_bootstrap_flag_runs_and_returns(monkeypatch):
     run(["--probe-gui-bootstrap"])
 
     assert probe_calls == ["dev"]
+
+
+def test_probe_real_gui_startup_flag_runs_and_returns(monkeypatch):
+    runtime_context = type(
+        "RuntimeContext",
+        (),
+        {
+            "config": type("Config", (), {"strict_assets": False})(),
+            "runtime_mode": type("Mode", (), {"value": "consumer"})(),
+            "runtime_mode_source": "cli",
+            "runtime_mode_reason": "test",
+        },
+    )()
+    probe_calls: list[str] = []
+    monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
+    monkeypatch.setattr("opening_trainer.main._probe_real_gui_startup", lambda context: probe_calls.append(context.runtime_mode.value))
+
+    run(["--probe-real-gui-startup", "--runtime-mode", "consumer"])
+
+    assert probe_calls == ["consumer"]
 
 
 def test_frozen_consumer_gui_failure_writes_artifact_and_exits(monkeypatch, tmp_path):
@@ -119,6 +140,35 @@ def test_dev_gui_import_failure_still_falls_back_to_cli(monkeypatch):
     run([])
 
     assert cli_calls == ["cli"]
+
+
+def test_duplicate_instance_launch_exits_without_cli_fallback(monkeypatch):
+    runtime_context = type(
+        "RuntimeContext",
+        (),
+        {
+            "config": type("Config", (), {"strict_assets": False})(),
+            "runtime_mode": type("Mode", (), {"value": "consumer"})(),
+            "runtime_mode_source": "cli",
+            "runtime_mode_reason": "test",
+        },
+    )()
+    cli_calls: list[str] = []
+    monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
+    monkeypatch.setattr("opening_trainer.main.run_cli", lambda overrides=None: cli_calls.append("cli"))
+    monkeypatch.setattr(
+        "opening_trainer.ui.gui_app.launch_gui",
+        lambda runtime_context=None: (_ for _ in ()).throw(DuplicateInstanceLaunchBlockedError("blocked")),
+    )
+
+    try:
+        run(["--runtime-mode", "consumer"])
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("SystemExit expected on duplicate instance launch block.")
+
+    assert cli_calls == []
 
 
 def test_startup_failure_path_uses_local_app_data(monkeypatch, tmp_path):
