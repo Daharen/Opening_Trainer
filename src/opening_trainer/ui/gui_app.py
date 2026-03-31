@@ -153,6 +153,7 @@ class OpeningTrainerGUI:
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
         tk.Button(toolbar, text='Corpus Selection', command=self._open_bundle_picker).pack(side='left', padx=6)
+        tk.Button(toolbar, text='Report', command=self._show_report_placeholder).pack(side='left', padx=6)
         tk.Button(toolbar, text='Update', command=self._check_for_updates_from_gui).pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
@@ -1927,6 +1928,13 @@ class OpeningTrainerGUI:
             return Path(runtime_paths.app_state_root)
         local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
         return local_app_data / "OpeningTrainer"
+
+    def _show_report_placeholder(self) -> None:
+        messagebox.showinfo(
+            "Report",
+            "Reporting is not implemented yet.",
+            parent=self.root,
+        )
 
     def _check_for_updates_from_gui(self) -> None:
         try:

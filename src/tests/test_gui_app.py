@@ -266,9 +266,32 @@ def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
 
 def test_gui_has_visible_update_button_and_menu_entry():
     source = inspect.getsource(OpeningTrainerGUI)
+    assert "text='Report'" in source
+    assert "_show_report_placeholder" in source
     assert "text='Update'" in source
     assert "Check for Updates" in source
     assert "_check_for_updates_from_gui" in source
+
+
+def test_report_button_placeholder_shows_message(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = object()
+    seen = {}
+
+    def _capture(title, message, parent):
+        seen["title"] = title
+        seen["message"] = message
+        seen["parent"] = parent
+
+    monkeypatch.setattr("opening_trainer.ui.gui_app.messagebox.showinfo", _capture)
+
+    gui._show_report_placeholder()
+
+    assert seen == {
+        "title": "Report",
+        "message": "Reporting is not implemented yet.",
+        "parent": gui.root,
+    }
 
 
 def _build_gui(tmp_path):
