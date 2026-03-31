@@ -5,17 +5,15 @@ import argparse
 from .corpus import CorpusIngestor, DEFAULT_ARTIFACT_PATH, save_artifact
 from .runtime import RuntimeOverrides, load_runtime_config
 from .session import TrainingSession
-from .session_logging import SESSION_LOG_DIR_ENV, get_session_logger, log_line
+from .session_logging import get_session_logger, initialize_session_logging, log_line
 
 
 def _apply_runtime_environment(runtime_context) -> None:
-    runtime_mode = getattr(getattr(runtime_context, "runtime_mode", None), "value", "dev")
-    if runtime_mode == "consumer":
-        session_log_dir = runtime_context.runtime_paths.log_root / "sessions"
-        session_log_dir.mkdir(parents=True, exist_ok=True)
-        import os
-
-        os.environ[SESSION_LOG_DIR_ENV] = str(session_log_dir)
+    runtime_paths = getattr(runtime_context, "runtime_paths", None)
+    if runtime_paths is None:
+        return
+    session_log_dir = runtime_paths.log_root / "sessions"
+    initialize_session_logging(session_log_dir)
 
 
 def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:

@@ -23,6 +23,33 @@ def test_default_run_launches_gui_without_cli_flag(monkeypatch):
     assert launched.calls == [((runtime_context,), {})]
 
 
+def test_run_binds_session_logging_before_logger_creation(monkeypatch, tmp_path):
+    calls: list[str] = []
+    runtime_context = type(
+        "RuntimeContext",
+        (),
+        {
+            "config": type("Config", (), {"strict_assets": False})(),
+            "runtime_paths": type("RuntimePaths", (), {"log_root": tmp_path / "runtime" / "logs"})(),
+            "config_source": "test",
+            "corpus": type("Corpus", (), {"detail": "corpus"})(),
+            "book": type("Book", (), {"detail": "book"})(),
+            "engine": type("Engine", (), {"detail": "engine"})(),
+        },
+    )()
+
+    monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
+    monkeypatch.setattr("opening_trainer.main.initialize_session_logging", lambda path: calls.append(f"init:{path}"))
+    monkeypatch.setattr("opening_trainer.main.get_session_logger", lambda: calls.append("get"))
+    monkeypatch.setattr("opening_trainer.main.log_line", lambda *args, **kwargs: calls.append("log"))
+    monkeypatch.setattr("opening_trainer.ui.gui_app.launch_gui", lambda runtime_context=None: calls.append("launch_gui"))
+
+    run(["--show-runtime"])
+
+    assert calls[0] == f"init:{tmp_path / 'runtime' / 'logs' / 'sessions'}"
+    assert calls[1] == "get"
+
+
 
 def test_powershell_runner_auto_mode_is_non_interactive_and_skips_console_bundle_selection():
     script = Path('run.ps1').read_text(encoding='utf-8')

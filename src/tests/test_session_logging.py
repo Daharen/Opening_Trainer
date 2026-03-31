@@ -52,3 +52,49 @@ def test_prune_old_session_files_keeps_latest_five(tmp_path, monkeypatch):
     assert logger.log_path.exists()
     kept = sorted(p.name for p in tmp_path.glob("session_*.log"))
     assert len(kept) == session_logging.MAX_SESSION_FILES
+
+
+def test_initialize_session_logging_creates_directory_and_binds_logger(tmp_path, monkeypatch):
+    consumer_sessions = tmp_path / "LocalAppData" / "OpeningTrainer" / "logs" / "sessions"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(session_logging.SESSION_LOG_PATH_ENV, raising=False)
+    monkeypatch.delenv(session_logging.SESSION_ID_ENV, raising=False)
+    session_logging.reset_logger_for_tests()
+
+    session_logging.initialize_session_logging(consumer_sessions)
+    logger = session_logging.get_session_logger()
+
+    assert consumer_sessions.exists()
+    assert logger.log_path.parent == consumer_sessions
+    assert not (tmp_path / "logs" / "sessions").exists()
+
+
+def test_logger_reinitialization_replaces_stale_singleton_path(tmp_path, monkeypatch):
+    dev_sessions = tmp_path / "runtime" / "logs" / "sessions"
+    consumer_sessions = tmp_path / "LocalAppData" / "OpeningTrainer" / "logs" / "sessions"
+    monkeypatch.delenv(session_logging.SESSION_LOG_PATH_ENV, raising=False)
+    monkeypatch.delenv(session_logging.SESSION_ID_ENV, raising=False)
+    session_logging.reset_logger_for_tests()
+
+    session_logging.initialize_session_logging(dev_sessions)
+    first_logger = session_logging.get_session_logger()
+
+    session_logging.initialize_session_logging(consumer_sessions)
+    second_logger = session_logging.get_session_logger()
+
+    assert first_logger.log_path.parent == dev_sessions
+    assert second_logger.log_path.parent == consumer_sessions
+    assert first_logger is not second_logger
+
+
+def test_logger_reports_binding_source_for_fallback(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(session_logging.SESSION_LOG_DIR_ENV, raising=False)
+    monkeypatch.delenv(session_logging.SESSION_LOG_PATH_ENV, raising=False)
+    monkeypatch.delenv(session_logging.SESSION_ID_ENV, raising=False)
+    session_logging.reset_logger_for_tests()
+
+    logger = session_logging.get_session_logger()
+
+    assert logger.log_path.parent.resolve() == (tmp_path / "logs" / "sessions").resolve()
+    assert any("source=fallback-relative" in line for line in logger.visible_lines())

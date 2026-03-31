@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from opening_trainer.main import _apply_runtime_environment
 from opening_trainer.runtime import RuntimeOverrides, load_runtime_config
 
 
@@ -76,3 +77,17 @@ def test_consumer_runtime_loader_accepts_bom_prefixed_runtime_config(monkeypatch
 
     assert runtime.runtime_mode.value == "consumer"
     assert runtime.config.engine_executable_path == str(stockfish_dir / "stockfish-windows-x86-64.exe")
+
+
+def test_apply_runtime_environment_binds_session_log_dir_from_runtime_paths(monkeypatch, tmp_path):
+    bound_paths: list[Path] = []
+    runtime_context = type(
+        "RuntimeContext",
+        (),
+        {"runtime_paths": type("RuntimePaths", (), {"log_root": tmp_path / "app" / "logs"})()},
+    )()
+    monkeypatch.setattr("opening_trainer.main.initialize_session_logging", lambda p: bound_paths.append(p))
+
+    _apply_runtime_environment(runtime_context)
+
+    assert bound_paths == [tmp_path / "app" / "logs" / "sessions"]
