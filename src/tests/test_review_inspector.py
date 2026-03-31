@@ -28,6 +28,11 @@ class _FakeSession:
         self.active_profile_id = 'default'
         self.review_storage = _FakeStorage(items)
         self.calls = []
+        self.runtime_context = type(
+            "RuntimeContext",
+            (),
+            {"config": type("Config", (), {"predecessor_master_db_path": "/tmp/predecessor.sqlite"})()},
+        )()
 
     def edit_review_item(self, review_item_id: str, **payload):
         self.calls.append((review_item_id, payload))
@@ -71,8 +76,8 @@ def test_edit_item_always_opens_regular_manual_dialog(monkeypatch) -> None:
 
     calls: dict[str, dict] = {}
 
-    def _record_manual(_master, _on_save, *, title, initial):
-        calls['manual'] = {'title': title, 'initial': initial}
+    def _record_manual(_master, _on_save, *, title, initial, predecessor_master_db_path):
+        calls['manual'] = {'title': title, 'initial': initial, 'predecessor_master_db_path': predecessor_master_db_path}
 
     def _record_board(*_args, **_kwargs):
         calls['board'] = {'called': True}
@@ -87,6 +92,7 @@ def test_edit_item_always_opens_regular_manual_dialog(monkeypatch) -> None:
     assert calls['manual']['title'] == 'Edit Review Item'
     assert calls['manual']['initial']['target_fen'] == chess.STARTING_FEN
     assert calls['manual']['initial']['manual_forced_player_color'] == 'black'
+    assert calls['manual']['predecessor_master_db_path'] == '/tmp/predecessor.sqlite'
 
 
 def test_board_edit_opens_board_setup_for_any_item(monkeypatch) -> None:

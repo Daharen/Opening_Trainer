@@ -246,7 +246,12 @@ class ReviewInspector(ttk.Frame):
             self.refresh_callback()
             messagebox.showinfo('Manual target', 'Manual target item saved.')
 
-        ManualTargetDialog(self, _save_manual_target, title='Add Manual Target')
+        ManualTargetDialog(
+            self,
+            _save_manual_target,
+            title='Add Manual Target',
+            predecessor_master_db_path=self.session.runtime_context.config.predecessor_master_db_path,
+        )
 
     def open_board_setup_editor(self):
         def _save_manual_target(**payload):
@@ -278,7 +283,13 @@ class ReviewInspector(ttk.Frame):
                 message = 'Review item updated and converted to manual-managed semantics.'
             messagebox.showinfo('Edit review item', message)
 
-        ManualTargetDialog(self, _save_edit, title='Edit Review Item', initial=self._build_item_initial(item))
+        ManualTargetDialog(
+            self,
+            _save_edit,
+            title='Edit Review Item',
+            initial=self._build_item_initial(item),
+            predecessor_master_db_path=self.session.runtime_context.config.predecessor_master_db_path,
+        )
 
     def _edit_item_in_board_setup(self):
         item = self._selected_item_for_editing('Board edit')

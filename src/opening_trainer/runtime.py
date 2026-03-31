@@ -59,6 +59,8 @@ ENV_STRICT_ASSETS = "OPENING_TRAINER_STRICT_ASSETS"
 ENV_ENGINE_DEPTH = "OPENING_TRAINER_ENGINE_DEPTH"
 ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
 ENV_OPPONENT_FALLBACK_MODE = "OPENING_TRAINER_OPPONENT_FALLBACK_MODE"
+ENV_PREDECESSOR_MASTER_DB_PATH = "OPENING_TRAINER_PREDECESSOR_MASTER_DB_PATH"
+DEFAULT_PREDECESSOR_MASTER_DB_PATH = r"F:\Opening Trainer Large Data File\Work Surface\opening_trainer_content_seed_rapid600_v1\canonical_predecessor_master.sqlite"
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,7 @@ class RuntimeConfig:
     opening_book_path: str | None = None
     engine_depth: int | None = None
     engine_time_limit_seconds: float | None = None
+    predecessor_master_db_path: str | None = DEFAULT_PREDECESSOR_MASTER_DB_PATH
     strict_assets: bool = False
     opponent_fallback_mode: str = "current_bundle_only"
 
@@ -90,6 +93,7 @@ class RuntimeConfig:
             opening_book_path=payload.get("opening_book_path"),
             engine_depth=payload.get("engine_depth"),
             engine_time_limit_seconds=payload.get("engine_time_limit_seconds"),
+            predecessor_master_db_path=payload.get("predecessor_master_db_path", DEFAULT_PREDECESSOR_MASTER_DB_PATH),
             strict_assets=bool(payload.get("strict_assets", False)),
             opponent_fallback_mode=str(payload.get("opponent_fallback_mode", "current_bundle_only")),
         )
@@ -104,6 +108,7 @@ class RuntimeOverrides:
     runtime_config_path: str | None = None
     engine_depth: int | None = None
     engine_time_limit_seconds: float | None = None
+    predecessor_master_db_path: str | None = None
     strict_assets: bool | None = None
     opponent_fallback_mode: str | None = None
 
@@ -215,6 +220,12 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
                 env_value=os.getenv(ENV_ENGINE_TIME_LIMIT),
                 prefer_file_value=config_prefers_file_assets,
             )
+        ),
+        predecessor_master_db_path=_pick_asset_value(
+            override_value=overrides.predecessor_master_db_path,
+            file_value=file_config.predecessor_master_db_path,
+            env_value=os.getenv(ENV_PREDECESSOR_MASTER_DB_PATH),
+            prefer_file_value=config_prefers_file_assets,
         ),
         strict_assets=strict_assets,
         opponent_fallback_mode=str(

@@ -269,7 +269,18 @@ class TrainingSession:
             predecessor_line_uci=predecessor_line_uci,
             presentation_mode=manual_presentation_mode,
             auto_resolve_predecessor=manual_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value,
+            predecessor_master_db_path=self.runtime_context.config.predecessor_master_db_path,
         )
+        if manual_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value and not predecessor_line_uci:
+            log_line(
+                (
+                    "Manual target predecessor lookup attempted; "
+                    f"db_path={self.runtime_context.config.predecessor_master_db_path!r}; "
+                    f"target_key={normalize_builder_position_key(target_board)}; "
+                    f"success={bool(normalized_line)}; ply_count={len(predecessor_path)}"
+                ),
+                tag="review",
+            )
         item = create_manual_target_item(
             profile_id=self.active_profile_id,
             target_board=target_board,
@@ -311,7 +322,18 @@ class TrainingSession:
                 predecessor_line_uci=predecessor_line_uci,
                 presentation_mode=manual_presentation_mode,
                 auto_resolve_predecessor=manual_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value,
+                predecessor_master_db_path=self.runtime_context.config.predecessor_master_db_path,
             )
+            if manual_presentation_mode == ManualPresentationMode.PLAY_TO_POSITION.value and not predecessor_line_uci:
+                log_line(
+                    (
+                        "Manual target predecessor lookup attempted during edit; "
+                        f"db_path={self.runtime_context.config.predecessor_master_db_path!r}; "
+                        f"target_key={normalize_builder_position_key(target_board)}; "
+                        f"success={bool(normalized_line)}; ply_count={len(predecessor_path)}"
+                    ),
+                    tag="review",
+                )
             item.position_fen_normalized = target_board.fen()
             item.position_key = normalize_builder_position_key(target_board)
             item.side_to_move = 'white' if target_board.turn == chess.WHITE else 'black'

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import chess
 import pytest
 
+from opening_trainer.bundle_corpus import normalize_builder_position_key
 from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResult, ReasonCode
 from opening_trainer.evaluator import MoveEvaluator
 from opening_trainer.review.manual_target import validate_manual_target
@@ -56,6 +58,21 @@ def _session(tmp_path: Path) -> TrainingSession:
     session.player_color = chess.WHITE
     session.state = session.state.PLAYER_TURN
     return session
+
+
+def _write_predecessor_db(path: Path, rows: list[tuple[str, str | None, str | None]]) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE predecessor_master (position_key TEXT PRIMARY KEY, parent_position_key TEXT, incoming_move_uci TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO predecessor_master(position_key, parent_position_key, incoming_move_uci) VALUES (?, ?, ?)",
+            rows,
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def test_review_item_creation_on_failure(tmp_path):
@@ -531,16 +548,33 @@ def test_manual_target_defaults_to_play_to_position(tmp_path):
     assert decision.review_plan.root_fen == 'startpos'
 
 
-def test_manual_target_play_to_position_autoresolves_predecessor_line(tmp_path):
+def test_manual_target_play_to_position_autoresolves_predecessor_line(tmp_path, monkeypatch):
+    board = chess.Board()
+    start_key = normalize_builder_position_key(board)
+    board.push_uci('e2e4')
+    e4_key = normalize_builder_position_key(board)
+    board.push_uci('e7e5')
+    target_fen = board.fen()
+    target_key = normalize_builder_position_key(board)
+    predecessor_db_path = tmp_path / 'predecessor.sqlite'
+    _write_predecessor_db(
+        predecessor_db_path,
+        [
+            (start_key, None, None),
+            (e4_key, start_key, 'e2e4'),
+            (target_key, e4_key, 'e7e5'),
+        ],
+    )
+    monkeypatch.setenv('OPENING_TRAINER_PREDECESSOR_MASTER_DB_PATH', str(predecessor_db_path))
     session = _session(tmp_path)
     item = session.add_manual_target(
-        target_fen='rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2',
+        target_fen=target_fen,
         predecessor_line_uci=None,
         urgency_tier='ordinary_review',
         allow_below_threshold_reach=False,
         manual_presentation_mode='play_to_position',
     )
-    assert item.predecessor_line_uci
+    assert item.predecessor_line_uci == 'e2e4 e7e5'
     assert item.predecessor_path
 
 
