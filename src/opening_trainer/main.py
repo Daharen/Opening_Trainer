@@ -12,6 +12,7 @@ from .corpus import CorpusIngestor, DEFAULT_ARTIFACT_PATH, save_artifact
 from .runtime import RuntimeOverrides, load_runtime_config
 from .session import TrainingSession
 from .session_logging import get_session_logger, initialize_session_logging, log_line
+from .single_instance import INSTANCE_DIAGNOSTICS_PATH_ENV
 
 
 def _apply_runtime_environment(runtime_context) -> None:
@@ -20,6 +21,8 @@ def _apply_runtime_environment(runtime_context) -> None:
         return
     session_log_dir = runtime_paths.log_root / "sessions"
     initialize_session_logging(session_log_dir)
+    instance_diagnostics_path = runtime_paths.log_root / "instance" / "opening_trainer_instance.json"
+    os.environ[INSTANCE_DIAGNOSTICS_PATH_ENV] = str(instance_diagnostics_path)
 
 
 def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:
@@ -123,11 +126,17 @@ def _probe_gui_bootstrap(runtime_context) -> None:
 
 def _probe_real_gui_startup(runtime_context) -> None:
     from .ui.gui_app import launch_gui
+    import tempfile
 
+    previous_cwd = Path.cwd()
     try:
-        launch_gui(runtime_context=runtime_context, probe_real_startup=True)
+        with tempfile.TemporaryDirectory(prefix="opening_trainer_probe_") as temp_dir:
+            os.chdir(temp_dir)
+            launch_gui(runtime_context=runtime_context, probe_real_startup=True)
     except Exception as exc:
         raise SystemExit(f"Real GUI startup probe failed: {exc}") from exc
+    finally:
+        os.chdir(previous_cwd)
     log_line("Real GUI startup probe succeeded.", tag="startup")
 
 

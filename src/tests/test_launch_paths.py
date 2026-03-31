@@ -74,6 +74,29 @@ def test_probe_real_gui_startup_flag_runs_and_returns(monkeypatch):
     assert probe_calls == ["consumer"]
 
 
+def test_probe_real_gui_startup_runs_from_temp_cwd(monkeypatch, tmp_path):
+    runtime_context = object()
+    original_cwd = Path.cwd()
+    observed_cwd: list[Path] = []
+    monkeypatch.chdir(tmp_path)
+
+    def _fake_launch_gui(runtime_context=None, probe_real_startup=False):
+        observed_cwd.append(Path.cwd())
+        assert probe_real_startup is True
+
+    monkeypatch.setattr("opening_trainer.ui.gui_app.launch_gui", _fake_launch_gui)
+    monkeypatch.setattr("opening_trainer.main.log_line", lambda *args, **kwargs: None)
+
+    from opening_trainer.main import _probe_real_gui_startup
+
+    _probe_real_gui_startup(runtime_context)
+
+    assert len(observed_cwd) == 1
+    assert observed_cwd[0] != tmp_path
+    assert Path.cwd() == tmp_path
+    monkeypatch.chdir(original_cwd)
+
+
 def test_frozen_consumer_gui_failure_writes_artifact_and_exits(monkeypatch, tmp_path):
     runtime_context = type(
         "RuntimeContext",

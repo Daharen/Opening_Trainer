@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from opening_trainer.main import _apply_runtime_environment
@@ -150,3 +151,6 @@ def test_apply_runtime_environment_binds_session_log_dir_from_runtime_paths(monk
     _apply_runtime_environment(runtime_context)
 
     assert bound_paths == [tmp_path / "app" / "logs" / "sessions"]
+    assert Path(os.environ["OPENING_TRAINER_INSTANCE_DIAGNOSTICS_PATH"]) == (
+        tmp_path / "app" / "logs" / "instance" / "opening_trainer_instance.json"
+    )

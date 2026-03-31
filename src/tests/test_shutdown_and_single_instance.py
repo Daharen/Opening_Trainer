@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from opening_trainer.single_instance import cleanup_stale_instance_diagnostics
+from opening_trainer.single_instance import write_instance_diagnostics
 from opening_trainer.ui.gui_app import (
     ANIMATION_IMPL_MARKER,
     DuplicateInstanceLaunchBlockedError,
@@ -301,3 +302,17 @@ def test_cleanup_stale_instance_diagnostics_when_mutex_is_free(monkeypatch, tmp_
 
     assert removed is True
     assert diagnostics_path.exists() is False
+
+
+def test_write_instance_diagnostics_defaults_to_local_app_data_not_cwd(monkeypatch, tmp_path):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("OPENING_TRAINER_INSTANCE_DIAGNOSTICS_PATH", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+
+    diagnostics_path = write_instance_diagnostics()
+
+    assert diagnostics_path == tmp_path / "Local" / "OpeningTrainer" / "logs" / "instance" / "opening_trainer_instance.json"
+    assert diagnostics_path.exists()
+    assert not (cwd / "logs").exists()
