@@ -116,6 +116,10 @@ def test_packaging_build_scripts_exist() -> None:
     assert "build_consumer_payload.ps1" in installer_text
     assert "build_consumer_app_payload.ps1" in installer_text
     assert "ISCC.exe" in installer_text
+    assert "App payload zip is missing" in installer_text
+    assert "app_update_manifest.json" in installer_text
+    assert "staging" in app_payload_text
+    assert "Copy-WithRetry" in app_payload_text
 
 
 def test_app_update_manifest_schema() -> None:
