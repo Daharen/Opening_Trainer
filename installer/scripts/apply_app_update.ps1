@@ -53,6 +53,64 @@ function Wait-ForProcessExit {
     }
 }
 
+function Relocate-HelperWorkingDirectory {
+    param(
+        [string]$MutableAppRoot
+    )
+    $currentLocation = (Get-Location).Path
+    Write-Log "HELPER_CWD_BEFORE_RELOCATE cwd=$currentLocation"
+    $normalizedCwd = [System.IO.Path]::GetFullPath($currentLocation).TrimEnd('\')
+    $normalizedMutableRoot = [System.IO.Path]::GetFullPath($MutableAppRoot).TrimEnd('\')
+    if ($normalizedCwd.StartsWith($normalizedMutableRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Log "HELPER_CWD_INSIDE_MUTABLE_ROOT detected=true cwd=$normalizedCwd mutable_root=$normalizedMutableRoot"
+    } else {
+        Write-Log "HELPER_CWD_INSIDE_MUTABLE_ROOT detected=false cwd=$normalizedCwd mutable_root=$normalizedMutableRoot"
+    }
+
+    $candidateLocations = @(
+        (Join-Path $AppStateRoot 'updater'),
+        $AppStateRoot
+    )
+    foreach ($candidate in $candidateLocations) {
+        try {
+            New-Item -ItemType Directory -Path $candidate -Force | Out-Null
+            Set-Location -LiteralPath $candidate
+            $relocated = (Get-Location).Path
+            Write-Log "HELPER_CWD_AFTER_RELOCATE cwd=$relocated"
+            return
+        } catch {
+            Write-Log "HELPER_CWD_RELOCATE_ATTEMPT_FAILED candidate=$candidate error=$($_.Exception.Message)"
+        }
+    }
+    throw "Unable to relocate helper working directory outside mutable app root."
+}
+
+function Move-WithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+        [int]$MaxAttempts = 5,
+        [int]$DelayMilliseconds = 350
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Write-Log "SWAP_MOVE_ATTEMPT attempt=$attempt source=$Source destination=$Destination"
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination -Force
+            Write-Log "SWAP_MOVE_ATTEMPT_OK attempt=$attempt source=$Source destination=$Destination"
+            return
+        } catch {
+            $errorMessage = $_.Exception.Message
+            Write-Log "SWAP_MOVE_ATTEMPT_FAILED attempt=$attempt source=$Source destination=$Destination error=$errorMessage"
+            if ($attempt -ge $MaxAttempts) {
+                throw "Move failed after $MaxAttempts attempts source=$Source destination=$Destination error=$errorMessage"
+            }
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+}
+
 try {
     Write-Log "UPDATER_BEGIN manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
     $manifest = Resolve-Manifest -ManifestRef $ManifestPathOrUrl
@@ -66,6 +124,7 @@ try {
         throw 'Installed app manifest did not define mutable_app_root.'
     }
     $mutableRoot = [System.IO.Path]::GetFullPath($mutableRoot)
+    Relocate-HelperWorkingDirectory -MutableAppRoot $mutableRoot
     $downloadZip = Join-Path $updaterRoot ([string]$manifest.payload_filename)
     $stagingRoot = Join-Path $updaterRoot 'staging'
     $nextRoot = "$mutableRoot.next"
@@ -87,11 +146,12 @@ try {
     Copy-Item -Path (Join-Path $stagingRoot '*') -Destination $nextRoot -Recurse -Force
 
     Wait-ForProcessExit -WaitForProcessId $WaitForPid
+    Write-Log "SWAP_TARGETS mutable_root=$mutableRoot prev_root=$prevRoot next_root=$nextRoot"
     if (Test-Path -LiteralPath $prevRoot) { Remove-Item -LiteralPath $prevRoot -Recurse -Force }
     if (Test-Path -LiteralPath $mutableRoot) {
-        Move-Item -LiteralPath $mutableRoot -Destination $prevRoot -Force
+        Move-WithRetry -Source $mutableRoot -Destination $prevRoot
     }
-    Move-Item -LiteralPath $nextRoot -Destination $mutableRoot -Force
+    Move-WithRetry -Source $nextRoot -Destination $mutableRoot
 
     $installed.app_version = [string]$manifest.app_version
     $installed.build_id = [string]$manifest.build_id
@@ -100,6 +160,7 @@ try {
     $installed.payload_sha256 = [string]$manifest.payload_sha256
     $installed.installed_at_utc = [DateTime]::UtcNow.ToString('o')
     [System.IO.File]::WriteAllText($installedManifestPath, ($installed | ConvertTo-Json -Depth 12), [System.Text.UTF8Encoding]::new($false))
+    Write-Log "INSTALLED_MANIFEST_REWRITE_OK path=$installedManifestPath app_version=$($installed.app_version) build_id=$($installed.build_id)"
 
     Write-Log "SWAP_OK mutable_root=$mutableRoot"
     $relaunchArgsArray = $null

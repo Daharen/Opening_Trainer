@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import urllib.request
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from pathlib import Path
 from .install_layout import (
     read_installed_app_manifest,
 )
+from .session_logging import log_line
 
 DEFAULT_UPDATE_CHANNEL = "dev"
 DEFAULT_UPDATE_MANIFEST_URL = (
@@ -130,4 +132,20 @@ def launch_updater_helper(
     ]
     if relaunch_args:
         cmd.extend(["-RelaunchArgs", json.dumps(relaunch_args)])
-    return subprocess.Popen(cmd)
+    safe_launch_cwd = app_state_root / "updater"
+    fallback_launch_cwd = app_state_root
+    try:
+        safe_launch_cwd.mkdir(parents=True, exist_ok=True)
+        helper_cwd = safe_launch_cwd
+    except OSError:
+        fallback_launch_cwd.mkdir(parents=True, exist_ok=True)
+        helper_cwd = fallback_launch_cwd
+    log_line(
+        "UPDATER_HELPER_LAUNCH "
+        f"helper_script={helper_script} "
+        f"cwd={helper_cwd} "
+        f"app_state_root={app_state_root} "
+        f"localappdata={os.getenv('LOCALAPPDATA', '')}",
+        tag="startup",
+    )
+    return subprocess.Popen(cmd, cwd=str(helper_cwd))
