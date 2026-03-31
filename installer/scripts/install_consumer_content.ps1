@@ -171,11 +171,10 @@ function Write-RuntimeConfig {
     }
 
     $runtimeConfig = [ordered]@{
-        corpus_bundle_dir = (Join-Path $EffectiveContentRoot 'Timing Conditioned Corpus Bundles')
         predecessor_master_db_path = (Join-Path $EffectiveContentRoot 'canonical_predecessor_master.sqlite')
         opening_book_path = (Join-Path $EffectiveContentRoot 'opening_book.bin')
         engine_executable_path = $enginePath
-        strict_assets = $true
+        strict_assets = $false
         opponent_fallback_mode = 'current_bundle_only'
     }
 

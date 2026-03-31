@@ -53,10 +53,11 @@ def test_content_bootstrap_writes_consumer_runtime_config_and_logging() -> None:
 
     assert "runtime.consumer.json" in script
     assert "installed_content_manifest.json" in script
-    assert "corpus_bundle_dir" in script
+    assert "corpus_bundle_dir" not in script
     assert "predecessor_master_db_path" in script
     assert "opening_book_path" in script
     assert "engine_executable_path" in script
+    assert "strict_assets = $false" in script
     assert "install.log" in script
     assert "Checking existing content" in script
     assert "Reusing installed content" in script

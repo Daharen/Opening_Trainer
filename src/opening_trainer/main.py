@@ -242,7 +242,8 @@ def run(argv: list[str] | None = None) -> None:
         return
 
     if runtime_context.config.strict_assets:
-        missing = [asset.label for asset in (runtime_context.corpus, runtime_context.engine, runtime_context.book) if asset.path is not None and not asset.available]
+        required_assets = (runtime_context.engine, runtime_context.book)
+        missing = [asset.label for asset in required_assets if asset.path is not None and not asset.available]
         if missing:
             raise SystemExit(f"Strict runtime assets enabled; missing required asset(s): {', '.join(missing)}")
 
