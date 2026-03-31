@@ -24,6 +24,18 @@ function Write-InstallLog {
     Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
 }
 
+function Write-JsonFileNoBom {
+    param(
+        [string]$Path,
+        [object]$Payload
+    )
+
+    $json = $Payload | ConvertTo-Json -Depth 10
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
+    Write-InstallLog "JSON write (utf8-no-bom): $Path"
+}
+
 function Set-Phase {
     param(
         [string]$Phase,
@@ -167,7 +179,7 @@ function Write-RuntimeConfig {
         opponent_fallback_mode = 'current_bundle_only'
     }
 
-    $runtimeConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $RuntimeConfigPath -Encoding UTF8
+    Write-JsonFileNoBom -Path $RuntimeConfigPath -Payload $runtimeConfig
     Write-InstallLog "Runtime configuration written: $RuntimeConfigPath"
 }
 
@@ -195,7 +207,7 @@ function Write-InstalledManifest {
         $installed['archive_sha256_actual'] = $ArchiveChecksum
     }
 
-    $installed | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $InstalledManifestPath -Encoding UTF8
+    Write-JsonFileNoBom -Path $InstalledManifestPath -Payload $installed
     Write-InstallLog "Installed content manifest written: $InstalledManifestPath"
 }
 
@@ -258,8 +270,11 @@ try {
     }
 
     $installedManifestMatches = $false
+    $installedManifestPresent = $false
     if (Test-Path -LiteralPath $installedManifestPath) {
+        $installedManifestPresent = $true
         try {
+            Write-InstallLog "JSON read path (installed manifest): $installedManifestPath"
             $installedManifest = Get-Content -LiteralPath $installedManifestPath -Raw | ConvertFrom-Json
             $installedManifestMatches = [string]$installedManifest.content_version -eq [string]$manifest.content_version -and [string]$installedManifest.archive_filename -eq [string]$manifest.archive_filename
         }
@@ -267,10 +282,20 @@ try {
             Write-InstallLog "Installed manifest could not be parsed and will be ignored: $($_.Exception.Message)"
         }
     }
+    else {
+        Write-InstallLog "Installed manifest is missing: $installedManifestPath"
+    }
 
-    if ($canReuseCurrentRoot -and $installedManifestMatches) {
+    Write-InstallLog "Reuse probe result: flat_root_detected=$canReuseCurrentRoot wrapper_detected=$canMigrateWrapper installed_manifest_present=$installedManifestPresent installed_manifest_matches=$installedManifestMatches"
+
+    if ($canReuseCurrentRoot) {
         Set-Phase -Phase 'Reusing installed content' -Percent 45
-        Write-InstallLog 'Reusing existing content root because required entries and installed manifest both match.'
+        if ($installedManifestMatches) {
+            Write-InstallLog 'Reusing existing content root because required entries and installed manifest both match.'
+        }
+        else {
+            Write-InstallLog 'Reusing existing content root based on direct required-entry validation; installed manifest is absent, stale, or mismatched.'
+        }
         Write-RuntimeConfig -RuntimeConfigPath $runtimeConfigPath -EffectiveContentRoot $ContentRoot
         Write-InstalledManifest -InstalledManifestPath $installedManifestPath -Manifest $manifest -Source 'existing-content' -WrapperHandling 'already-flat' -ArchiveChecksum ''
         Set-Phase -Phase 'Finalizing install' -Percent 100
@@ -312,6 +337,7 @@ try {
             Write-Host "Existing content detected but incomplete; missing: $($missing -join ', ')"
         }
     }
+    Write-InstallLog 'Reuse not accepted; proceeding to archive acquisition path.'
 
     if ($LocalArchivePath) {
         if (-not (Test-Path -LiteralPath $LocalArchivePath)) {
