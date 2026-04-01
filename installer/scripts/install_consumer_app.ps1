@@ -92,10 +92,27 @@ New-Item -ItemType Directory -Path $AppStateRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $logsRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $mutableUpdaterRoot -Force | Out-Null
-if (-not [string]::IsNullOrWhiteSpace($UpdaterHelperScriptPath) -and (Test-Path -LiteralPath $UpdaterHelperScriptPath)) {
-    Copy-Item -LiteralPath $UpdaterHelperScriptPath -Destination (Join-Path $updaterRoot 'apply_app_update.ps1') -Force
-    Copy-Item -LiteralPath $UpdaterHelperScriptPath -Destination (Join-Path $mutableUpdaterRoot 'apply_app_update.ps1') -Force
+$helperSourceCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace($UpdaterHelperScriptPath)) {
+    $helperSourceCandidates += $UpdaterHelperScriptPath
 }
+$helperSourceCandidates += (Join-Path $BootstrapRoot 'updater\apply_app_update.ps1')
+$helperSourceCandidates += (Join-Path $BootstrapRoot 'apply_app_update.ps1')
+$resolvedHelperSource = $null
+foreach ($candidate in $helperSourceCandidates) {
+    if (Test-Path -LiteralPath $candidate) {
+        $resolvedHelperSource = $candidate
+        break
+    }
+}
+if ($null -eq $resolvedHelperSource) {
+    throw "Updater helper source was not found. Candidates: $($helperSourceCandidates -join '; ')"
+}
+
+Copy-Item -LiteralPath $resolvedHelperSource -Destination (Join-Path $updaterRoot 'apply_app_update.ps1') -Force
+Write-Host "Provisioned updater helper to app state: $(Join-Path $updaterRoot 'apply_app_update.ps1') source=$resolvedHelperSource"
+Copy-Item -LiteralPath $resolvedHelperSource -Destination (Join-Path $mutableUpdaterRoot 'apply_app_update.ps1') -Force
+Write-Host "Provisioned updater helper to mutable app payload: $(Join-Path $mutableUpdaterRoot 'apply_app_update.ps1') source=$resolvedHelperSource"
 
 $manifestPath = Join-Path $AppStateRoot 'installed_app_manifest.json'
 $installedManifest = [ordered]@{
@@ -120,9 +137,12 @@ $updaterConfig = [ordered]@{
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText($manifestPath, ($installedManifest | ConvertTo-Json -Depth 8), $utf8NoBom)
+Write-Host "Provisioned installed app manifest: $manifestPath"
 [System.IO.File]::WriteAllText($updaterConfigPath, ($updaterConfig | ConvertTo-Json -Depth 8), $utf8NoBom)
+Write-Host "Provisioned updater config to app state: $updaterConfigPath"
 $mutableUpdaterConfigPath = Join-Path (Join-Path $targetRoot 'updater') 'updater_config.json'
 [System.IO.File]::WriteAllText($mutableUpdaterConfigPath, ($updaterConfig | ConvertTo-Json -Depth 8), $utf8NoBom)
+Write-Host "Provisioned updater config to mutable payload: $mutableUpdaterConfigPath"
 Write-Host "Installed app payload root: $targetRoot"
 Write-Host "Installed app manifest: $manifestPath"
 Write-Host "Updater config: $updaterConfigPath"

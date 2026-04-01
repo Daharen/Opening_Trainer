@@ -150,6 +150,8 @@ def test_install_consumer_app_has_probe_and_fallback_policy() -> None:
     assert "updater_config.json" in script
     assert "build_id = $BuildId" in script
     assert "UpdaterHelperScriptPath" in script
+    assert "helperSourceCandidates" in script
+    assert "Provisioned updater helper to app state" in script
 
 
 def test_updater_helper_and_publish_script_exist() -> None:

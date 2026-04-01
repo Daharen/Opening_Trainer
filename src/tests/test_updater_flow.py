@@ -253,6 +253,48 @@ def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, 
     assert len(popen_calls) == 1
 
 
+def test_launch_updater_helper_self_heals_helper_from_bootstrap_installer(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    mutable_root.mkdir(parents=True, exist_ok=True)
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    bootstrap_root = tmp_path / "Program Files" / "Opening Trainer" / "installer"
+    bootstrap_root.mkdir(parents=True, exist_ok=True)
+    (bootstrap_root / "apply_app_update.ps1").write_text("Write-Host installer-helper", encoding="utf-8")
+    monkeypatch.setattr("opening_trainer.updater._bootstrap_root_candidates", lambda app_state_root: [bootstrap_root])
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "channel": "dev",
+                "app_version": "2.0.0",
+                "build_id": "build-2",
+                "payload_filename": "OpeningTrainer-app.zip",
+                "payload_url": "https://example.invalid/dev/OpeningTrainer-app.zip",
+                "payload_sha256": "abc123",
+                "published_at_utc": "2026-03-31T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: object())
+    launch_updater_helper(str(manifest_path), app_state_root=app_state_root, wait_for_pid=1234)
+
+    assert (app_state_root / "updater" / "apply_app_update.ps1").read_text(encoding="utf-8") == "Write-Host installer-helper"
+
+
 def test_check_for_update_raises_when_manifest_missing_and_not_recoverable(tmp_path):
     app_state_root = tmp_path / "Local" / "OpeningTrainer"
     updater_root = app_state_root / "updater"
