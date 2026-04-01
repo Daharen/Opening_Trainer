@@ -87,11 +87,14 @@ Copy-Item -Path (Join-Path $BootstrapRoot '*') -Destination $targetRoot -Recurse
 
 $updaterRoot = Join-Path $AppStateRoot 'updater'
 $logsRoot = Join-Path $AppStateRoot 'logs'
+$mutableUpdaterRoot = Join-Path $targetRoot 'updater'
 New-Item -ItemType Directory -Path $AppStateRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $logsRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $mutableUpdaterRoot -Force | Out-Null
 if (-not [string]::IsNullOrWhiteSpace($UpdaterHelperScriptPath) -and (Test-Path -LiteralPath $UpdaterHelperScriptPath)) {
     Copy-Item -LiteralPath $UpdaterHelperScriptPath -Destination (Join-Path $updaterRoot 'apply_app_update.ps1') -Force
+    Copy-Item -LiteralPath $UpdaterHelperScriptPath -Destination (Join-Path $mutableUpdaterRoot 'apply_app_update.ps1') -Force
 }
 
 $manifestPath = Join-Path $AppStateRoot 'installed_app_manifest.json'
@@ -118,6 +121,8 @@ $updaterConfig = [ordered]@{
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText($manifestPath, ($installedManifest | ConvertTo-Json -Depth 8), $utf8NoBom)
 [System.IO.File]::WriteAllText($updaterConfigPath, ($updaterConfig | ConvertTo-Json -Depth 8), $utf8NoBom)
+$mutableUpdaterConfigPath = Join-Path (Join-Path $targetRoot 'updater') 'updater_config.json'
+[System.IO.File]::WriteAllText($mutableUpdaterConfigPath, ($updaterConfig | ConvertTo-Json -Depth 8), $utf8NoBom)
 Write-Host "Installed app payload root: $targetRoot"
 Write-Host "Installed app manifest: $manifestPath"
 Write-Host "Updater config: $updaterConfigPath"

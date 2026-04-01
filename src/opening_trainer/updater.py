@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .install_layout import (
     read_installed_app_manifest,
+    write_installed_app_manifest,
 )
 from .session_logging import log_line
 
@@ -17,6 +18,10 @@ DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"
 )
 UPDATER_CONFIG_FILENAME = "updater_config.json"
+
+
+class UpdaterInstallStateError(RuntimeError):
+    """Raised when updater prerequisites are missing and cannot be recovered."""
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,93 @@ def resolve_manifest_path_or_url(manifest_path_or_url: str | None, *, app_state_
     return str(load_updater_config(app_state_root).get("manifest_url") or DEFAULT_UPDATE_MANIFEST_URL)
 
 
+def _updater_runtime_root(app_state_root: Path) -> Path:
+    return app_state_root / "updater"
+
+
+def _recover_helper_from_mutable_root(*, app_state_root: Path, mutable_root: Path) -> Path | None:
+    destination = _updater_runtime_root(app_state_root) / "apply_app_update.ps1"
+    if destination.exists():
+        return destination
+    source = mutable_root / "updater" / "apply_app_update.ps1"
+    if not source.exists():
+        return None
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    log_line(f"UPDATER_SELF_HEAL result=ok prerequisite=helper source={source} destination={destination}", tag="startup")
+    return destination
+
+
+def _recover_installed_manifest(app_state_root: Path) -> dict | None:
+    mutable_root = app_state_root / "App"
+    expected_exe = mutable_root / "OpeningTrainer.exe"
+    if not expected_exe.exists():
+        log_line(
+            "UPDATER_SELF_HEAL result=skipped prerequisite=installed_manifest reason=mutable_root_missing_exe",
+            tag="startup",
+        )
+        return None
+    config = load_updater_config(app_state_root)
+    manifest_path = write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="unknown",
+        channel=str(config.get("channel") or DEFAULT_UPDATE_CHANNEL),
+        mutable_app_root=mutable_root,
+        payload_filename="",
+        payload_sha256=None,
+        bootstrap_version=None,
+        build_id="recovered-missing-manifest",
+    )
+    log_line(f"UPDATER_SELF_HEAL result=ok prerequisite=installed_manifest path={manifest_path}", tag="startup")
+    return read_installed_app_manifest(app_state_root)
+
+
+def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
+    updater_root = _updater_runtime_root(app_state_root)
+    updater_root.mkdir(parents=True, exist_ok=True)
+
+    helper_script = updater_root / "apply_app_update.ps1"
+    installed_manifest = read_installed_app_manifest(app_state_root)
+    log_line(
+        "UPDATER_PREREQ_STATE "
+        f"installed_manifest_present={installed_manifest is not None} "
+        f"helper_present={helper_script.exists()}",
+        tag="startup",
+    )
+    if installed_manifest is None:
+        installed_manifest = _recover_installed_manifest(app_state_root)
+    if installed_manifest is None:
+        raise UpdaterInstallStateError(
+            f"Installation is missing required updater metadata: {app_state_root / 'installed_app_manifest.json'}"
+        )
+
+    if not helper_script.exists():
+        mutable_root = Path(str(installed_manifest.get("mutable_app_root") or "")).expanduser()
+        if str(mutable_root).strip():
+            _recover_helper_from_mutable_root(app_state_root=app_state_root, mutable_root=mutable_root)
+    if not helper_script.exists():
+        raise UpdaterInstallStateError(
+            f"Installation is missing required updater helper components: {helper_script}"
+        )
+
+    updater_config = updater_config_path(app_state_root)
+    if not updater_config.exists():
+        payload = {
+            "config_version": 1,
+            "channel": str(installed_manifest.get("channel") or DEFAULT_UPDATE_CHANNEL),
+            "manifest_url": DEFAULT_UPDATE_MANIFEST_URL,
+        }
+        updater_config.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        log_line(f"UPDATER_SELF_HEAL result=ok prerequisite=updater_config path={updater_config}", tag="startup")
+    log_line(
+        "UPDATER_PREREQ_READY "
+        f"installed_manifest={app_state_root / 'installed_app_manifest.json'} "
+        f"helper_script={helper_script}",
+        tag="startup",
+    )
+    return installed_manifest, helper_script
+
+
 def _has_newer_build(installed: dict, manifest: AppUpdateManifest) -> bool:
     installed_channel = str(installed.get("channel") or "").strip().lower()
     if installed_channel and installed_channel != manifest.channel.strip().lower():
@@ -95,9 +187,7 @@ def _has_newer_build(installed: dict, manifest: AppUpdateManifest) -> bool:
 
 def check_for_update(manifest_path_or_url: str, *, app_state_root: Path) -> tuple[bool, AppUpdateManifest, dict | None]:
     manifest = load_update_manifest(manifest_path_or_url)
-    installed = read_installed_app_manifest(app_state_root)
-    if not installed:
-        return True, manifest, None
+    installed, _helper_script = ensure_updater_prerequisites(app_state_root)
     return _has_newer_build(installed, manifest), manifest, installed
 
 
@@ -109,9 +199,7 @@ def launch_updater_helper(
     relaunch_exe_path: Path | None = None,
     relaunch_args: list[str] | None = None,
 ) -> subprocess.Popen:
-    helper_script = app_state_root / "updater" / "apply_app_update.ps1"
-    if not helper_script.exists():
-        raise RuntimeError(f"Updater helper script is missing: {helper_script}")
+    _installed, helper_script = ensure_updater_prerequisites(app_state_root)
     manifest_ref = resolve_manifest_path_or_url(manifest_path_or_url, app_state_root=app_state_root)
     relaunch_exe = str(relaunch_exe_path) if relaunch_exe_path else ""
     cmd = [
