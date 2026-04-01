@@ -38,16 +38,72 @@ Name: "{autodesktop}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\
 
 [Run]
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -SecondaryAppRoot ""{%USERPROFILE}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -BuildId ""bootstrap-{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"" -DefaultManifestUrl ""https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"" -UpdaterHelperScriptPath ""{app}\installer\apply_app_update.ps1"" -LogPath ""{localappdata}\OpeningTrainer\install_consumer_app.log"""; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -BuildId ""bootstrap-{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"" -DefaultManifestUrl ""https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"" -UpdaterHelperScriptPath ""{app}\installer\apply_app_update.ps1"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install_consumer_app.log"""; \
     StatusMsg: "Installing Opening Trainer app payload..."; \
-    Flags: waituntilterminated
+    Flags: waituntilterminated runasoriginaluser
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_content.ps1"" -ManifestPath ""{app}\installer\consumer_content_manifest.json"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install.log"""; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_content.ps1"" -ManifestPath ""{app}\installer\consumer_content_manifest.json"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install_consumer_content.log"""; \
     StatusMsg: "Installing Opening Trainer content..."; \
-    Flags: waituntilterminated
-Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent
+    Flags: waituntilterminated runasoriginaluser
+Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [Code]
+
+procedure AppendMissingIfAbsent(var Missing: String; const LabelName: String; const FilePath: String);
+begin
+  if not FileExists(FilePath) then
+  begin
+    if Missing <> '' then
+      Missing := Missing + #13#10;
+    Missing := Missing + LabelName + ': ' + FilePath;
+  end;
+end;
+
+function VerifyPerUserProvisioning(var FailureDetail: String): Boolean;
+var
+  AppStateRoot: String;
+  MutableRoot: String;
+  Missing: String;
+begin
+  Result := False;
+  Missing := '';
+  AppStateRoot := ExpandConstant('{localappdata}\OpeningTrainer');
+  MutableRoot := AppStateRoot + '\App';
+
+  AppendMissingIfAbsent(Missing, 'installed_app_manifest', AppStateRoot + '\installed_app_manifest.json');
+  AppendMissingIfAbsent(Missing, 'app_state_updater_helper', AppStateRoot + '\updater\apply_app_update.ps1');
+  AppendMissingIfAbsent(Missing, 'app_state_updater_config', AppStateRoot + '\updater\updater_config.json');
+  AppendMissingIfAbsent(Missing, 'app_install_log', AppStateRoot + '\install_consumer_app.log');
+  AppendMissingIfAbsent(Missing, 'content_install_log', AppStateRoot + '\install_consumer_content.log');
+  AppendMissingIfAbsent(Missing, 'mutable_executable', MutableRoot + '\{#MyAppExeName}');
+  AppendMissingIfAbsent(Missing, 'mutable_payload_identity', MutableRoot + '\payload_identity.json');
+  AppendMissingIfAbsent(Missing, 'mutable_updater_helper', MutableRoot + '\updater\apply_app_update.ps1');
+
+  if Missing <> '' then
+  begin
+    FailureDetail :=
+      'Program Files bootstrap payload was installed, but per-user LocalAppData provisioning failed for the current interactive user.' + #13#10 +
+      'Missing required files under ' + AppStateRoot + ':' + #13#10 + Missing;
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  FailureDetail: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if not VerifyPerUserProvisioning(FailureDetail) then
+    begin
+      MsgBox(FailureDetail, mbCriticalError, MB_OK);
+      RaiseException(FailureDetail);
+    end;
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   RemoveContent: Integer;
