@@ -13,6 +13,9 @@ $payloadZip = Join-Path $appPayloadDist 'OpeningTrainer-app.zip'
 $stagingRoot = Join-Path $appPayloadDist 'staging'
 $updaterHelperSource = Join-Path $repoRoot 'installer\scripts\apply_app_update.ps1'
 
+$appUpdateManifestPath = Join-Path $repoRoot 'installer\app_update_manifest.json'
+$payloadIdentityFilename = 'payload_identity.json'
+
 function Copy-WithRetry {
     param(
         [Parameter(Mandatory = $true)]
@@ -47,6 +50,23 @@ if (-not (Test-Path -LiteralPath $consumerDist)) {
 if (-not (Test-Path -LiteralPath $updaterHelperSource -PathType Leaf)) {
     throw "Updater helper script missing: $updaterHelperSource"
 }
+if (-not (Test-Path -LiteralPath $appUpdateManifestPath -PathType Leaf)) {
+    throw "App update manifest missing: $appUpdateManifestPath"
+}
+
+$appUpdateManifest = Get-Content -LiteralPath $appUpdateManifestPath -Raw | ConvertFrom-Json
+$payloadIdentityPath = Join-Path $consumerDist $payloadIdentityFilename
+$payloadIdentity = [ordered]@{
+    marker_schema_version = 1
+    app_version = [string]$appUpdateManifest.app_version
+    build_id = [string]$appUpdateManifest.build_id
+    channel = [string]$appUpdateManifest.channel
+    payload_sha256 = [string]$appUpdateManifest.payload_sha256
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+}
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText($payloadIdentityPath, ($payloadIdentity | ConvertTo-Json -Depth 8), $utf8NoBom)
+Write-Host "Wrote payload identity marker: $payloadIdentityPath"
 
 $consumerUpdaterRoot = Join-Path $consumerDist 'updater'
 New-Item -ItemType Directory -Path $consumerUpdaterRoot -Force | Out-Null

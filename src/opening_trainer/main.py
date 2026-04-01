@@ -15,7 +15,7 @@ from .runtime import RuntimeOverrides, load_runtime_config
 from .session import TrainingSession
 from .session_logging import get_session_logger, initialize_session_logging, log_line
 from .single_instance import INSTANCE_DIAGNOSTICS_PATH_ENV
-from .updater import check_for_update, launch_updater_helper, resolve_manifest_path_or_url
+from .updater import check_for_update, launch_updater_helper, log_install_runtime_diagnostics, resolve_manifest_path_or_url
 
 
 def _apply_runtime_environment(runtime_context) -> None:
@@ -258,6 +258,7 @@ def run(argv: list[str] | None = None) -> None:
     runtime_context = load_runtime_config(runtime_overrides)
     _apply_runtime_environment(runtime_context)
     get_session_logger()
+    log_install_runtime_diagnostics(app_state_root=runtime_context.runtime_paths.app_state_root, phase="startup")
     log_line(
         f"Runtime mode resolution: mode={runtime_context.runtime_mode.value}; source={runtime_context.runtime_mode_source}; reason={runtime_context.runtime_mode_reason}",
         tag="startup",

@@ -41,7 +41,13 @@ from ..single_instance import (
     remove_instance_diagnostics,
     write_instance_diagnostics,
 )
-from ..updater import UpdaterInstallStateError, check_for_update, launch_updater_helper, resolve_manifest_path_or_url
+from ..updater import (
+    UpdaterInstallStateError,
+    check_for_update,
+    launch_updater_helper,
+    log_install_runtime_diagnostics,
+    resolve_manifest_path_or_url,
+)
 from .board_view import BoardView
 from .captured_material_panel import CapturedMaterialPanel
 from .dev_console import DevConsoleWindow
@@ -2104,6 +2110,7 @@ class OpeningTrainerGUI:
             return
         try:
             app_state_root = self._app_state_root()
+            log_install_runtime_diagnostics(app_state_root=app_state_root, phase="update_preflight")
             manifest_ref = resolve_manifest_path_or_url(None, app_state_root=app_state_root)
             has_update, manifest, installed = check_for_update(manifest_ref, app_state_root=app_state_root)
             installed_version = "unknown" if not installed else str(installed.get("app_version") or "unknown")
