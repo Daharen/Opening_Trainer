@@ -5,8 +5,6 @@ param(
     [string]$AppStateRoot,
     [Parameter(Mandatory = $true)]
     [string]$DefaultAppRoot,
-    [Parameter(Mandatory = $true)]
-    [string]$SecondaryAppRoot,
     [Parameter(Mandatory = $false)]
     [string]$OverrideAppRoot,
     [Parameter(Mandatory = $false)]
@@ -24,7 +22,9 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$UpdaterHelperScriptPath = '',
     [Parameter(Mandatory = $false)]
-    [string]$LogPath = ''
+    [string]$LogPath = '',
+    [Parameter(Mandatory = $false)]
+    [string]$ContentRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -130,16 +130,13 @@ function Resolve-AppRoot {
         return $overrideResult
     }
 
-    $orderedCandidates = @($DefaultAppRoot, $SecondaryAppRoot)
-    foreach ($candidate in $orderedCandidates) {
-        $probe = Test-AppRootWritable -CandidateRoot $candidate
-        Write-AppInstallLog "Writable probe root=$($probe.root) ok=$($probe.ok) detail=$($probe.detail)"
-        if ($probe.ok) {
-            return $probe
-        }
+    $defaultProbe = Test-AppRootWritable -CandidateRoot $DefaultAppRoot
+    Write-AppInstallLog "Writable probe root=$($defaultProbe.root) ok=$($defaultProbe.ok) detail=$($defaultProbe.detail)"
+    if (-not $defaultProbe.ok) {
+        throw "Default mutable app root failed writable probe: $($defaultProbe.root) ($($defaultProbe.detail))"
     }
 
-    throw 'No writable mutable app roots passed probe. Prompt user for explicit override root and rerun installer.'
+    return $defaultProbe
 }
 
 try {
@@ -159,9 +156,9 @@ try {
     Write-AppInstallLog "BootstrapRoot=$BootstrapRoot"
     Write-AppInstallLog "AppStateRoot=$AppStateRoot"
     Write-AppInstallLog "DefaultAppRoot=$DefaultAppRoot"
-    Write-AppInstallLog "SecondaryAppRoot=$SecondaryAppRoot"
     Write-AppInstallLog "OverrideAppRoot=$OverrideAppRoot"
     Write-AppInstallLog "UpdaterHelperScriptPath=$UpdaterHelperScriptPath"
+    Write-AppInstallLog "ContentRoot=$ContentRoot"
 
     $bootstrapExe = Join-Path $BootstrapRoot 'OpeningTrainer.exe'
     $bootstrapUpdaterDir = Join-Path $BootstrapRoot 'updater'

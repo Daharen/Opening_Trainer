@@ -14,7 +14,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
-    $LogPath = Join-Path -Path $AppStateRoot -ChildPath 'install.log'
+    $LogPath = Join-Path -Path $AppStateRoot -ChildPath 'install_consumer_content.log'
 }
 
 function Write-InstallLog {
@@ -216,8 +216,19 @@ New-Item -ItemType Directory -Path ([System.IO.Path]::GetDirectoryName($LogPath)
 
 Write-InstallLog 'Installer bootstrap started.'
 Write-InstallLog "ManifestPath=$ManifestPath"
+Write-InstallLog "WINDOWS_USER=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+try {
+    $principal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
+    Write-InstallLog "IS_ADMIN=$($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator))"
+}
+catch {
+    Write-InstallLog "IS_ADMIN=unknown reason=$($_.Exception.Message)"
+}
+Write-InstallLog "LOCALAPPDATA=$env:LOCALAPPDATA"
+Write-InstallLog "USERPROFILE=$env:USERPROFILE"
 Write-InstallLog "AppStateRoot=$AppStateRoot"
 Write-InstallLog "ContentRoot=$ContentRoot"
+Write-InstallLog "MutableAppRoot=$(Join-Path -Path $AppStateRoot -ChildPath 'App')"
 Write-InstallLog "LocalArchivePath=$LocalArchivePath"
 
 if (-not (Test-Path -LiteralPath $ManifestPath)) {
