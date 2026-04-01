@@ -2140,7 +2140,11 @@ class OpeningTrainerGUI:
         except UpdaterInstallStateError as exc:
             self._exit_updater_mode()
             log_line(f"GUI_UPDATE_INSTALL_STATE_ERROR: {exc}", tag="error")
-            messagebox.showerror("Update Error", f"Update cannot continue.\n{exc}", parent=self.root)
+            messagebox.showerror(
+                "Update Error",
+                f"Update cannot continue because this installation is missing updater components or metadata.\n\n{exc}\n\nPlease run installer repair/reinstall.",
+                parent=self.root,
+            )
         except Exception as exc:  # noqa: BLE001
             self._exit_updater_mode()
             log_line(f"GUI_UPDATE_FAILED: {exc}", tag="error")

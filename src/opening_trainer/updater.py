@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,17 +91,37 @@ def _updater_runtime_root(app_state_root: Path) -> Path:
     return app_state_root / "updater"
 
 
-def _recover_helper_from_mutable_root(*, app_state_root: Path, mutable_root: Path) -> Path | None:
-    destination = _updater_runtime_root(app_state_root) / "apply_app_update.ps1"
-    if destination.exists():
-        return destination
-    source = mutable_root / "updater" / "apply_app_update.ps1"
-    if not source.exists():
-        return None
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    log_line(f"UPDATER_SELF_HEAL result=ok prerequisite=helper source={source} destination={destination}", tag="startup")
-    return destination
+def _copy_file(source: Path, destination: Path, *, prerequisite: str) -> bool:
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        log_line(
+            f"UPDATER_RECOVERY result=ok prerequisite={prerequisite} source={source} destination={destination}",
+            tag="startup",
+        )
+        return True
+    except OSError as exc:
+        log_line(
+            f"UPDATER_RECOVERY result=failed prerequisite={prerequisite} source={source} destination={destination} reason={exc}",
+            tag="error",
+        )
+        return False
+
+
+def _bootstrap_root_candidates(*, app_state_root: Path) -> list[Path]:
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    return [
+        Path("C:/Program Files/Opening Trainer/installer"),
+        local_app_data / "Programs" / "Opening Trainer" / "installer",
+        Path(sys.executable).resolve().parent / "installer",
+    ]
+
+
+def _candidate_helper_sources(*, app_state_root: Path, mutable_root: Path) -> list[Path]:
+    candidates = [mutable_root / "updater" / "apply_app_update.ps1"]
+    for bootstrap_root in _bootstrap_root_candidates(app_state_root=app_state_root):
+        candidates.append(bootstrap_root / "apply_app_update.ps1")
+    return candidates
 
 
 def _recover_installed_manifest(app_state_root: Path) -> dict | None:
@@ -126,32 +148,74 @@ def _recover_installed_manifest(app_state_root: Path) -> dict | None:
     return read_installed_app_manifest(app_state_root)
 
 
+def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: dict | None) -> None:
+    mutable_root = Path(str((installed_manifest or {}).get("mutable_app_root") or app_state_root / "App")).expanduser()
+    helper_target = _updater_runtime_root(app_state_root) / "apply_app_update.ps1"
+    helper_candidates = _candidate_helper_sources(app_state_root=app_state_root, mutable_root=mutable_root)
+    config_path = updater_config_path(app_state_root)
+    log_line(
+        "UPDATER_PREREQ_AUDIT "
+        f"app_state_root={app_state_root} "
+        f"mutable_app_root={mutable_root} "
+        f"executable={Path(sys.executable).resolve()} "
+        f"installed_manifest_path={app_state_root / 'installed_app_manifest.json'} "
+        f"installed_manifest_exists={(app_state_root / 'installed_app_manifest.json').exists()} "
+        f"helper_target={helper_target} helper_target_exists={helper_target.exists()} "
+        f"updater_config_path={config_path} updater_config_exists={config_path.exists()}",
+        tag="startup",
+    )
+    for index, candidate in enumerate(helper_candidates, start=1):
+        log_line(
+            f"UPDATER_PREREQ_AUDIT helper_candidate_index={index} path={candidate} exists={candidate.exists()}",
+            tag="startup",
+        )
+
+
+def _resolve_helper_script(*, app_state_root: Path, installed_manifest: dict) -> Path | None:
+    helper_target = _updater_runtime_root(app_state_root) / "apply_app_update.ps1"
+    mutable_root = Path(str(installed_manifest.get("mutable_app_root") or "")).expanduser()
+    if not str(mutable_root).strip():
+        mutable_root = app_state_root / "App"
+    candidates = [helper_target, *_candidate_helper_sources(app_state_root=app_state_root, mutable_root=mutable_root)]
+    for index, candidate in enumerate(candidates, start=1):
+        exists = candidate.exists()
+        log_line(
+            f"UPDATER_RESOLVE prerequisite=helper candidate_index={index} path={candidate} exists={exists}",
+            tag="startup",
+        )
+        if not exists:
+            continue
+        if candidate == helper_target:
+            return helper_target
+        if _copy_file(candidate, helper_target, prerequisite="helper"):
+            return helper_target
+    return None
+
+
 def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
     updater_root = _updater_runtime_root(app_state_root)
     updater_root.mkdir(parents=True, exist_ok=True)
 
-    helper_script = updater_root / "apply_app_update.ps1"
     installed_manifest = read_installed_app_manifest(app_state_root)
+    _audit_updater_prerequisites(app_state_root=app_state_root, installed_manifest=installed_manifest)
     log_line(
         "UPDATER_PREREQ_STATE "
         f"installed_manifest_present={installed_manifest is not None} "
-        f"helper_present={helper_script.exists()}",
+        f"helper_present={(updater_root / 'apply_app_update.ps1').exists()}",
         tag="startup",
     )
     if installed_manifest is None:
         installed_manifest = _recover_installed_manifest(app_state_root)
+        _audit_updater_prerequisites(app_state_root=app_state_root, installed_manifest=installed_manifest)
     if installed_manifest is None:
         raise UpdaterInstallStateError(
             f"Installation is missing required updater metadata: {app_state_root / 'installed_app_manifest.json'}"
         )
 
-    if not helper_script.exists():
-        mutable_root = Path(str(installed_manifest.get("mutable_app_root") or "")).expanduser()
-        if str(mutable_root).strip():
-            _recover_helper_from_mutable_root(app_state_root=app_state_root, mutable_root=mutable_root)
-    if not helper_script.exists():
+    helper_script = _resolve_helper_script(app_state_root=app_state_root, installed_manifest=installed_manifest)
+    if helper_script is None or not helper_script.exists():
         raise UpdaterInstallStateError(
-            f"Installation is missing required updater helper components: {helper_script}"
+            f"Installation is missing required updater helper components: {updater_root / 'apply_app_update.ps1'}"
         )
 
     updater_config = updater_config_path(app_state_root)
