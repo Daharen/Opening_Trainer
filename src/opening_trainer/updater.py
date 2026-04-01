@@ -148,4 +148,7 @@ def launch_updater_helper(
         f"localappdata={os.getenv('LOCALAPPDATA', '')}",
         tag="startup",
     )
-    return subprocess.Popen(cmd, cwd=str(helper_cwd))
+    popen_kwargs: dict[str, object] = {"cwd": str(helper_cwd)}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    return subprocess.Popen(cmd, **popen_kwargs)
