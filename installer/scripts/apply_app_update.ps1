@@ -53,6 +53,45 @@ function Wait-ForProcessExit {
     }
 }
 
+function Wait-ForMutableRootSwapReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$MutableRoot,
+        [int]$TimeoutSeconds = 120
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $probeRoot = "$MutableRoot.swapprobe"
+    while ($true) {
+        if ((Get-Date) -gt $deadline) {
+            throw "Timed out waiting for mutable app root to become swappable."
+        }
+        if (-not (Test-Path -LiteralPath $MutableRoot)) {
+            Write-Log "MUTABLE_ROOT_SWAP_READY skipped=true reason=missing_mutable_root mutable_root=$MutableRoot"
+            return
+        }
+        try {
+            if (Test-Path -LiteralPath $probeRoot) {
+                Remove-Item -LiteralPath $probeRoot -Recurse -Force
+            }
+            Move-Item -LiteralPath $MutableRoot -Destination $probeRoot -Force
+            Move-Item -LiteralPath $probeRoot -Destination $MutableRoot -Force
+            Write-Log "MUTABLE_ROOT_SWAP_READY mutable_root=$MutableRoot"
+            return
+        } catch {
+            $errorMessage = $_.Exception.Message
+            Write-Log "MUTABLE_ROOT_LOCK_STILL_PRESENT mutable_root=$MutableRoot error=$errorMessage"
+            try {
+                if (Test-Path -LiteralPath $probeRoot) {
+                    Move-Item -LiteralPath $probeRoot -Destination $MutableRoot -Force
+                }
+            } catch {
+                Write-Log "MUTABLE_ROOT_SWAP_PROBE_RECOVERY_FAILED mutable_root=$MutableRoot error=$($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds 400
+        }
+    }
+}
+
 function Relocate-HelperWorkingDirectory {
     param(
         [string]$MutableAppRoot
@@ -112,6 +151,7 @@ function Move-WithRetry {
 }
 
 try {
+    $phase = 'begin'
     Write-Log "UPDATER_BEGIN manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
     $manifest = Resolve-Manifest -ManifestRef $ManifestPathOrUrl
     $installedManifestPath = Join-Path $AppStateRoot 'installed_app_manifest.json'
@@ -133,6 +173,7 @@ try {
     if (Test-Path -LiteralPath $nextRoot) { Remove-Item -LiteralPath $nextRoot -Recurse -Force }
     New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 
+    $phase = 'download_begin'
     Write-Log "DOWNLOAD_BEGIN url=$($manifest.payload_url)"
     Invoke-WebRequest -Uri ([string]$manifest.payload_url) -OutFile $downloadZip -UseBasicParsing
     $sha = (Get-FileHash -LiteralPath $downloadZip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -141,18 +182,31 @@ try {
     }
     Write-Log "DOWNLOAD_VERIFIED sha256=$sha"
 
+    $phase = 'extract_payload'
     Expand-Archive -LiteralPath $downloadZip -DestinationPath $stagingRoot -Force
     New-Item -ItemType Directory -Path $nextRoot -Force | Out-Null
     Copy-Item -Path (Join-Path $stagingRoot '*') -Destination $nextRoot -Recurse -Force
 
+    $phase = 'wait_for_app_exit'
+    Write-Log "HELPER_WAITING_FOR_APP_RELEASE wait_pid=$WaitForPid"
     Wait-ForProcessExit -WaitForProcessId $WaitForPid
+    Write-Log "HELPER_WAIT_FOR_APP_RELEASE_COMPLETE wait_pid=$WaitForPid"
+    $phase = 'wait_for_mutable_root_release'
+    Wait-ForMutableRootSwapReady -MutableRoot $mutableRoot
+    $phase = 'swap_begin'
+    Write-Log "SWAP_BEGIN mutable_root=$mutableRoot"
     Write-Log "SWAP_TARGETS mutable_root=$mutableRoot prev_root=$prevRoot next_root=$nextRoot"
     if (Test-Path -LiteralPath $prevRoot) { Remove-Item -LiteralPath $prevRoot -Recurse -Force }
     if (Test-Path -LiteralPath $mutableRoot) {
+        $phase = 'swap_move_app_to_prev'
         Move-WithRetry -Source $mutableRoot -Destination $prevRoot
+        Write-Log "SWAP_MOVE_APP_TO_PREV_RESULT result=ok source=$mutableRoot destination=$prevRoot"
     }
+    $phase = 'swap_move_next_to_app'
     Move-WithRetry -Source $nextRoot -Destination $mutableRoot
+    Write-Log "SWAP_MOVE_NEXT_TO_APP_RESULT result=ok source=$nextRoot destination=$mutableRoot"
 
+    $phase = 'installed_manifest_rewrite'
     $installed.app_version = [string]$manifest.app_version
     $installed.build_id = [string]$manifest.build_id
     $installed.channel = [string]$manifest.channel
@@ -160,22 +214,24 @@ try {
     $installed.payload_sha256 = [string]$manifest.payload_sha256
     $installed.installed_at_utc = [DateTime]::UtcNow.ToString('o')
     [System.IO.File]::WriteAllText($installedManifestPath, ($installed | ConvertTo-Json -Depth 12), [System.Text.UTF8Encoding]::new($false))
-    Write-Log "INSTALLED_MANIFEST_REWRITE_OK path=$installedManifestPath app_version=$($installed.app_version) build_id=$($installed.build_id)"
+    Write-Log "INSTALLED_MANIFEST_REWRITE_RESULT result=ok path=$installedManifestPath app_version=$($installed.app_version) build_id=$($installed.build_id)"
 
     Write-Log "SWAP_OK mutable_root=$mutableRoot"
     $relaunchArgsArray = $null
     try { $relaunchArgsArray = ConvertFrom-Json -InputObject $RelaunchArgs } catch { $relaunchArgsArray = @('--runtime-mode', 'consumer') }
+    $phase = 'relaunch'
     if ([string]::IsNullOrWhiteSpace($RelaunchExePath)) {
         $RelaunchExePath = Join-Path $mutableRoot 'OpeningTrainer.exe'
     }
     if (Test-Path -LiteralPath $RelaunchExePath) {
         Start-Process -FilePath $RelaunchExePath -ArgumentList $relaunchArgsArray
-        Write-Log "RELAUNCH_OK exe=$RelaunchExePath"
+        Write-Log "RELAUNCH_RESULT result=ok exe=$RelaunchExePath"
     } else {
-        Write-Log "RELAUNCH_SKIPPED missing_exe=$RelaunchExePath"
+        Write-Log "RELAUNCH_RESULT result=skipped missing_exe=$RelaunchExePath"
     }
+    Write-Log "UPDATER_FINAL_RESULT result=success"
 }
 catch {
-    Write-Log "UPDATER_FAILED error=$($_.Exception.Message)"
+    Write-Log "UPDATER_FINAL_RESULT result=failure phase=$phase error=$($_.Exception.Message)"
     throw
 }

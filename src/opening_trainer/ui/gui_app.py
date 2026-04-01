@@ -87,6 +87,11 @@ class OpeningTrainerGUI:
         self.bundle_detail_var = tk.StringVar(value='Select a corpus bundle to enable corpus-backed opponent play.')
         self.top_summary_var = tk.StringVar(value='')
         self.start_button = None
+        self.update_button = None
+        self._updater_mode_active = False
+        self._updater_apply_started = False
+        self._updater_status_window: tk.Toplevel | None = None
+        self._widgets_disabled_for_update: list[tuple[tk.Widget, str]] = []
         self.browse_bundle_button = None
         self.bundle_combobox = None
         self.bundle_path_var = tk.StringVar()
@@ -164,7 +169,8 @@ class OpeningTrainerGUI:
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
         tk.Button(toolbar, text='Corpus Selection', command=self._open_bundle_picker).pack(side='left', padx=6)
         tk.Button(toolbar, text='Report', command=self._show_report_placeholder).pack(side='left', padx=6)
-        tk.Button(toolbar, text='Update', command=self._check_for_updates_from_gui).pack(side='left', padx=6)
+        self.update_button = tk.Button(toolbar, text='Update', command=self._check_for_updates_from_gui)
+        self.update_button.pack(side='left', padx=6)
         self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
         self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
@@ -2093,6 +2099,9 @@ class OpeningTrainerGUI:
         )
 
     def _check_for_updates_from_gui(self) -> None:
+        if getattr(self, "_updater_mode_active", False):
+            messagebox.showinfo("Updater", "An update attempt is already in progress.", parent=self.root)
+            return
         try:
             app_state_root = self._app_state_root()
             manifest_ref = resolve_manifest_path_or_url(None, app_state_root=app_state_root)
@@ -2115,6 +2124,8 @@ class OpeningTrainerGUI:
             )
             if not confirm:
                 return
+            log_line("GUI_UPDATE_CONFIRM_ACCEPTED", tag="startup")
+            self._enter_updater_mode()
             launch_updater_helper(
                 manifest_ref,
                 app_state_root=app_state_root,
@@ -2122,13 +2133,12 @@ class OpeningTrainerGUI:
                 relaunch_exe_path=Path(sys.executable),
                 relaunch_args=["--runtime-mode", "consumer"],
             )
-            messagebox.showinfo(
-                "Updater",
-                "Updater launched. Opening Trainer will now close so the payload can be replaced.",
-                parent=self.root,
-            )
+            self._updater_apply_started = True
+            log_line("GUI_UPDATE_HELPER_LAUNCHED", tag="startup")
+            self._set_updater_status_text("Applying update and restarting Opening Trainer…")
             self._shutdown_coordinator(reason="apply_update")
         except Exception as exc:  # noqa: BLE001
+            self._exit_updater_mode()
             log_line(f"GUI_UPDATE_FAILED: {exc}", tag="error")
             messagebox.showerror("Update Error", f"Update check/apply failed.\n{exc}", parent=self.root)
 
@@ -2489,6 +2499,23 @@ class OpeningTrainerGUI:
         log_line('GUI_CLOCK_LIVE_REFRESH_STOPPED', tag='timing')
 
     def _request_shutdown(self) -> None:
+        if getattr(self, "_updater_mode_active", False) and not getattr(self, "_updater_apply_started", False):
+            cancel = messagebox.askyesno(
+                "Cancel Update",
+                "Update preparation is in progress. Cancel this update attempt and keep the current install?",
+                parent=self.root,
+            )
+            if cancel:
+                log_line("GUI_UPDATE_CANCELLED_BEFORE_APPLY", tag="startup")
+                self._exit_updater_mode()
+            return
+        if getattr(self, "_updater_apply_started", False):
+            messagebox.showinfo(
+                "Updater",
+                "Opening Trainer is applying an update. Please wait for it to finish.",
+                parent=self.root,
+            )
+            return
         self._shutdown_coordinator(reason='window_close')
 
     def _shutdown_coordinator(self, reason: str) -> None:
@@ -2496,6 +2523,8 @@ class OpeningTrainerGUI:
             return
         self._shutdown_started = True
         self._is_shutting_down = True
+        if reason == "apply_update":
+            log_line("GUI_UPDATE_AUTHORITATIVE_SHUTDOWN_REQUESTED", tag="startup")
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
         self._stop_live_clock_refresh()
         self._destroy_pause_surface()
@@ -2526,6 +2555,82 @@ class OpeningTrainerGUI:
             except Exception as exc:  # noqa: BLE001
                 log_line(f'APP_SHUTDOWN_ROOT_DESTROY_FAILED: {exc}', tag='error')
         log_line('APP_SHUTDOWN_COMPLETE', tag='startup')
+
+    def _set_updater_status_text(self, message: str) -> None:
+        status_window = getattr(self, "_updater_status_window", None)
+        if status_window is None:
+            return
+        status_var = getattr(self, "_updater_status_var", None)
+        if status_var is not None:
+            status_var.set(message)
+        if hasattr(self.root, "update_idletasks"):
+            self.root.update_idletasks()
+
+    def _enter_updater_mode(self) -> None:
+        if self._updater_mode_active:
+            return
+        self._updater_mode_active = True
+        log_line("GUI_UPDATE_MODE_ENTERED", tag="startup")
+        self._widgets_disabled_for_update = []
+        for widget in self.root.winfo_children():
+            self._disable_widget_tree_for_update(widget)
+        status_window = tk.Toplevel(self.root)
+        status_window.title("Applying Update")
+        status_window.resizable(False, False)
+        status_window.transient(self.root)
+        status_window.protocol("WM_DELETE_WINDOW", lambda: None)
+        frame = ttk.Frame(status_window, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Opening Trainer update in progress", font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
+        self._updater_status_var = tk.StringVar(
+            value="Preparing updater handoff. The app will restart automatically."
+        )
+        ttk.Label(frame, textvariable=self._updater_status_var, wraplength=360, justify="left").pack(anchor="w", pady=(8, 10))
+        progress = ttk.Progressbar(frame, mode="indeterminate", length=320)
+        progress.pack(fill="x")
+        progress.start(12)
+        self._updater_status_progress = progress
+        self._updater_status_window = status_window
+        log_line("GUI_UPDATE_MODE_VISIBLE", tag="startup")
+
+    def _disable_widget_tree_for_update(self, widget: tk.Widget) -> None:
+        if widget is getattr(self, "_updater_status_window", None):
+            return
+        for child in widget.winfo_children():
+            self._disable_widget_tree_for_update(child)
+        if getattr(widget, "winfo_class", lambda: "")() in {"Button", "TButton", "Checkbutton", "TCheckbutton", "Entry", "TCombobox"}:
+            state = widget.cget("state")
+            if state != "disabled":
+                self._widgets_disabled_for_update.append((widget, state))
+                widget.configure(state="disabled")
+
+    def _exit_updater_mode(self) -> None:
+        if not self._updater_mode_active:
+            return
+        self._updater_mode_active = False
+        self._updater_apply_started = False
+        for widget, state in reversed(self._widgets_disabled_for_update):
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
+        self._widgets_disabled_for_update = []
+        progress = getattr(self, "_updater_status_progress", None)
+        if progress is not None:
+            try:
+                progress.stop()
+            except Exception:
+                pass
+        self._updater_status_progress = None
+        status_window = getattr(self, "_updater_status_window", None)
+        if status_window is not None:
+            try:
+                status_window.destroy()
+            except Exception:
+                pass
+        self._updater_status_window = None
+        self._updater_status_var = None
+        log_line("GUI_UPDATE_MODE_EXITED", tag="startup")
 
     def _close_optional_component(self, attr_name: str) -> None:
         component = getattr(self, attr_name, None)
