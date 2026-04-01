@@ -49,36 +49,35 @@ Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--ru
 
 [Code]
 
+procedure AppendMissingIfAbsent(var Missing: String; const LabelName: String; const FilePath: String);
+begin
+  if not FileExists(FilePath) then
+  begin
+    if Missing <> '' then
+      Missing := Missing + #13#10;
+    Missing := Missing + LabelName + ': ' + FilePath;
+  end;
+end;
+
 function VerifyPerUserProvisioning(var FailureDetail: String): Boolean;
 var
   AppStateRoot: String;
   MutableRoot: String;
   Missing: String;
-
-  procedure RequireFile(const LabelName: String; const FilePath: String);
-  begin
-    if not FileExists(FilePath) then
-    begin
-      if Missing <> '' then
-        Missing := Missing + #13#10;
-      Missing := Missing + LabelName + ': ' + FilePath;
-    end;
-  end;
-
 begin
   Result := False;
   Missing := '';
   AppStateRoot := ExpandConstant('{localappdata}\OpeningTrainer');
   MutableRoot := AppStateRoot + '\App';
 
-  RequireFile('installed_app_manifest', AppStateRoot + '\installed_app_manifest.json');
-  RequireFile('app_state_updater_helper', AppStateRoot + '\updater\apply_app_update.ps1');
-  RequireFile('app_state_updater_config', AppStateRoot + '\updater\updater_config.json');
-  RequireFile('app_install_log', AppStateRoot + '\install_consumer_app.log');
-  RequireFile('content_install_log', AppStateRoot + '\install_consumer_content.log');
-  RequireFile('mutable_executable', MutableRoot + '\{#MyAppExeName}');
-  RequireFile('mutable_payload_identity', MutableRoot + '\payload_identity.json');
-  RequireFile('mutable_updater_helper', MutableRoot + '\updater\apply_app_update.ps1');
+  AppendMissingIfAbsent(Missing, 'installed_app_manifest', AppStateRoot + '\installed_app_manifest.json');
+  AppendMissingIfAbsent(Missing, 'app_state_updater_helper', AppStateRoot + '\updater\apply_app_update.ps1');
+  AppendMissingIfAbsent(Missing, 'app_state_updater_config', AppStateRoot + '\updater\updater_config.json');
+  AppendMissingIfAbsent(Missing, 'app_install_log', AppStateRoot + '\install_consumer_app.log');
+  AppendMissingIfAbsent(Missing, 'content_install_log', AppStateRoot + '\install_consumer_content.log');
+  AppendMissingIfAbsent(Missing, 'mutable_executable', MutableRoot + '\{#MyAppExeName}');
+  AppendMissingIfAbsent(Missing, 'mutable_payload_identity', MutableRoot + '\payload_identity.json');
+  AppendMissingIfAbsent(Missing, 'mutable_updater_helper', MutableRoot + '\updater\apply_app_update.ps1');
 
   if Missing <> '' then
   begin
@@ -111,13 +110,13 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    DelTree(ExpandConstant('{localappdata}\\OpeningTrainer'), True, True, True);
+    DelTree(ExpandConstant('{localappdata}\OpeningTrainer'), True, True, True);
     RemoveContent := MsgBox(
-      'Remove downloaded opening content in %LocalAppData%\\OpeningTrainerContent as well?',
+      'Remove downloaded opening content in %LocalAppData%\OpeningTrainerContent as well?',
       mbConfirmation,
       MB_YESNO
     );
     if RemoveContent = IDYES then
-      DelTree(ExpandConstant('{localappdata}\\OpeningTrainerContent'), True, True, True);
+      DelTree(ExpandConstant('{localappdata}\OpeningTrainerContent'), True, True, True);
   end;
 end;
