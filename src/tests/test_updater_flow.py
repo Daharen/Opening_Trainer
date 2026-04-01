@@ -7,9 +7,11 @@ from opening_trainer.install_layout import choose_mutable_app_root, write_instal
 import pytest
 
 from opening_trainer.updater import (
+    INSTALL_DIAGNOSTIC_MARKER,
     UpdaterInstallStateError,
     check_for_update,
     launch_updater_helper,
+    log_install_runtime_diagnostics,
     resolve_manifest_path_or_url,
 )
 
@@ -319,6 +321,39 @@ def test_check_for_update_raises_when_manifest_missing_and_not_recoverable(tmp_p
 
     with pytest.raises(UpdaterInstallStateError):
         check_for_update(str(manifest_path), app_state_root=app_state_root)
+
+
+def test_log_install_runtime_diagnostics_reports_payload_identity(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "updater_config.json").write_text(json.dumps({"channel": "dev"}), encoding="utf-8")
+    (mutable_root / "updater").mkdir(parents=True, exist_ok=True)
+    (mutable_root / "updater" / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (mutable_root / "payload_identity.json").write_text(
+        json.dumps({"marker_schema_version": 1, "app_version": "1.0.0", "build_id": "commit-old", "channel": "dev"}),
+        encoding="utf-8",
+    )
+    messages: list[str] = []
+    monkeypatch.setattr("opening_trainer.updater.log_line", lambda message, tag="startup": messages.append(message))
+
+    log_install_runtime_diagnostics(app_state_root=app_state_root, phase="startup")
+
+    assert any("INSTALL_RUNTIME_DIAGNOSTICS" in message for message in messages)
+    assert any(INSTALL_DIAGNOSTIC_MARKER in message for message in messages)
+    assert any("payload_identity=marker_schema_version=1" in message for message in messages)
 
 
 def test_apply_helper_logs_cwd_relocation_and_swap_retries():

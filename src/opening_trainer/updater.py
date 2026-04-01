@@ -20,6 +20,8 @@ DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"
 )
 UPDATER_CONFIG_FILENAME = "updater_config.json"
+PAYLOAD_IDENTITY_FILENAME = "payload_identity.json"
+INSTALL_DIAGNOSTIC_MARKER = "lane_installer_observability_v1"
 
 
 class UpdaterInstallStateError(RuntimeError):
@@ -89,6 +91,49 @@ def resolve_manifest_path_or_url(manifest_path_or_url: str | None, *, app_state_
 
 def _updater_runtime_root(app_state_root: Path) -> Path:
     return app_state_root / "updater"
+
+
+def payload_identity_path(*, mutable_root: Path) -> Path:
+    return mutable_root / PAYLOAD_IDENTITY_FILENAME
+
+
+def read_payload_identity_marker(*, mutable_root: Path) -> dict | None:
+    marker_path = payload_identity_path(mutable_root=mutable_root)
+    if not marker_path.exists():
+        return None
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def log_install_runtime_diagnostics(*, app_state_root: Path, phase: str) -> None:
+    manifest_path = app_state_root / "installed_app_manifest.json"
+    installed_manifest = read_installed_app_manifest(app_state_root)
+    mutable_root = Path(str((installed_manifest or {}).get("mutable_app_root") or app_state_root / "App")).expanduser()
+    app_state_helper = app_state_root / "updater" / "apply_app_update.ps1"
+    mutable_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    updater_config = app_state_root / "updater" / UPDATER_CONFIG_FILENAME
+    payload_marker = read_payload_identity_marker(mutable_root=mutable_root)
+    payload_summary = (
+        "missing"
+        if payload_marker is None
+        else f"marker_schema_version={payload_marker.get('marker_schema_version')} app_version={payload_marker.get('app_version')} build_id={payload_marker.get('build_id')} channel={payload_marker.get('channel')} payload_sha256={payload_marker.get('payload_sha256')}"
+    )
+    log_line(
+        "INSTALL_RUNTIME_DIAGNOSTICS "
+        f"phase={phase} marker={INSTALL_DIAGNOSTIC_MARKER} "
+        f"executable={Path(sys.executable).resolve()} "
+        f"app_state_root={app_state_root} "
+        f"mutable_app_root={mutable_root} "
+        f"installed_manifest_exists={manifest_path.exists()} "
+        f"app_state_helper_exists={app_state_helper.exists()} "
+        f"mutable_helper_exists={mutable_helper.exists()} "
+        f"updater_config_exists={updater_config.exists()} "
+        f"payload_identity={payload_summary}",
+        tag="startup",
+    )
 
 
 def _copy_file(source: Path, destination: Path, *, prerequisite: str) -> bool:

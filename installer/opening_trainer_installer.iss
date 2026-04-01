@@ -38,7 +38,7 @@ Name: "{autodesktop}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\
 
 [Run]
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -SecondaryAppRoot ""{%USERPROFILE}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -BuildId ""bootstrap-{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"" -DefaultManifestUrl ""https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"" -UpdaterHelperScriptPath ""{app}\installer\apply_app_update.ps1"""; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -SecondaryAppRoot ""{%USERPROFILE}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -BuildId ""bootstrap-{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"" -DefaultManifestUrl ""https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"" -UpdaterHelperScriptPath ""{app}\installer\apply_app_update.ps1"" -LogPath ""{localappdata}\OpeningTrainer\install_consumer_app.log"""; \
     StatusMsg: "Installing Opening Trainer app payload..."; \
     Flags: waituntilterminated
 Filename: "powershell.exe"; \

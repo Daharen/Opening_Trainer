@@ -115,6 +115,8 @@ def test_packaging_build_scripts_exist() -> None:
     assert "--probe-real-gui-startup" in payload_text
     assert "DebugConsole" in payload_text
     assert "OpeningTrainer-app.zip" in app_payload_text
+    assert "payload_identity.json" in app_payload_text
+    assert "marker_schema_version" in app_payload_text
     assert "Compress-Archive" in app_payload_text
     assert "build_consumer_payload.ps1" in installer_text
     assert "build_consumer_app_payload.ps1" in installer_text
@@ -148,10 +150,19 @@ def test_install_consumer_app_has_probe_and_fallback_policy() -> None:
     assert "orderedCandidates = @($DefaultAppRoot, $SecondaryAppRoot)" in script
     assert "installed_app_manifest.json" in script
     assert "updater_config.json" in script
+    assert "install_consumer_app.log" in script
+    assert "INSTALL_CONSUMER_APP_START" in script
+    assert "INSTALL_CONSUMER_APP_SUCCESS" in script
+    assert "INSTALL_CONSUMER_APP_FAILURE" in script
+    assert "source-precheck" in script
+    assert "post-copy" in script
+    assert "post-provision" in script
+    assert "payload_identity.json" in script
     assert "build_id = $BuildId" in script
     assert "UpdaterHelperScriptPath" in script
     assert "helperSourceCandidates" in script
     assert "Provisioned updater helper to app state" in script
+    assert "HELPER_SOURCE_CANDIDATES" in script
 
 
 def test_updater_helper_and_publish_script_exist() -> None:
