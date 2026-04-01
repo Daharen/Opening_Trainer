@@ -41,7 +41,7 @@ from ..single_instance import (
     remove_instance_diagnostics,
     write_instance_diagnostics,
 )
-from ..updater import check_for_update, launch_updater_helper, resolve_manifest_path_or_url
+from ..updater import UpdaterInstallStateError, check_for_update, launch_updater_helper, resolve_manifest_path_or_url
 from .board_view import BoardView
 from .captured_material_panel import CapturedMaterialPanel
 from .dev_console import DevConsoleWindow
@@ -2137,6 +2137,10 @@ class OpeningTrainerGUI:
             log_line("GUI_UPDATE_HELPER_LAUNCHED", tag="startup")
             self._set_updater_status_text("Applying update and restarting Opening Trainer…")
             self._shutdown_coordinator(reason="apply_update")
+        except UpdaterInstallStateError as exc:
+            self._exit_updater_mode()
+            log_line(f"GUI_UPDATE_INSTALL_STATE_ERROR: {exc}", tag="error")
+            messagebox.showerror("Update Error", f"Update cannot continue.\n{exc}", parent=self.root)
         except Exception as exc:  # noqa: BLE001
             self._exit_updater_mode()
             log_line(f"GUI_UPDATE_FAILED: {exc}", tag="error")

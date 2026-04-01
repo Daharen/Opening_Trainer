@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 
 from opening_trainer.install_layout import choose_mutable_app_root, write_installed_app_manifest
-from opening_trainer.updater import check_for_update, launch_updater_helper, resolve_manifest_path_or_url
+import pytest
+
+from opening_trainer.updater import (
+    UpdaterInstallStateError,
+    check_for_update,
+    launch_updater_helper,
+    resolve_manifest_path_or_url,
+)
 
 
 def test_apply_helper_avoids_reserved_pid_variable_name():
@@ -65,11 +72,15 @@ def test_update_manifest_comparison(tmp_path):
     )
 
     app_state = tmp_path / "OpeningTrainer"
+    mutable_root = tmp_path / "app"
+    bundled_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    bundled_helper.parent.mkdir(parents=True, exist_ok=True)
+    bundled_helper.write_text("Write-Host helper", encoding="utf-8")
     write_installed_app_manifest(
         app_state_root=app_state,
         app_version="1.0.0",
         channel="dev",
-        mutable_app_root=tmp_path / "app",
+        mutable_app_root=mutable_root,
         payload_filename="OpeningTrainer-app.zip",
         payload_sha256="old",
         bootstrap_version="1.0.0",
@@ -101,11 +112,15 @@ def test_update_available_when_version_equal_but_build_id_differs(tmp_path):
         encoding="utf-8",
     )
     app_state = tmp_path / "OpeningTrainer"
+    mutable_root = tmp_path / "app"
+    bundled_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    bundled_helper.parent.mkdir(parents=True, exist_ok=True)
+    bundled_helper.write_text("Write-Host helper", encoding="utf-8")
     write_installed_app_manifest(
         app_state_root=app_state,
         app_version="2.0.0",
         channel="dev",
-        mutable_app_root=tmp_path / "app",
+        mutable_app_root=mutable_root,
         payload_filename="OpeningTrainer-app.zip",
         payload_sha256="old-sha",
         bootstrap_version="1.0.0",
@@ -131,6 +146,16 @@ def test_resolve_manifest_path_uses_installed_updater_config(tmp_path):
 
 def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, tmp_path):
     app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=app_state_root / "App",
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="old",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
     updater_root = app_state_root / "updater"
     updater_root.mkdir(parents=True, exist_ok=True)
     helper_path = updater_root / "apply_app_update.ps1"
@@ -176,6 +201,82 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
     assert len(popen_calls) == 1
     assert popen_calls[0]["cwd"] == str(app_state_root / "updater")
     assert any("UPDATER_HELPER_LAUNCH" in msg for msg in log_messages)
+
+
+def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    bundled_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    bundled_helper.parent.mkdir(parents=True, exist_ok=True)
+    bundled_helper.write_text("Write-Host bundled-helper", encoding="utf-8")
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "channel": "dev",
+                "app_version": "2.0.0",
+                "build_id": "build-2",
+                "payload_filename": "OpeningTrainer-app.zip",
+                "payload_url": "https://example.invalid/dev/OpeningTrainer-app.zip",
+                "payload_sha256": "abc123",
+                "published_at_utc": "2026-03-31T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    popen_calls: list[dict] = []
+
+    class DummyProcess:
+        pass
+
+    def _fake_popen(cmd, cwd=None):
+        popen_calls.append({"cmd": cmd, "cwd": cwd})
+        return DummyProcess()
+
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", _fake_popen)
+
+    launch_updater_helper(str(manifest_path), app_state_root=app_state_root, wait_for_pid=1234)
+
+    assert (app_state_root / "updater" / "apply_app_update.ps1").exists()
+    assert len(popen_calls) == 1
+
+
+def test_check_for_update_raises_when_manifest_missing_and_not_recoverable(tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "channel": "dev",
+                "app_version": "2.0.0",
+                "build_id": "build-2",
+                "payload_filename": "OpeningTrainer-app.zip",
+                "payload_url": "https://example.invalid/dev/OpeningTrainer-app.zip",
+                "payload_sha256": "abc123",
+                "published_at_utc": "2026-03-31T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UpdaterInstallStateError):
+        check_for_update(str(manifest_path), app_state_root=app_state_root)
 
 
 def test_apply_helper_logs_cwd_relocation_and_swap_retries():

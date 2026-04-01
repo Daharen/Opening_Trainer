@@ -11,6 +11,7 @@ $consumerDist = Join-Path $repoRoot 'dist\consumer'
 $appPayloadDist = Join-Path $repoRoot 'dist\consumer_app_payload'
 $payloadZip = Join-Path $appPayloadDist 'OpeningTrainer-app.zip'
 $stagingRoot = Join-Path $appPayloadDist 'staging'
+$updaterHelperSource = Join-Path $repoRoot 'installer\scripts\apply_app_update.ps1'
 
 function Copy-WithRetry {
     param(
@@ -43,6 +44,13 @@ if (-not $SkipPayloadBuild) {
 if (-not (Test-Path -LiteralPath $consumerDist)) {
     throw "Consumer payload folder missing: $consumerDist"
 }
+if (-not (Test-Path -LiteralPath $updaterHelperSource -PathType Leaf)) {
+    throw "Updater helper script missing: $updaterHelperSource"
+}
+
+$consumerUpdaterRoot = Join-Path $consumerDist 'updater'
+New-Item -ItemType Directory -Path $consumerUpdaterRoot -Force | Out-Null
+Copy-Item -LiteralPath $updaterHelperSource -Destination (Join-Path $consumerUpdaterRoot 'apply_app_update.ps1') -Force
 
 New-Item -ItemType Directory -Path $appPayloadDist -Force | Out-Null
 if (Test-Path -LiteralPath $payloadZip) {
