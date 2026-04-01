@@ -138,6 +138,8 @@ class TrainingSession:
                 last_bundle_path=self.settings.last_bundle_path,
                 last_corpus_catalog_root=self.settings.last_corpus_catalog_root,
                 opponent_fallback_mode=runtime_fallback_mode,
+                last_seen_installed_app_version=self.settings.last_seen_installed_app_version,
+                last_seen_installed_build_id=self.settings.last_seen_installed_build_id,
             )
         self.developer_timing_overrides = self.developer_timing_store.load()
         self.live_timing_debug_state = self._initial_timing_debug_state()

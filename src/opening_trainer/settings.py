@@ -33,6 +33,8 @@ class TrainerSettings:
     last_bundle_path: str | None = None
     last_corpus_catalog_root: str | None = None
     opponent_fallback_mode: str = 'current_bundle_only'
+    last_seen_installed_app_version: str | None = None
+    last_seen_installed_build_id: str | None = None
 
     def normalized(self, *, maximum_depth: int | None = None) -> 'TrainerSettings':
         effective_maximum = maximum_depth if maximum_depth is not None else max(self.active_training_ply_depth, CONSERVATIVE_FALLBACK_MAX_DEPTH)
@@ -66,6 +68,16 @@ class TrainerSettings:
             last_bundle_path=bundle_path,
             last_corpus_catalog_root=catalog_root,
             opponent_fallback_mode=str(self.opponent_fallback_mode or 'current_bundle_only').strip() or 'current_bundle_only',
+            last_seen_installed_app_version=(
+                str(self.last_seen_installed_app_version).strip()
+                if self.last_seen_installed_app_version is not None and str(self.last_seen_installed_app_version).strip()
+                else None
+            ),
+            last_seen_installed_build_id=(
+                str(self.last_seen_installed_build_id).strip()
+                if self.last_seen_installed_build_id is not None and str(self.last_seen_installed_build_id).strip()
+                else None
+            ),
         )
 
 
@@ -95,6 +107,8 @@ class TrainerSettingsStore:
             last_bundle_path=payload.get('last_bundle_path') or None,
             last_corpus_catalog_root=payload.get('last_corpus_catalog_root') or None,
             opponent_fallback_mode=str(payload.get('opponent_fallback_mode', 'current_bundle_only')),
+            last_seen_installed_app_version=payload.get('last_seen_installed_app_version') or None,
+            last_seen_installed_build_id=payload.get('last_seen_installed_build_id') or None,
         )
         normalized = settings.normalized(maximum_depth=maximum_depth)
         if normalized != settings:

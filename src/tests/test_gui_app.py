@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import time
 
 import chess
@@ -1585,10 +1586,44 @@ def test_initialize_app_shell_recovers_when_remembered_bundle_missing(tmp_path):
     gui.session.settings = TrainerSettings(last_bundle_path=str(tmp_path / 'missing_bundle'))
     seen = {}
     gui._show_bundle_picker = lambda message=None: seen.setdefault('message', message)
+    gui._is_post_update_repair_launch = lambda: False
+    gui._discover_and_bind_authoritative_corpus = lambda force_repair: None
 
     gui._initialize_app_shell()
 
-    assert 'Choose a corpus bundle' in seen['message']
+    assert 'No valid corpus root was auto-discovered' in seen['message']
+
+
+def test_validate_catalog_root_requires_manifest_driven_entries(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    empty_ok, _, _ = gui._validate_catalog_root(str(tmp_path))
+    assert empty_ok is False
+
+    bundle_dir = tmp_path / "bundle_a"
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "exact_corpus.sqlite").write_bytes(b"sqlite")
+    (data_dir / "behavioral_profile_set.sqlite").write_bytes(b"overlay")
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "build_status": "finalized",
+                "time_control_id": "600+0",
+                "initial_time_seconds": 600,
+                "increment_seconds": 0,
+                "target_rating_band": {"minimum": 1000, "maximum": 1200},
+                "retained_ply_depth": 30,
+                "payload_version": "v1",
+                "canonical_exact_payload_file": "data/exact_corpus.sqlite",
+                "behavioral_profile_set_file": "data/behavioral_profile_set.sqlite",
+            }
+        ),
+        encoding="utf-8",
+    )
+    ok, reason, entries = gui._validate_catalog_root(str(tmp_path))
+    assert ok is True
+    assert "validation_passed" in reason
+    assert entries == 1
 
 
 class FakeRoot:

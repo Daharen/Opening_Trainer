@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import subprocess
@@ -253,7 +254,7 @@ class OpeningTrainerGUI:
         self.bundle_picker.columnconfigure(0, weight=1)
         ttk.Label(
             self.bundle_picker,
-            text='Choose a discovered bundle or use structured catalog selection driven by manifest metadata.',
+            text='Opening Trainer auto-discovers installed corpus content first. Use this dialog only when authoritative discovery cannot bind a valid manifest-driven corpus root.',
             wraplength=360,
             justify='left',
         ).grid(row=0, column=0, columnspan=4, sticky='w')
@@ -322,17 +323,22 @@ class OpeningTrainerGUI:
         self.root.mainloop()
 
     def _initialize_app_shell(self) -> None:
-        expected = None
-        if hasattr(self, "session") and hasattr(self.session, "smart_profile_expected_bundle_path"):
-            expected = self.session.smart_profile_expected_bundle_path()
-        if expected and self._bundle_path_is_valid(expected):
-            self._load_selected_bundle(expected)
+        if not hasattr(self, "session"):
+            remembered = self._remembered_bundle_path()
+            if remembered and self._bundle_path_is_valid(remembered):
+                self._load_selected_bundle(remembered)
+                return
+            self._show_bundle_picker('No valid corpus root was auto-discovered. Browse to the folder that contains bundle subfolders with manifest.json.')
             return
-        remembered = self._remembered_bundle_path()
-        if remembered and self._bundle_path_is_valid(remembered):
-            self._load_selected_bundle(remembered)
+        repair_triggered = self._is_post_update_repair_launch()
+        discovered_bundle = self._discover_and_bind_authoritative_corpus(force_repair=repair_triggered)
+        if discovered_bundle and self._bundle_path_is_valid(discovered_bundle):
+            self._load_selected_bundle(discovered_bundle)
             return
-        self._show_bundle_picker('Choose a corpus bundle to start training. You can also skip and use fallback mode.')
+        self._show_bundle_picker(
+            'No valid corpus root was auto-discovered. Browse to the folder that contains bundle subfolders with manifest.json. '
+            'Until corpus is connected, Smart progression is blocked/degraded and fallback opponent routing is active.'
+        )
 
     def _load_panel_visibility_preference(self) -> bool:
         return self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth()).side_panel_visible
@@ -361,6 +367,8 @@ class OpeningTrainerGUI:
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
                 opponent_fallback_mode=settings.opponent_fallback_mode,
+                last_seen_installed_app_version=settings.last_seen_installed_app_version,
+                last_seen_installed_build_id=settings.last_seen_installed_build_id,
             )
         )
 
@@ -380,6 +388,8 @@ class OpeningTrainerGUI:
                 last_bundle_path=bundle_path,
                 last_corpus_catalog_root=self._catalog_root_setting(),
                 opponent_fallback_mode=settings.opponent_fallback_mode,
+                last_seen_installed_app_version=settings.last_seen_installed_app_version,
+                last_seen_installed_build_id=settings.last_seen_installed_build_id,
             )
         )
 
@@ -403,6 +413,8 @@ class OpeningTrainerGUI:
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=catalog_root,
                 opponent_fallback_mode=settings.opponent_fallback_mode,
+                last_seen_installed_app_version=settings.last_seen_installed_app_version,
+                last_seen_installed_build_id=settings.last_seen_installed_build_id,
             )
         )
 
@@ -477,7 +489,7 @@ class OpeningTrainerGUI:
         self.bundle_combobox.bind('<<ComboboxSelected>>', self._on_bundle_combo_selected)
 
     def _browse_catalog_root(self) -> None:
-        selected = filedialog.askdirectory(parent=self.root, title='Select corpus catalog root directory')
+        selected = filedialog.askdirectory(parent=self.root, title='Select corpus catalog root directory', initialdir=self._best_manual_browse_root(), mustexist=True)
         if selected:
             self.catalog_root_var.set(selected)
             self._refresh_catalog()
@@ -558,6 +570,8 @@ class OpeningTrainerGUI:
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
                 opponent_fallback_mode=self._selected_opponent_fallback_mode(),
+                last_seen_installed_app_version=settings.last_seen_installed_app_version,
+                last_seen_installed_build_id=settings.last_seen_installed_build_id,
             )
         )
         self.top_time_control_var.set(updated.selected_time_control_id)
@@ -828,7 +842,7 @@ class OpeningTrainerGUI:
             self.bundle_path_var.set(str(self.available_bundles[index][1]))
 
     def _browse_bundle_path(self) -> None:
-        selected = filedialog.askdirectory(parent=self.root, title='Select corpus bundle directory')
+        selected = filedialog.askdirectory(parent=self.root, title='Select corpus bundle directory', initialdir=self._best_manual_browse_root(), mustexist=True)
         if selected:
             self.bundle_path_var.set(selected)
 
@@ -905,18 +919,145 @@ class OpeningTrainerGUI:
         bundle_path = self._remembered_bundle_path()
         if bundle_path and self._bundle_path_is_valid(bundle_path):
             compatibility = inspect_corpus_bundle(Path(bundle_path))
-            self.bundle_status_var.set(f'Active bundle: {Path(bundle_path).name}')
+            self.bundle_status_var.set('Corpus status: connected and active')
             self.bundle_detail_var.set(compatibility.detail)
             return
         if bundle_path:
-            self.bundle_status_var.set('Remembered bundle unavailable')
-            self.bundle_detail_var.set(f'{bundle_path} is missing or no longer valid. Choose another bundle or continue in fallback mode.')
+            self.bundle_status_var.set('Corpus status: missing / fallback active')
+            self.bundle_detail_var.set(f'{bundle_path} is missing or no longer valid. Smart progression is blocked or degraded until a valid bundle is connected.')
             return
-        self.bundle_status_var.set('Active bundle: fallback / none')
-        self.bundle_detail_var.set('No bundle selected. The trainer will fall back to Stockfish and then random legal moves when needed.')
+        self.bundle_status_var.set('Corpus status: missing / fallback active')
+        self.bundle_detail_var.set('No bundle selected. The trainer falls back to Stockfish/random legal moves and Smart progression is blocked or degraded.')
 
     def _open_bundle_picker(self):
         self._show_bundle_picker('Choose a corpus bundle for this session. The last valid bundle will be reused on future launches.')
+
+    def _installed_manifest_payload(self) -> dict[str, object] | None:
+        manifest_path = self.session.runtime_context.runtime_paths.app_state_root / "installed_app_manifest.json"
+        if not manifest_path.exists():
+            return None
+        try:
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _is_post_update_repair_launch(self) -> bool:
+        if not hasattr(self, "session"):
+            return False
+        settings = self.session.settings
+        payload = self._installed_manifest_payload()
+        if not isinstance(payload, dict):
+            return False
+        installed_version = str(payload.get("app_version") or "").strip() or None
+        installed_build_id = str(payload.get("build_id") or "").strip() or None
+        changed = (
+            installed_version != settings.last_seen_installed_app_version
+            or installed_build_id != settings.last_seen_installed_build_id
+        )
+        if changed:
+            log_line(
+                f"CORPUS_DISCOVERY_POST_UPDATE_REPAIR app_version={installed_version or 'unknown'} build_id={installed_build_id or 'unknown'}",
+                tag="startup",
+            )
+            self.session.update_settings(
+                TrainerSettings(
+                    good_moves_acceptable=settings.good_moves_acceptable,
+                    active_training_ply_depth=settings.active_training_ply_depth,
+                    smart_profile_enabled=settings.smart_profile_enabled,
+                    training_mode=settings.training_mode,
+                    selected_smart_track=settings.selected_smart_track,
+                    selected_time_control_id=settings.selected_time_control_id,
+                    side_panel_visible=settings.side_panel_visible,
+                    move_list_visible=settings.move_list_visible,
+                    training_panel_visible_columns=settings.training_panel_visible_columns,
+                    last_bundle_path=settings.last_bundle_path,
+                    last_corpus_catalog_root=settings.last_corpus_catalog_root,
+                    opponent_fallback_mode=settings.opponent_fallback_mode,
+                    last_seen_installed_app_version=installed_version,
+                    last_seen_installed_build_id=installed_build_id,
+                )
+            )
+        return changed
+
+    def _discover_and_bind_authoritative_corpus(self, *, force_repair: bool) -> str | None:
+        del force_repair
+        settings = self.session.settings
+        paths = self.session.runtime_context.runtime_paths
+        remembered_catalog_root = settings.last_corpus_catalog_root
+        canonical_catalog_root = str(paths.corpus_bundle_root)
+        runtime_catalog_root = self._runtime_config_catalog_root()
+        candidates: list[tuple[str, str | None]] = [
+            ("install-owned installed_content_manifest", canonical_catalog_root if (paths.app_state_root / "installed_content_manifest.json").exists() else None),
+            ("canonical LocalAppData corpus root", canonical_catalog_root),
+            ("remembered corpus catalog root", remembered_catalog_root),
+            ("app-owned runtime config corpus root", runtime_catalog_root),
+        ]
+        valid: dict[str, tuple[str, int]] = {}
+        for source, candidate_root in candidates:
+            ok, reason, entries = self._validate_catalog_root(candidate_root)
+            log_line(f"CORPUS_DISCOVERY_CANDIDATE source={source} root={candidate_root or 'unset'} valid={ok} reason={reason}", tag="startup")
+            if ok and candidate_root:
+                valid[str(Path(candidate_root).expanduser())] = (source, entries)
+        if not valid:
+            log_line("CORPUS_DISCOVERY_FALLBACK no authoritative root validated; manual browse required", tag="startup")
+            return None
+        remembered_token = str(Path(remembered_catalog_root).expanduser()) if remembered_catalog_root else None
+        canonical_token = str(Path(canonical_catalog_root).expanduser())
+        winning_root = remembered_token if remembered_token and remembered_token in valid else None
+        if winning_root is None:
+            winning_root = canonical_token if canonical_token in valid else sorted(valid.keys())[0]
+        winner_source, entry_count = valid[winning_root]
+        log_line(f"CORPUS_DISCOVERY_WIN root={winning_root} source={winner_source} entries={entry_count}", tag="startup")
+        self.catalog_root_var.set(winning_root)
+        self._set_catalog_root_setting(winning_root)
+        self._refresh_catalog()
+        expected = self.session.smart_profile_expected_bundle_path()
+        if expected and self._bundle_path_is_valid(expected):
+            log_line(f"CORPUS_DISCOVERY_EXPECTED_BUNDLE winner={expected}", tag="startup")
+            return expected
+        if self.catalog and self.catalog.entries:
+            winner_bundle = str(self.catalog.entries[0].bundle_dir)
+            log_line(f"CORPUS_DISCOVERY_DEFAULT_BUNDLE winner={winner_bundle}", tag="startup")
+            return winner_bundle
+        log_line("CORPUS_DISCOVERY_FALLBACK root valid but no bundle resolved", tag="startup")
+        return None
+
+    def _runtime_config_catalog_root(self) -> str | None:
+        runtime_config_path = self.session.runtime_context.runtime_paths.runtime_config_path
+        if runtime_config_path is None or not runtime_config_path.exists():
+            return None
+        try:
+            payload = json.loads(runtime_config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        bundle_dir = payload.get("corpus_bundle_dir")
+        if not isinstance(bundle_dir, str) or not bundle_dir.strip():
+            return None
+        return str(Path(bundle_dir).expanduser().parent)
+
+    def _validate_catalog_root(self, root: str | None) -> tuple[bool, str, int]:
+        if root is None or not str(root).strip():
+            return False, "unset", 0
+        path = Path(root).expanduser()
+        if not path.exists() or not path.is_dir():
+            return False, "missing_or_not_directory", 0
+        catalog = discover_corpus_catalog(path)
+        if not catalog.entries:
+            return False, "no_valid_manifest_driven_bundles", 0
+        return True, "catalog_manifest_validation_passed", len(catalog.entries)
+
+    def _best_manual_browse_root(self) -> str:
+        candidates = (
+            self.catalog_root_var.get().strip(),
+            self.session.settings.last_corpus_catalog_root or "",
+            str(self.session.runtime_context.runtime_paths.corpus_bundle_root),
+            str(self.session.runtime_context.runtime_paths.content_root),
+            str(Path.home()),
+        )
+        for candidate in candidates:
+            if candidate and Path(candidate).expanduser().is_dir():
+                return str(Path(candidate).expanduser())
+        return str(Path.home())
 
     def _open_profiles(self):
         ProfileDialog(
@@ -1212,6 +1353,8 @@ class OpeningTrainerGUI:
                     last_bundle_path=self._remembered_bundle_path(),
                     last_corpus_catalog_root=self._catalog_root_setting(),
                     opponent_fallback_mode=self.session.settings.opponent_fallback_mode,
+                    last_seen_installed_app_version=self.session.settings.last_seen_installed_app_version,
+                    last_seen_installed_build_id=self.session.settings.last_seen_installed_build_id,
                 )
             )
             window.destroy()
