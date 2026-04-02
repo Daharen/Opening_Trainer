@@ -18,6 +18,17 @@ $logRoot = Join-Path $AppStateRoot 'logs'
 New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 $logPath = Join-Path $updaterRoot 'apply_update.log'
+$launchFailurePath = Join-Path $updaterRoot 'apply_update.launch_failure.log'
+
+try {
+    $startupLine = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), "UPDATER_HELPER_PROCESS_STARTED app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
+    Set-Content -LiteralPath $logPath -Value $startupLine -Encoding utf8
+}
+catch {
+    $fallbackLine = "{0} UPDATER_HELPER_PROCESS_START_FAILURE app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid error=$($_.Exception.Message)" -f ([DateTime]::UtcNow.ToString('o'))
+    Set-Content -LiteralPath $launchFailurePath -Value $fallbackLine -Encoding utf8
+    throw "Unable to initialize helper log at $logPath. Fallback failure artifact written to $launchFailurePath. error=$($_.Exception.Message)"
+}
 
 function Write-Log {
     param([string]$Message)
@@ -32,12 +43,14 @@ function Read-Json {
 
 function Resolve-Manifest {
     param([string]$ManifestRef)
+    $dest = Join-Path $updaterRoot 'manifest.latest.json'
     if ($ManifestRef -match '^https?://') {
-        $dest = Join-Path $updaterRoot 'manifest.latest.json'
         Invoke-WebRequest -Uri $ManifestRef -OutFile $dest -UseBasicParsing
         return Read-Json -Path $dest
     }
-    return Read-Json -Path $ManifestRef
+    $resolvedManifestPath = [System.IO.Path]::GetFullPath($ManifestRef)
+    Copy-Item -LiteralPath $resolvedManifestPath -Destination $dest -Force
+    return Read-Json -Path $dest
 }
 
 function Wait-ForProcessExit {
@@ -232,6 +245,6 @@ try {
     Write-Log "UPDATER_FINAL_RESULT result=success"
 }
 catch {
-    Write-Log "UPDATER_FINAL_RESULT result=failure phase=$phase error=$($_.Exception.Message)"
+    Write-Log "UPDATER_FINAL_RESULT result=failure phase=$phase app_state_root=$AppStateRoot updater_root=$updaterRoot log_path=$logPath manifest_ref=$ManifestPathOrUrl error=$($_.Exception.Message)"
     throw
 }

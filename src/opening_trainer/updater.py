@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -226,6 +227,7 @@ def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
         raise UpdaterInstallStateError(
             f"Installation is missing required updater metadata: {app_state_root / 'installed_app_manifest.json'}"
         )
+    _log_installed_manifest_stale(app_state_root=app_state_root, installed_manifest=installed_manifest)
 
     helper_script = _resolve_helper_script(app_state_root=app_state_root, installed_manifest=installed_manifest)
     if helper_script is None or not helper_script.exists():
@@ -262,6 +264,33 @@ def _has_newer_build(installed: dict, manifest: AppUpdateManifest) -> bool:
     if manifest.payload_sha256 and installed_payload_sha and installed_payload_sha != manifest.payload_sha256.lower():
         return True
     return str(installed.get("app_version")) != manifest.app_version
+
+
+def _log_installed_manifest_stale(*, app_state_root: Path, installed_manifest: dict) -> None:
+    mutable_root = Path(str(installed_manifest.get("mutable_app_root") or app_state_root / "App")).expanduser()
+    payload_identity = read_payload_identity_marker(mutable_root=mutable_root)
+    if payload_identity is None:
+        return
+    installed_version = str(installed_manifest.get("app_version") or "")
+    installed_build = str(installed_manifest.get("build_id") or "")
+    installed_channel = str(installed_manifest.get("channel") or "")
+    payload_version = str(payload_identity.get("app_version") or "")
+    payload_build = str(payload_identity.get("build_id") or "")
+    payload_channel = str(payload_identity.get("channel") or "")
+    if (
+        installed_version == payload_version
+        and installed_build == payload_build
+        and installed_channel == payload_channel
+    ):
+        return
+    log_line(
+        "INSTALLED_MANIFEST_STALE "
+        f"app_state_root={app_state_root} "
+        f"mutable_app_root={mutable_root} "
+        f"installed_version={installed_version} installed_build_id={installed_build} installed_channel={installed_channel} "
+        f"payload_version={payload_version} payload_build_id={payload_build} payload_channel={payload_channel}",
+        tag="error",
+    )
 
 
 def check_for_update(manifest_path_or_url: str, *, app_state_root: Path) -> tuple[bool, AppUpdateManifest, dict | None]:
@@ -315,7 +344,50 @@ def launch_updater_helper(
         f"localappdata={os.getenv('LOCALAPPDATA', '')}",
         tag="startup",
     )
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    launch_audit_path = updater_root / "launch_helper.audit.json"
+    launch_failure_path = updater_root / "launch_helper.failure.log"
+    launch_audit_payload = {
+        "event": "UPDATER_HELPER_LAUNCH_ATTEMPT",
+        "helper_script": str(helper_script),
+        "manifest_ref": manifest_ref,
+        "cwd": str(helper_cwd),
+        "command": cmd,
+        "app_state_root": str(app_state_root),
+        "wait_for_pid": wait_for_pid,
+    }
+    launch_audit_path.write_text(json.dumps(launch_audit_payload, indent=2), encoding="utf-8")
     popen_kwargs: dict[str, object] = {"cwd": str(helper_cwd)}
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    return subprocess.Popen(cmd, **popen_kwargs)
+    try:
+        process = subprocess.Popen(cmd, **popen_kwargs)
+    except Exception as exc:
+        launch_failure_path.write_text(
+            (
+                "UPDATER_HELPER_LAUNCH_FAILED "
+                f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
+                f"manifest_ref={manifest_ref} cmd={cmd} error={exc}"
+            ),
+            encoding="utf-8",
+        )
+        raise
+    apply_log_path = updater_root / "apply_update.log"
+    time.sleep(0.35)
+    if not apply_log_path.exists():
+        launch_failure_path.write_text(
+            (
+                "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+                f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
+                f"manifest_ref={manifest_ref} cmd={cmd} pid={process.pid} "
+                "detail=helper_started_but_apply_update_log_missing_after_launch"
+            ),
+            encoding="utf-8",
+        )
+        log_line(
+            "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} pid={process.pid}",
+            tag="error",
+        )
+    return process
