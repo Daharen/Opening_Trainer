@@ -164,11 +164,11 @@ class OpeningTrainerGUI:
             toolbar,
             text='Start drill',
             command=self._start_game,
-            bg='#1e88e5',
-            fg='white',
-            activebackground='#1565c0',
-            activeforeground='white',
-            disabledforeground='#d6e9ff',
+            bg='#ffd600',
+            fg='black',
+            activebackground='#ffb300',
+            activeforeground='black',
+            disabledforeground='#fff1a8',
         )
         self.start_button.pack(side='left')
         tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
