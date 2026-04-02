@@ -43,6 +43,17 @@ Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--ru
 var
   PerUserProvisioningSucceeded: Boolean;
 
+{ IMPORTANT: Validate [Code] compatibility by running a real ISCC build via
+  installer/scripts/build_consumer_installer.ps1. Do not assume Delphi helpers
+  are available in Inno Pascal unless compilation confirms it. }
+function BoolText(const Value: Boolean): String;
+begin
+  if Value then
+    Result := 'True'
+  else
+    Result := 'False';
+end;
+
 function EscapePowerShellArg(const Value: String): String;
 var
   Escaped: String;
@@ -148,7 +159,7 @@ begin
     ResultCode
   );
 
-  Log(Format('PER_USER_PROVISIONING exec_result script=%s launched=%s result_code=%d', [ScriptName, BoolToStr(LaunchOk, True), ResultCode]));
+  Log(Format('PER_USER_PROVISIONING exec_result script=%s launched=%s result_code=%d', [ScriptName, BoolText(LaunchOk), ResultCode]));
 
   if not LaunchOk then
   begin
@@ -226,7 +237,7 @@ end;
 function ShouldLaunchPostinstallApp: Boolean;
 begin
   Result := PerUserProvisioningSucceeded;
-  Log(Format('POSTINSTALL_LAUNCH check=%s', [BoolToStr(Result, True)]));
+  Log(Format('POSTINSTALL_LAUNCH check=%s', [BoolText(Result)]));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
