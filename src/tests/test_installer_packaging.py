@@ -48,9 +48,11 @@ def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
     assert 'Filename: "{localappdata}\\OpeningTrainer\\App\\{#MyAppExeName}"' in script
     assert 'WorkingDir: "{localappdata}\\OpeningTrainer\\App"' in script
     assert "install_consumer_app.ps1" in script
+    assert "install_consumer_app.invoke.log" in script
+    assert "install_consumer_content.invoke.log" in script
     assert "UpdaterHelperScriptPath" in script
     assert "DefaultManifestUrl" in script
-    assert "{%USERPROFILE}\\OpeningTrainer\\App" in script or "{userprofile}\\OpeningTrainer\\App" in script
+    assert "{localappdata}\\OpeningTrainer\\App" in script
     assert "CurUninstallStepChanged" in script
     assert "Remove downloaded opening content" in script
 
@@ -66,7 +68,7 @@ def test_content_bootstrap_writes_consumer_runtime_config_and_logging() -> None:
     assert "opening_book_path" in script
     assert "engine_executable_path" in script
     assert "strict_assets = $false" in script
-    assert "install.log" in script
+    assert "install_consumer_content.log" in script
     assert "Checking existing content" in script
     assert "Reusing installed content" in script
     assert "Migrating wrapper-folder content" in script
@@ -94,10 +96,12 @@ def test_packaging_build_scripts_exist() -> None:
     payload_script = repo_root / "installer" / "scripts" / "build_consumer_payload.ps1"
     app_payload_script = repo_root / "installer" / "scripts" / "build_consumer_app_payload.ps1"
     installer_script = repo_root / "installer" / "scripts" / "build_consumer_installer.ps1"
+    validation_script = repo_root / "installer" / "scripts" / "validate_install_consumer_app.ps1"
 
     assert payload_script.exists()
     assert app_payload_script.exists()
     assert installer_script.exists()
+    assert validation_script.exists()
 
     payload_text = payload_script.read_text(encoding="utf-8")
     installer_text = installer_script.read_text(encoding="utf-8")
@@ -122,6 +126,8 @@ def test_packaging_build_scripts_exist() -> None:
     assert "build_consumer_app_payload.ps1" in installer_text
     assert "ISCC.exe" in installer_text
     assert "App payload zip is missing" in installer_text
+    assert "SkipAppProvisioningValidation" in installer_text
+    assert "validate_install_consumer_app.ps1" in installer_text
     assert "app_update_manifest.json" in installer_text
     assert "staging" in app_payload_text
     assert "Copy-WithRetry" in app_payload_text
@@ -146,8 +152,8 @@ def test_install_consumer_app_has_probe_and_fallback_policy() -> None:
 
     assert "Test-AppRootWritable" in script
     assert "Move-Item" in script
-    assert "No writable mutable app roots passed probe" in script
-    assert "orderedCandidates = @($DefaultAppRoot, $SecondaryAppRoot)" in script
+    assert "Writable probe selected explicit override root" in script
+    assert "Default mutable app root failed writable probe" in script
     assert "installed_app_manifest.json" in script
     assert "updater_config.json" in script
     assert "install_consumer_app.log" in script

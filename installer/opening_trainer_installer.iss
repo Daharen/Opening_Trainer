@@ -63,6 +63,11 @@ begin
   Result := Escaped;
 end;
 
+procedure AppendTextLine(const FilePath: String; const Message: String);
+begin
+  SaveStringToFile(FilePath, Message + #13#10, True);
+end;
+
 procedure AppendMissingIfAbsent(var Missing: String; const LabelName: String; const FilePath: String);
 begin
   if not FileExists(FilePath) then
@@ -128,45 +133,70 @@ end;
 function RunProvisioningScriptAsOriginalUser(
   const ScriptName: String;
   const Parameters: String;
-  const FailureLogHint: String;
+  const ScriptLogPath: String;
+  const InvokeLogPath: String;
   var FailureDetail: String
 ): Boolean;
 var
   ScriptPath: String;
   PowerShellPath: String;
+  CmdPath: String;
+  CmdParams: String;
+  RedirectedInvocation: String;
   ResultCode: Integer;
   ResolvedParams: String;
   LaunchOk: Boolean;
+  ScriptLogFound: Boolean;
 begin
   Result := False;
   ScriptPath := ExpandConstant('{app}\installer\' + ScriptName);
   PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  CmdPath := ExpandConstant('{cmd}');
   ResolvedParams := '-NoProfile -ExecutionPolicy Bypass -File "' + EscapePowerShellArg(ScriptPath) + '" ' + Parameters;
+  RedirectedInvocation :=
+    '"' + EscapePowerShellArg(PowerShellPath) + '" ' + ResolvedParams +
+    ' >> "' + EscapePowerShellArg(InvokeLogPath) + '" 2>&1';
+  CmdParams := '/C "' + RedirectedInvocation + '"';
+
+  ForceDirectories(ExtractFileDir(InvokeLogPath));
+  AppendTextLine(InvokeLogPath, '===== INSTALL_CONSUMER INVOCATION START =====');
+  AppendTextLine(InvokeLogPath, 'script=' + ScriptName);
+  AppendTextLine(InvokeLogPath, 'powershell_path=' + PowerShellPath);
+  AppendTextLine(InvokeLogPath, 'script_path=' + ScriptPath);
+  AppendTextLine(InvokeLogPath, 'argument_string=' + ResolvedParams);
+  AppendTextLine(InvokeLogPath, 'launcher=' + CmdPath + ' ' + CmdParams);
 
   Log('PER_USER_PROVISIONING script=' + ScriptName + ' powershell=' + PowerShellPath);
   Log('PER_USER_PROVISIONING resolved_script_path=' + ScriptPath);
   Log('PER_USER_PROVISIONING localappdata=' + ExpandConstant('{localappdata}'));
   Log('PER_USER_PROVISIONING app_state_root=' + ExpandConstant('{localappdata}\OpeningTrainer'));
   Log('PER_USER_PROVISIONING content_root=' + ExpandConstant('{localappdata}\OpeningTrainerContent'));
-  Log('PER_USER_PROVISIONING command_line=' + PowerShellPath + ' ' + ResolvedParams);
+  Log('PER_USER_PROVISIONING command_line=' + CmdPath + ' ' + CmdParams);
 
   LaunchOk := ExecAsOriginalUser(
-    PowerShellPath,
-    ResolvedParams,
+    CmdPath,
+    CmdParams,
     ExpandConstant('{app}\installer'),
     SW_SHOWNORMAL,
     ewWaitUntilTerminated,
     ResultCode
   );
 
+  AppendTextLine(InvokeLogPath, Format('launch_ok=%s', [BoolText(LaunchOk)]));
+  AppendTextLine(InvokeLogPath, Format('exit_code=%d', [ResultCode]));
+
   Log(Format('PER_USER_PROVISIONING exec_result script=%s launched=%s result_code=%d', [ScriptName, BoolText(LaunchOk), ResultCode]));
+
+  ScriptLogFound := FileExists(ScriptLogPath);
+  AppendTextLine(InvokeLogPath, Format('script_log_found=%s path=%s', [BoolText(ScriptLogFound), ScriptLogPath]));
+  AppendTextLine(InvokeLogPath, '===== INSTALL_CONSUMER INVOCATION END =====');
 
   if not LaunchOk then
   begin
     FailureDetail :=
       'Failed to launch per-user provisioning script ' + ScriptName + ' as the original interactive user.' + #13#10 +
       'System error: ' + SysErrorMessage(ResultCode) + #13#10 +
-      'See installer log and provisioning log: ' + FailureLogHint;
+      'See installer-owned invocation log and provisioning log: ' + InvokeLogPath + ' ; ' + ScriptLogPath;
     Exit;
   end;
 
@@ -174,7 +204,7 @@ begin
   begin
     FailureDetail :=
       'Per-user provisioning script ' + ScriptName + ' exited with code ' + IntToStr(ResultCode) + '.' + #13#10 +
-      'See provisioning log: ' + FailureLogHint;
+      'See installer-owned invocation log and provisioning log: ' + InvokeLogPath + ' ; ' + ScriptLogPath;
     Exit;
   end;
 
@@ -206,6 +236,7 @@ begin
     'install_consumer_app.ps1',
     AppParams,
     ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_app.log'),
+    ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_app.invoke.log'),
     FailureDetail
   ) then
     RaiseException(FailureDetail);
@@ -223,6 +254,7 @@ begin
     'install_consumer_content.ps1',
     ContentParams,
     ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_content.log'),
+    ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_content.invoke.log'),
     FailureDetail
   ) then
     RaiseException(FailureDetail);

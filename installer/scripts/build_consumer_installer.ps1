@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipPayloadBuild
+    [switch]$SkipPayloadBuild,
+    [switch]$SkipAppProvisioningValidation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,6 +9,7 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
 $payloadBuildScript = Join-Path $repoRoot 'installer\scripts\build_consumer_payload.ps1'
 $appPayloadBuildScript = Join-Path $repoRoot 'installer\scripts\build_consumer_app_payload.ps1'
+$validateAppProvisioningScript = Join-Path $repoRoot 'installer\scripts\validate_install_consumer_app.ps1'
 $manifestPath = Join-Path $repoRoot 'installer\consumer_content_manifest.json'
 $appUpdateManifestPath = Join-Path $repoRoot 'installer\app_update_manifest.json'
 $issPath = Join-Path $repoRoot 'installer\opening_trainer_installer.iss'
@@ -28,6 +30,9 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $appUpdateManifestPath -PathType Leaf)) {
     throw "App update manifest is missing: $appUpdateManifestPath"
+}
+if (-not (Test-Path -LiteralPath $validateAppProvisioningScript -PathType Leaf)) {
+    throw "App provisioning validation script is missing: $validateAppProvisioningScript"
 }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -57,6 +62,11 @@ if ([string]::IsNullOrWhiteSpace([string]$appManifest.payload_url)) {
 $expectedAppPayloadZip = Join-Path $appPayloadDist $appManifest.payload_filename
 if (-not (Test-Path -LiteralPath $expectedAppPayloadZip -PathType Leaf)) {
     throw "App payload zip is missing. Expected: $expectedAppPayloadZip"
+}
+
+if (-not $SkipAppProvisioningValidation) {
+    Write-Host "Running direct app provisioning validation: $validateAppProvisioningScript"
+    & $validateAppProvisioningScript
 }
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
