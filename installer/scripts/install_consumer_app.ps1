@@ -225,15 +225,47 @@ try {
     Copy-Item -LiteralPath $resolvedHelperSource -Destination $mutableHelper -Force
     Write-AppInstallLog "Provisioned updater helper to mutable app payload: $mutableHelper source=$resolvedHelperSource"
 
+    $mutablePayloadIdentity = Join-Path $targetRoot 'payload_identity.json'
+    Assert-PathExists -Path $mutablePayloadIdentity -Label 'mutable_payload_identity_marker' -Phase 'post-copy'
+
+    $payloadIdentityRaw = Get-Content -LiteralPath $mutablePayloadIdentity -Raw -Encoding UTF8
+    try {
+        $payloadIdentity = $payloadIdentityRaw | ConvertFrom-Json
+    }
+    catch {
+        throw "Mutable payload identity was not valid JSON: $mutablePayloadIdentity error=$($_.Exception.Message)"
+    }
+    if ($null -eq $payloadIdentity) {
+        throw "Mutable payload identity parsed to null: $mutablePayloadIdentity"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$payloadIdentity.app_version)) {
+        throw "Mutable payload identity missing required field app_version: $mutablePayloadIdentity"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$payloadIdentity.build_id)) {
+        throw "Mutable payload identity missing required field build_id: $mutablePayloadIdentity"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$payloadIdentity.channel)) {
+        throw "Mutable payload identity missing required field channel: $mutablePayloadIdentity"
+    }
+
+    $payloadIdentityAppVersion = [string]$payloadIdentity.app_version
+    $payloadIdentityBuildId = [string]$payloadIdentity.build_id
+    $payloadIdentityChannel = [string]$payloadIdentity.channel
+    $payloadIdentitySha256 = ''
+    if ($null -ne $payloadIdentity.payload_sha256) {
+        $payloadIdentitySha256 = [string]$payloadIdentity.payload_sha256
+    }
+    Write-AppInstallLog "COPIED_PAYLOAD_IDENTITY_SOURCE path=$mutablePayloadIdentity app_version=$payloadIdentityAppVersion build_id=$payloadIdentityBuildId channel=$payloadIdentityChannel payload_sha256=$payloadIdentitySha256"
+
     $manifestPath = Join-Path $AppStateRoot 'installed_app_manifest.json'
     $installedManifest = [ordered]@{
         installed_app_manifest_version = 1
-        app_version = $AppVersion
-        build_id = $BuildId
-        channel = $Channel
+        app_version = $payloadIdentityAppVersion
+        build_id = $payloadIdentityBuildId
+        channel = $payloadIdentityChannel
         mutable_app_root = $targetRoot
         payload_filename = $PayloadFilename
-        payload_sha256 = $PayloadSha256
+        payload_sha256 = $payloadIdentitySha256
         installed_at_utc = (Get-Date).ToUniversalTime().ToString('o')
         bootstrap_version = $AppVersion
     }
@@ -248,17 +280,24 @@ try {
 
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($manifestPath, ($installedManifest | ConvertTo-Json -Depth 8), $utf8NoBom)
-    Write-AppInstallLog "Provisioned installed app manifest: $manifestPath"
+    Write-AppInstallLog "INSTALL_MANIFEST_SOURCE payload_identity path=$mutablePayloadIdentity manifest_path=$manifestPath app_version=$($installedManifest.app_version) build_id=$($installedManifest.build_id) channel=$($installedManifest.channel) payload_sha256=$($installedManifest.payload_sha256)"
+    $writtenManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (
+        ([string]$writtenManifest.app_version -ne $payloadIdentityAppVersion) -or
+        ([string]$writtenManifest.build_id -ne $payloadIdentityBuildId) -or
+        ([string]$writtenManifest.channel -ne $payloadIdentityChannel)
+    ) {
+        throw "Installed manifest mismatch after write: payload_identity=app_version=$payloadIdentityAppVersion,build_id=$payloadIdentityBuildId,channel=$payloadIdentityChannel written=app_version=$($writtenManifest.app_version),build_id=$($writtenManifest.build_id),channel=$($writtenManifest.channel)"
+    }
+    Write-AppInstallLog "INSTALL_MANIFEST_VERIFIED source=payload_identity app_version=$($writtenManifest.app_version) build_id=$($writtenManifest.build_id) channel=$($writtenManifest.channel)"
     [System.IO.File]::WriteAllText($updaterConfigPath, ($updaterConfig | ConvertTo-Json -Depth 8), $utf8NoBom)
     Write-AppInstallLog "Provisioned updater config to app state: $updaterConfigPath"
     $mutableUpdaterConfigPath = Join-Path (Join-Path $targetRoot 'updater') 'updater_config.json'
     [System.IO.File]::WriteAllText($mutableUpdaterConfigPath, ($updaterConfig | ConvertTo-Json -Depth 8), $utf8NoBom)
     Write-AppInstallLog "Provisioned updater config to mutable payload: $mutableUpdaterConfigPath"
 
-    $mutablePayloadIdentity = Join-Path $targetRoot 'payload_identity.json'
     Assert-PathExists -Path (Join-Path $targetRoot 'OpeningTrainer.exe') -Label 'mutable_executable' -Phase 'post-copy'
     Assert-PathExists -Path $mutableHelper -Label 'mutable_updater_helper' -Phase 'post-copy'
-    Assert-PathExists -Path $mutablePayloadIdentity -Label 'mutable_payload_identity_marker' -Phase 'post-copy'
 
     Assert-PathExists -Path $manifestPath -Label 'app_state_installed_manifest' -Phase 'post-provision'
     Assert-PathExists -Path $appStateHelper -Label 'app_state_updater_helper' -Phase 'post-provision'
