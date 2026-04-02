@@ -44,8 +44,12 @@ var
   PerUserProvisioningSucceeded: Boolean;
 
 function EscapePowerShellArg(const Value: String): String;
+var
+  Escaped: String;
 begin
-  Result := StringChangeEx(Value, '"', '""', True);
+  Escaped := Value;
+  StringChangeEx(Escaped, '"', '""', True);
+  Result := Escaped;
 end;
 
 procedure AppendMissingIfAbsent(var Missing: String; const LabelName: String; const FilePath: String);
