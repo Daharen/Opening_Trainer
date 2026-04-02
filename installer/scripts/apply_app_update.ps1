@@ -13,35 +13,76 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$updaterRoot = Join-Path $AppStateRoot 'updater'
-$logRoot = Join-Path $AppStateRoot 'logs'
-New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
-$logPath = Join-Path $updaterRoot 'apply_update.log'
-$launchFailurePath = Join-Path $updaterRoot 'apply_update.launch_failure.log'
+$bootstrapUpdaterRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'OpeningTrainer\updater'
+if ([string]::IsNullOrWhiteSpace($bootstrapUpdaterRoot)) {
+    $bootstrapUpdaterRoot = Join-Path $AppStateRoot 'updater'
+}
+$bootstrapLogPath = Join-Path $bootstrapUpdaterRoot 'apply_update.bootstrap.log'
+$bootstrapFailurePath = Join-Path $bootstrapUpdaterRoot 'apply_update.bootstrap.failure.log'
+
+function Write-BootstrapLine {
+    param([string]$Message)
+    try {
+        New-Item -ItemType Directory -Path $bootstrapUpdaterRoot -Force | Out-Null
+        $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message
+        Add-Content -LiteralPath $bootstrapLogPath -Value $line -Encoding utf8
+    } catch {
+        # Best effort only: bootstrap failure details are written via Write-BootstrapFailure.
+    }
+}
+
+function Write-BootstrapFailure {
+    param([string]$Message)
+    try {
+        New-Item -ItemType Directory -Path $bootstrapUpdaterRoot -Force | Out-Null
+        $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message
+        Add-Content -LiteralPath $bootstrapFailurePath -Value $line -Encoding utf8
+    } catch {
+        # Avoid recursive failures in bootstrap fatal path.
+    }
+}
+
+$boundParamsRaw = ''
+try {
+    $boundParamsRaw = ($PSBoundParameters | ConvertTo-Json -Compress -Depth 4)
+} catch {
+    $boundParamsRaw = "bound_parameter_json_failure=$($_.Exception.Message)"
+}
+Write-BootstrapLine "BOOTSTRAP_ENTERED script_path=$PSCommandPath cwd=$((Get-Location).Path) ps_version=$($PSVersionTable.PSVersion) raw_parameters=$boundParamsRaw app_state_root=$AppStateRoot relaunch_exe_path=$RelaunchExePath wait_pid=$WaitForPid marker=script_body_entered"
 
 try {
-    $startupLine = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), "UPDATER_HELPER_PROCESS_STARTED app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
-    Set-Content -LiteralPath $logPath -Value $startupLine -Encoding utf8
-}
-catch {
-    $fallbackLine = "{0} UPDATER_HELPER_PROCESS_START_FAILURE app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid error=$($_.Exception.Message)" -f ([DateTime]::UtcNow.ToString('o'))
-    Set-Content -LiteralPath $launchFailurePath -Value $fallbackLine -Encoding utf8
-    throw "Unable to initialize helper log at $logPath. Fallback failure artifact written to $launchFailurePath. error=$($_.Exception.Message)"
-}
+    $updaterRoot = Join-Path $AppStateRoot 'updater'
+    $logRoot = Join-Path $AppStateRoot 'logs'
+    New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+    $logPath = Join-Path $updaterRoot 'apply_update.log'
+    $launchFailurePath = Join-Path $updaterRoot 'apply_update.launch_failure.log'
 
-function Write-Log {
+    try {
+        $startupLine = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), "UPDATER_HELPER_PROCESS_STARTED app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
+        Set-Content -LiteralPath $logPath -Value $startupLine -Encoding utf8
+    }
+    catch {
+        $reason = $_.Exception.Message
+        $fallbackLine = "{0} UPDATER_HELPER_PROCESS_START_FAILURE app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid error=$reason" -f ([DateTime]::UtcNow.ToString('o'))
+        Set-Content -LiteralPath $launchFailurePath -Value $fallbackLine -Encoding utf8
+        Write-BootstrapLine "APPLY_LOG_INIT_FAILURE log_path=$logPath launch_failure_path=$launchFailurePath reason=$reason"
+        Write-BootstrapFailure "APPLY_LOG_INIT_FAILURE log_path=$logPath launch_failure_path=$launchFailurePath reason=$reason"
+        throw "Unable to initialize helper log at $logPath. Fallback failure artifact written to $launchFailurePath. error=$reason"
+    }
+
+    function Write-Log {
     param([string]$Message)
     $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message
     Add-Content -LiteralPath $logPath -Value $line -Encoding utf8
 }
 
-function Read-Json {
+    function Read-Json {
     param([string]$Path)
     return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
-function Resolve-Manifest {
+    function Resolve-Manifest {
     param([string]$ManifestRef)
     $dest = Join-Path $updaterRoot 'manifest.latest.json'
     if ($ManifestRef -match '^https?://') {
@@ -53,7 +94,7 @@ function Resolve-Manifest {
     return Read-Json -Path $dest
 }
 
-function Wait-ForProcessExit {
+    function Wait-ForProcessExit {
     param([int]$WaitForProcessId, [int]$TimeoutSeconds = 180)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ($true) {
@@ -66,7 +107,7 @@ function Wait-ForProcessExit {
     }
 }
 
-function Wait-ForMutableRootSwapReady {
+    function Wait-ForMutableRootSwapReady {
     param(
         [Parameter(Mandatory = $true)]
         [string]$MutableRoot,
@@ -105,7 +146,7 @@ function Wait-ForMutableRootSwapReady {
     }
 }
 
-function Relocate-HelperWorkingDirectory {
+    function Relocate-HelperWorkingDirectory {
     param(
         [string]$MutableAppRoot
     )
@@ -137,7 +178,7 @@ function Relocate-HelperWorkingDirectory {
     throw "Unable to relocate helper working directory outside mutable app root."
 }
 
-function Move-WithRetry {
+    function Move-WithRetry {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Source,
@@ -163,10 +204,10 @@ function Move-WithRetry {
     }
 }
 
-try {
-    $phase = 'begin'
-    Write-Log "UPDATER_BEGIN manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
-    $manifest = Resolve-Manifest -ManifestRef $ManifestPathOrUrl
+    try {
+        $phase = 'begin'
+        Write-Log "UPDATER_BEGIN manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
+        $manifest = Resolve-Manifest -ManifestRef $ManifestPathOrUrl
     $installedManifestPath = Join-Path $AppStateRoot 'installed_app_manifest.json'
     if (-not (Test-Path -LiteralPath $installedManifestPath)) {
         throw "Missing installed app manifest at $installedManifestPath"
@@ -242,9 +283,16 @@ try {
     } else {
         Write-Log "RELAUNCH_RESULT result=skipped missing_exe=$RelaunchExePath"
     }
-    Write-Log "UPDATER_FINAL_RESULT result=success"
+        Write-Log "UPDATER_FINAL_RESULT result=success"
+    }
+    catch {
+        Write-Log "UPDATER_FINAL_RESULT result=failure phase=$phase app_state_root=$AppStateRoot updater_root=$updaterRoot log_path=$logPath manifest_ref=$ManifestPathOrUrl error=$($_.Exception.Message)"
+        throw
+    }
 }
 catch {
-    Write-Log "UPDATER_FINAL_RESULT result=failure phase=$phase app_state_root=$AppStateRoot updater_root=$updaterRoot log_path=$logPath manifest_ref=$ManifestPathOrUrl error=$($_.Exception.Message)"
+    $fatal = $_.Exception.Message
+    Write-BootstrapFailure "BOOTSTRAP_FATAL error=$fatal script_path=$PSCommandPath cwd=$((Get-Location).Path) app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
+    Write-BootstrapLine "BOOTSTRAP_FATAL error=$fatal"
     throw
 }
