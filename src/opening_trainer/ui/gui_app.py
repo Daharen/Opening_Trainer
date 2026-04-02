@@ -2133,15 +2133,34 @@ class OpeningTrainerGUI:
                 return
             log_line("GUI_UPDATE_CONFIRM_ACCEPTED", tag="startup")
             self._enter_updater_mode()
-            launch_updater_helper(
+            launch_result = launch_updater_helper(
                 manifest_ref,
                 app_state_root=app_state_root,
                 wait_for_pid=os.getpid(),
                 relaunch_exe_path=Path(sys.executable),
                 relaunch_args=["--runtime-mode", "consumer"],
             )
+            if not launch_result.helper_bootstrap_proven:
+                self._exit_updater_mode()
+                log_line(
+                    "GUI_UPDATE_HELPER_INIT_UNPROVEN "
+                    f"update_attempt_id={launch_result.update_attempt_id} "
+                    f"proof_artifact={launch_result.proof_artifact}",
+                    tag="error",
+                )
+                messagebox.showerror(
+                    "Update Error",
+                    "Updater helper failed to initialize. The application was not closed.",
+                    parent=self.root,
+                )
+                return
             self._updater_apply_started = True
-            log_line("GUI_UPDATE_HELPER_LAUNCHED", tag="startup")
+            log_line(
+                "GUI_UPDATE_HELPER_LAUNCHED "
+                f"update_attempt_id={launch_result.update_attempt_id} "
+                f"proof_artifact={launch_result.proof_artifact}",
+                tag="startup",
+            )
             self._set_updater_status_text("Applying update and restarting Opening Trainer…")
             self._shutdown_coordinator(reason="apply_update")
         except UpdaterInstallStateError as exc:

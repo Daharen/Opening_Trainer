@@ -8,7 +8,9 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$RelaunchExePath = '',
     [Parameter(Mandatory = $false)]
-    [string]$RelaunchArgs = '["--runtime-mode","consumer"]'
+    [string]$RelaunchArgs = '["--runtime-mode","consumer"]',
+    [Parameter(Mandatory = $false)]
+    [string]$UpdateAttemptId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,7 +50,10 @@ try {
 } catch {
     $boundParamsRaw = "bound_parameter_json_failure=$($_.Exception.Message)"
 }
-Write-BootstrapLine "BOOTSTRAP_ENTERED script_path=$PSCommandPath cwd=$((Get-Location).Path) ps_version=$($PSVersionTable.PSVersion) raw_parameters=$boundParamsRaw app_state_root=$AppStateRoot relaunch_exe_path=$RelaunchExePath wait_pid=$WaitForPid marker=script_body_entered"
+if ([string]::IsNullOrWhiteSpace($UpdateAttemptId)) {
+    $UpdateAttemptId = [guid]::NewGuid().ToString('N')
+}
+Write-BootstrapLine "BOOTSTRAP_ENTERED update_attempt_id=$UpdateAttemptId helper_pid=$PID script_path=$PSCommandPath cwd=$((Get-Location).Path) app_state_root=$AppStateRoot relaunch_exe_path=$RelaunchExePath wait_pid=$WaitForPid ps_version=$($PSVersionTable.PSVersion) raw_parameters=$boundParamsRaw marker=script_body_entered"
 
 try {
     $updaterRoot = Join-Path $AppStateRoot 'updater'
@@ -59,21 +64,21 @@ try {
     $launchFailurePath = Join-Path $updaterRoot 'apply_update.launch_failure.log'
 
     try {
-        $startupLine = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), "UPDATER_HELPER_PROCESS_STARTED app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
+        $startupLine = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), "UPDATER_HELPER_PROCESS_STARTED update_attempt_id=$UpdateAttemptId helper_pid=$PID app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
         Set-Content -LiteralPath $logPath -Value $startupLine -Encoding utf8
     }
     catch {
         $reason = $_.Exception.Message
-        $fallbackLine = "{0} UPDATER_HELPER_PROCESS_START_FAILURE app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid error=$reason" -f ([DateTime]::UtcNow.ToString('o'))
+        $fallbackLine = "{0} UPDATER_HELPER_PROCESS_START_FAILURE update_attempt_id=$UpdateAttemptId helper_pid=$PID app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid error=$reason" -f ([DateTime]::UtcNow.ToString('o'))
         Set-Content -LiteralPath $launchFailurePath -Value $fallbackLine -Encoding utf8
-        Write-BootstrapLine "APPLY_LOG_INIT_FAILURE log_path=$logPath launch_failure_path=$launchFailurePath reason=$reason"
-        Write-BootstrapFailure "APPLY_LOG_INIT_FAILURE log_path=$logPath launch_failure_path=$launchFailurePath reason=$reason"
+        Write-BootstrapLine "APPLY_LOG_INIT_FAILURE update_attempt_id=$UpdateAttemptId log_path=$logPath launch_failure_path=$launchFailurePath reason=$reason"
+        Write-BootstrapFailure "APPLY_LOG_INIT_FAILURE update_attempt_id=$UpdateAttemptId log_path=$logPath launch_failure_path=$launchFailurePath reason=$reason"
         throw "Unable to initialize helper log at $logPath. Fallback failure artifact written to $launchFailurePath. error=$reason"
     }
 
     function Write-Log {
     param([string]$Message)
-    $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message
+    $line = "{0} update_attempt_id={1} helper_pid={2} {3}" -f ([DateTime]::UtcNow.ToString('o')), $UpdateAttemptId, $PID, $Message
     Add-Content -LiteralPath $logPath -Value $line -Encoding utf8
 }
 
@@ -238,6 +243,27 @@ try {
 
     $phase = 'extract_payload'
     Expand-Archive -LiteralPath $downloadZip -DestinationPath $stagingRoot -Force
+    $stagedPayloadIdentityPath = Join-Path $stagingRoot 'payload_identity.json'
+    if (-not (Test-Path -LiteralPath $stagedPayloadIdentityPath)) {
+        throw "Extracted payload is missing payload identity marker at $stagedPayloadIdentityPath"
+    }
+    $stagedIdentity = Read-Json -Path $stagedPayloadIdentityPath
+    $manifestBuildId = [string]$manifest.build_id
+    $stagedBuildId = [string]$stagedIdentity.build_id
+    if ($manifestBuildId -ne $stagedBuildId) {
+        throw "Manifest/payload identity mismatch build_id manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId manifest_channel=$([string]$manifest.channel) staged_channel=$([string]$stagedIdentity.channel) manifest_payload_sha256=$([string]$manifest.payload_sha256) staged_payload_sha256=$([string]$stagedIdentity.payload_sha256)"
+    }
+    $manifestChannel = [string]$manifest.channel
+    $stagedChannel = [string]$stagedIdentity.channel
+    if (-not [string]::IsNullOrWhiteSpace($manifestChannel) -and -not [string]::IsNullOrWhiteSpace($stagedChannel) -and $manifestChannel -ne $stagedChannel) {
+        throw "Manifest/payload identity mismatch channel manifest_channel=$manifestChannel staged_channel=$stagedChannel manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId"
+    }
+    $manifestPayloadSha = [string]$manifest.payload_sha256
+    $stagedPayloadSha = [string]$stagedIdentity.payload_sha256
+    if (-not [string]::IsNullOrWhiteSpace($manifestPayloadSha) -and -not [string]::IsNullOrWhiteSpace($stagedPayloadSha) -and $manifestPayloadSha.ToLowerInvariant() -ne $stagedPayloadSha.ToLowerInvariant()) {
+        throw "Manifest/payload identity mismatch payload_sha256 manifest_payload_sha256=$manifestPayloadSha staged_payload_sha256=$stagedPayloadSha manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId"
+    }
+    Write-Log "STAGED_PAYLOAD_IDENTITY_VERIFIED manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId manifest_channel=$manifestChannel staged_channel=$stagedChannel"
     New-Item -ItemType Directory -Path $nextRoot -Force | Out-Null
     Copy-Item -Path (Join-Path $stagingRoot '*') -Destination $nextRoot -Recurse -Force
 
@@ -292,7 +318,7 @@ try {
 }
 catch {
     $fatal = $_.Exception.Message
-    Write-BootstrapFailure "BOOTSTRAP_FATAL error=$fatal script_path=$PSCommandPath cwd=$((Get-Location).Path) app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
-    Write-BootstrapLine "BOOTSTRAP_FATAL error=$fatal"
+    Write-BootstrapFailure "BOOTSTRAP_FATAL update_attempt_id=$UpdateAttemptId helper_pid=$PID error=$fatal script_path=$PSCommandPath cwd=$((Get-Location).Path) app_state_root=$AppStateRoot manifest_ref=$ManifestPathOrUrl wait_pid=$WaitForPid"
+    Write-BootstrapLine "BOOTSTRAP_FATAL update_attempt_id=$UpdateAttemptId helper_pid=$PID error=$fatal"
     throw
 }
