@@ -99,6 +99,35 @@ try {
     return Read-Json -Path $dest
 }
 
+    function Assert-StagedPayloadIdentityMatchesManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory = $true)]
+        [string]$StagedPayloadIdentityPath
+    )
+    $manifestIdentity = Read-Json -Path $ManifestPath
+    $stagedIdentity = Read-Json -Path $StagedPayloadIdentityPath
+
+    $manifestBuildId = [string]$manifestIdentity.build_id
+    $manifestChannel = [string]$manifestIdentity.channel
+    $manifestPayloadSha = [string]$manifestIdentity.payload_sha256
+    $stagedBuildId = [string]$stagedIdentity.build_id
+    $stagedChannel = [string]$stagedIdentity.channel
+    $stagedPayloadSha = [string]$stagedIdentity.payload_sha256
+
+    $buildMismatch = $manifestBuildId -ne $stagedBuildId
+    $channelMismatch = (-not [string]::IsNullOrWhiteSpace($manifestChannel) -and -not [string]::IsNullOrWhiteSpace($stagedChannel) -and $manifestChannel -ne $stagedChannel)
+    $payloadShaMismatch = (-not [string]::IsNullOrWhiteSpace($manifestPayloadSha) -and -not [string]::IsNullOrWhiteSpace($stagedPayloadSha) -and $manifestPayloadSha.ToLowerInvariant() -ne $stagedPayloadSha.ToLowerInvariant())
+
+    if ($buildMismatch -or $channelMismatch -or $payloadShaMismatch) {
+        Write-Log ("STAGED_PAYLOAD_IDENTITY_MISMATCH manifest_path={0} staged_identity_path={1} manifest_build_id={2} staged_build_id={3} manifest_channel={4} staged_channel={5} manifest_payload_sha256={6} staged_payload_sha256={7}" -f $ManifestPath, $StagedPayloadIdentityPath, $manifestBuildId, $stagedBuildId, $manifestChannel, $stagedChannel, $manifestPayloadSha, $stagedPayloadSha)
+        throw "Manifest/staged payload identity mismatch before swap. manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId manifest_channel=$manifestChannel staged_channel=$stagedChannel manifest_payload_sha256=$manifestPayloadSha staged_payload_sha256=$stagedPayloadSha manifest_path=$ManifestPath staged_identity_path=$StagedPayloadIdentityPath"
+    }
+
+    Write-Log ("STAGED_PAYLOAD_IDENTITY_VERIFIED manifest_path={0} staged_identity_path={1} manifest_build_id={2} staged_build_id={3} manifest_channel={4} staged_channel={5}" -f $ManifestPath, $StagedPayloadIdentityPath, $manifestBuildId, $stagedBuildId, $manifestChannel, $stagedChannel)
+}
+
     function Wait-ForProcessExit {
     param([int]$WaitForProcessId, [int]$TimeoutSeconds = 180)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -244,26 +273,14 @@ try {
     $phase = 'extract_payload'
     Expand-Archive -LiteralPath $downloadZip -DestinationPath $stagingRoot -Force
     $stagedPayloadIdentityPath = Join-Path $stagingRoot 'payload_identity.json'
+    $manifestLatestPath = Join-Path $updaterRoot 'manifest.latest.json'
+    if (-not (Test-Path -LiteralPath $manifestLatestPath)) {
+        throw "Latest manifest copy is missing at $manifestLatestPath"
+    }
     if (-not (Test-Path -LiteralPath $stagedPayloadIdentityPath)) {
         throw "Extracted payload is missing payload identity marker at $stagedPayloadIdentityPath"
     }
-    $stagedIdentity = Read-Json -Path $stagedPayloadIdentityPath
-    $manifestBuildId = [string]$manifest.build_id
-    $stagedBuildId = [string]$stagedIdentity.build_id
-    if ($manifestBuildId -ne $stagedBuildId) {
-        throw "Manifest/payload identity mismatch build_id manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId manifest_channel=$([string]$manifest.channel) staged_channel=$([string]$stagedIdentity.channel) manifest_payload_sha256=$([string]$manifest.payload_sha256) staged_payload_sha256=$([string]$stagedIdentity.payload_sha256)"
-    }
-    $manifestChannel = [string]$manifest.channel
-    $stagedChannel = [string]$stagedIdentity.channel
-    if (-not [string]::IsNullOrWhiteSpace($manifestChannel) -and -not [string]::IsNullOrWhiteSpace($stagedChannel) -and $manifestChannel -ne $stagedChannel) {
-        throw "Manifest/payload identity mismatch channel manifest_channel=$manifestChannel staged_channel=$stagedChannel manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId"
-    }
-    $manifestPayloadSha = [string]$manifest.payload_sha256
-    $stagedPayloadSha = [string]$stagedIdentity.payload_sha256
-    if (-not [string]::IsNullOrWhiteSpace($manifestPayloadSha) -and -not [string]::IsNullOrWhiteSpace($stagedPayloadSha) -and $manifestPayloadSha.ToLowerInvariant() -ne $stagedPayloadSha.ToLowerInvariant()) {
-        throw "Manifest/payload identity mismatch payload_sha256 manifest_payload_sha256=$manifestPayloadSha staged_payload_sha256=$stagedPayloadSha manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId"
-    }
-    Write-Log "STAGED_PAYLOAD_IDENTITY_VERIFIED manifest_build_id=$manifestBuildId staged_build_id=$stagedBuildId manifest_channel=$manifestChannel staged_channel=$stagedChannel"
+    Assert-StagedPayloadIdentityMatchesManifest -ManifestPath $manifestLatestPath -StagedPayloadIdentityPath $stagedPayloadIdentityPath
     New-Item -ItemType Directory -Path $nextRoot -Force | Out-Null
     Copy-Item -Path (Join-Path $stagingRoot '*') -Destination $nextRoot -Recurse -Force
 

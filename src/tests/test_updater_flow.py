@@ -365,3 +365,13 @@ def test_apply_helper_logs_cwd_relocation_and_swap_retries():
     assert "SWAP_TARGETS mutable_root=" in script
     assert "SWAP_MOVE_ATTEMPT attempt=" in script
     assert "SWAP_MOVE_ATTEMPT_FAILED attempt=" in script
+
+
+def test_apply_helper_rejects_manifest_and_staged_identity_drift_before_swap():
+    script_path = Path("installer/scripts/apply_app_update.ps1")
+    script = script_path.read_text(encoding="utf-8")
+
+    assert "Assert-StagedPayloadIdentityMatchesManifest" in script
+    assert "manifest.latest.json" in script
+    assert "STAGED_PAYLOAD_IDENTITY_MISMATCH" in script
+    assert "before swap" in script
