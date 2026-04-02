@@ -68,7 +68,7 @@ function Get-DirectoryTreeSummary {
     $items = foreach ($entry in $selected) {
         $relative = $entry.FullName.Substring($Root.Length).TrimStart('\\')
         $entryType = if ($entry.PSIsContainer) { 'dir' } else { 'file' }
-        "$entryType:$relative"
+        "{0}:{1}" -f $entryType, $relative
     }
     $suffix = if ($entries.Count -gt $MaxEntries) { "; truncated=$($entries.Count - $MaxEntries)" } else { '' }
     return "root=$Root entries=$($entries.Count) sample=$($items -join ', ')$suffix"
