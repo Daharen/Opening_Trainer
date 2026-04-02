@@ -9,10 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .install_layout import (
-    read_installed_app_manifest,
-    write_installed_app_manifest,
-)
+from .install_layout import read_installed_app_manifest
 from .session_logging import log_line
 
 DEFAULT_UPDATE_CHANNEL = "dev"
@@ -169,30 +166,6 @@ def _candidate_helper_sources(*, app_state_root: Path, mutable_root: Path) -> li
     return candidates
 
 
-def _recover_installed_manifest(app_state_root: Path) -> dict | None:
-    mutable_root = app_state_root / "App"
-    expected_exe = mutable_root / "OpeningTrainer.exe"
-    if not expected_exe.exists():
-        log_line(
-            "UPDATER_SELF_HEAL result=skipped prerequisite=installed_manifest reason=mutable_root_missing_exe",
-            tag="startup",
-        )
-        return None
-    config = load_updater_config(app_state_root)
-    manifest_path = write_installed_app_manifest(
-        app_state_root=app_state_root,
-        app_version="unknown",
-        channel=str(config.get("channel") or DEFAULT_UPDATE_CHANNEL),
-        mutable_app_root=mutable_root,
-        payload_filename="",
-        payload_sha256=None,
-        bootstrap_version=None,
-        build_id="recovered-missing-manifest",
-    )
-    log_line(f"UPDATER_SELF_HEAL result=ok prerequisite=installed_manifest path={manifest_path}", tag="startup")
-    return read_installed_app_manifest(app_state_root)
-
-
 def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: dict | None) -> None:
     mutable_root = Path(str((installed_manifest or {}).get("mutable_app_root") or app_state_root / "App")).expanduser()
     helper_target = _updater_runtime_root(app_state_root) / "apply_app_update.ps1"
@@ -249,9 +222,6 @@ def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
         f"helper_present={(updater_root / 'apply_app_update.ps1').exists()}",
         tag="startup",
     )
-    if installed_manifest is None:
-        installed_manifest = _recover_installed_manifest(app_state_root)
-        _audit_updater_prerequisites(app_state_root=app_state_root, installed_manifest=installed_manifest)
     if installed_manifest is None:
         raise UpdaterInstallStateError(
             f"Installation is missing required updater metadata: {app_state_root / 'installed_app_manifest.json'}"
