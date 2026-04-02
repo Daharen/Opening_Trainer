@@ -374,20 +374,67 @@ def launch_updater_helper(
         )
         raise
     apply_log_path = updater_root / "apply_update.log"
+    bootstrap_log_path = updater_root / "apply_update.bootstrap.log"
+    bootstrap_failure_path = updater_root / "apply_update.bootstrap.failure.log"
     time.sleep(0.35)
+    if apply_log_path.exists():
+        return process
+    if bootstrap_log_path.exists():
+        bootstrap_failure_exists = bootstrap_failure_path.exists()
+        launch_failure_path.write_text(
+            (
+                "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+                f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
+                f"manifest_ref={manifest_ref} cmd={cmd} pid={process.pid} "
+                "detail=helper_script_body_started_but_apply_logger_failed_to_initialize "
+                f"bootstrap_log_path={bootstrap_log_path} "
+                f"bootstrap_failure_log_present={bootstrap_failure_exists}"
+            ),
+            encoding="utf-8",
+        )
+        log_line(
+            "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} bootstrap_log={bootstrap_log_path} pid={process.pid}",
+            tag="error",
+        )
+        return process
+    if bootstrap_failure_path.exists():
+        bootstrap_failure_text = bootstrap_failure_path.read_text(encoding="utf-8", errors="replace").strip()
+        launch_failure_path.write_text(
+            (
+                "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+                f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
+                f"manifest_ref={manifest_ref} cmd={cmd} pid={process.pid} "
+                "detail=helper_script_bootstrap_failed_before_apply_logger "
+                f"bootstrap_failure_path={bootstrap_failure_path} "
+                f"bootstrap_failure={bootstrap_failure_text}"
+            ),
+            encoding="utf-8",
+        )
+        log_line(
+            "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} bootstrap_failure_log={bootstrap_failure_path} pid={process.pid}",
+            tag="error",
+        )
+        return process
+    process_exited = process.poll() is not None
+    detail = "helper_process_never_appeared_after_launch_attempt" if process_exited else "helper_started_but_script_body_never_logged"
+    if detail == "helper_process_never_appeared_after_launch_attempt":
+        detail = "helper_process_started_and_exited_before_script_body_logging"
     if not apply_log_path.exists():
         launch_failure_path.write_text(
             (
                 "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
                 f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
                 f"manifest_ref={manifest_ref} cmd={cmd} pid={process.pid} "
-                "detail=helper_started_but_apply_update_log_missing_after_launch"
+                f"detail={detail} "
+                f"bootstrap_log_path={bootstrap_log_path} bootstrap_failure_path={bootstrap_failure_path}"
             ),
             encoding="utf-8",
         )
         log_line(
             "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
-            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} pid={process.pid}",
+            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} bootstrap_log={bootstrap_log_path} bootstrap_failure_log={bootstrap_failure_path} pid={process.pid}",
             tag="error",
         )
     return process
