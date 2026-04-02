@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,14 @@ DEFAULT_UPDATE_MANIFEST_URL = (
 UPDATER_CONFIG_FILENAME = "updater_config.json"
 PAYLOAD_IDENTITY_FILENAME = "payload_identity.json"
 INSTALL_DIAGNOSTIC_MARKER = "lane_installer_observability_v1"
+
+
+@dataclass(frozen=True)
+class HelperLaunchResult:
+    process: subprocess.Popen
+    update_attempt_id: str
+    helper_bootstrap_proven: bool
+    proof_artifact: str | None = None
 
 
 class UpdaterInstallStateError(RuntimeError):
@@ -306,10 +315,11 @@ def launch_updater_helper(
     wait_for_pid: int,
     relaunch_exe_path: Path | None = None,
     relaunch_args: list[str] | None = None,
-) -> subprocess.Popen:
+) -> HelperLaunchResult:
     _installed, helper_script = ensure_updater_prerequisites(app_state_root)
     manifest_ref = resolve_manifest_path_or_url(manifest_path_or_url, app_state_root=app_state_root)
     relaunch_exe = str(relaunch_exe_path) if relaunch_exe_path else ""
+    update_attempt_id = uuid.uuid4().hex
     cmd = [
         "powershell.exe",
         "-NoProfile",
@@ -325,6 +335,8 @@ def launch_updater_helper(
         str(wait_for_pid),
         "-RelaunchExePath",
         relaunch_exe,
+        "-UpdateAttemptId",
+        update_attempt_id,
     ]
     if relaunch_args:
         cmd.extend(["-RelaunchArgs", json.dumps(relaunch_args)])
@@ -356,6 +368,7 @@ def launch_updater_helper(
         "command": cmd,
         "app_state_root": str(app_state_root),
         "wait_for_pid": wait_for_pid,
+        "update_attempt_id": update_attempt_id,
     }
     launch_audit_path.write_text(json.dumps(launch_audit_payload, indent=2), encoding="utf-8")
     popen_kwargs: dict[str, object] = {"cwd": str(helper_cwd)}
@@ -368,7 +381,7 @@ def launch_updater_helper(
             (
                 "UPDATER_HELPER_LAUNCH_FAILED "
                 f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
-                f"manifest_ref={manifest_ref} cmd={cmd} error={exc}"
+                f"manifest_ref={manifest_ref} update_attempt_id={update_attempt_id} cmd={cmd} error={exc}"
             ),
             encoding="utf-8",
         )
@@ -376,65 +389,67 @@ def launch_updater_helper(
     apply_log_path = updater_root / "apply_update.log"
     bootstrap_log_path = updater_root / "apply_update.bootstrap.log"
     bootstrap_failure_path = updater_root / "apply_update.bootstrap.failure.log"
-    time.sleep(0.35)
-    if apply_log_path.exists():
-        return process
-    if bootstrap_log_path.exists():
-        bootstrap_failure_exists = bootstrap_failure_path.exists()
-        launch_failure_path.write_text(
-            (
-                "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
-                f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
-                f"manifest_ref={manifest_ref} cmd={cmd} pid={process.pid} "
-                "detail=helper_script_body_started_but_apply_logger_failed_to_initialize "
-                f"bootstrap_log_path={bootstrap_log_path} "
-                f"bootstrap_failure_log_present={bootstrap_failure_exists}"
-            ),
-            encoding="utf-8",
+
+    def _artifact_matches_attempt(path: Path) -> bool:
+        if not path.exists():
+            return False
+        try:
+            return f"update_attempt_id={update_attempt_id}" in path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+
+    helper_pid = getattr(process, "pid", "unknown")
+
+    def _process_has_exited() -> bool:
+        poll_method = getattr(process, "poll", None)
+        if not callable(poll_method):
+            return False
+        return poll_method() is not None
+
+    proof_path: Path | None = None
+    deadline = time.monotonic() + 4.0
+    while time.monotonic() < deadline:
+        for candidate in (bootstrap_log_path, bootstrap_failure_path, apply_log_path):
+            if _artifact_matches_attempt(candidate):
+                proof_path = candidate
+                break
+        if proof_path is not None:
+            break
+        if _process_has_exited():
+            break
+        time.sleep(0.2)
+
+    if proof_path is not None:
+        return HelperLaunchResult(
+            process=process,
+            update_attempt_id=update_attempt_id,
+            helper_bootstrap_proven=True,
+            proof_artifact=str(proof_path),
         )
-        log_line(
+
+    process_exited = _process_has_exited()
+    detail = "helper_process_started_but_no_matching_bootstrap_proof"
+    if process_exited:
+        detail = "helper_process_exited_without_matching_bootstrap_proof"
+    launch_failure_path.write_text(
+        (
             "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
-            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} bootstrap_log={bootstrap_log_path} pid={process.pid}",
-            tag="error",
-        )
-        return process
-    if bootstrap_failure_path.exists():
-        bootstrap_failure_text = bootstrap_failure_path.read_text(encoding="utf-8", errors="replace").strip()
-        launch_failure_path.write_text(
-            (
-                "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
-                f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
-                f"manifest_ref={manifest_ref} cmd={cmd} pid={process.pid} "
-                "detail=helper_script_bootstrap_failed_before_apply_logger "
-                f"bootstrap_failure_path={bootstrap_failure_path} "
-                f"bootstrap_failure={bootstrap_failure_text}"
-            ),
-            encoding="utf-8",
-        )
-        log_line(
-            "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
-            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} bootstrap_failure_log={bootstrap_failure_path} pid={process.pid}",
-            tag="error",
-        )
-        return process
-    process_exited = process.poll() is not None
-    detail = "helper_process_never_appeared_after_launch_attempt" if process_exited else "helper_started_but_script_body_never_logged"
-    if detail == "helper_process_never_appeared_after_launch_attempt":
-        detail = "helper_process_started_and_exited_before_script_body_logging"
-    if not apply_log_path.exists():
-        launch_failure_path.write_text(
-            (
-                "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
-                f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
-                f"manifest_ref={manifest_ref} cmd={cmd} pid={process.pid} "
-                f"detail={detail} "
-                f"bootstrap_log_path={bootstrap_log_path} bootstrap_failure_path={bootstrap_failure_path}"
-            ),
-            encoding="utf-8",
-        )
-        log_line(
-            "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
-            f"failure_artifact={launch_failure_path} apply_log={apply_log_path} bootstrap_log={bootstrap_log_path} bootstrap_failure_log={bootstrap_failure_path} pid={process.pid}",
-            tag="error",
-        )
-    return process
+            f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
+            f"manifest_ref={manifest_ref} update_attempt_id={update_attempt_id} cmd={cmd} pid={helper_pid} "
+            f"detail={detail} "
+            f"apply_log_path={apply_log_path} bootstrap_log_path={bootstrap_log_path} bootstrap_failure_path={bootstrap_failure_path}"
+        ),
+        encoding="utf-8",
+    )
+    log_line(
+        "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+        f"failure_artifact={launch_failure_path} update_attempt_id={update_attempt_id} apply_log={apply_log_path} "
+        f"bootstrap_log={bootstrap_log_path} bootstrap_failure_log={bootstrap_failure_path} pid={helper_pid}",
+        tag="error",
+    )
+    return HelperLaunchResult(
+        process=process,
+        update_attempt_id=update_attempt_id,
+        helper_bootstrap_proven=False,
+        proof_artifact=None,
+    )
