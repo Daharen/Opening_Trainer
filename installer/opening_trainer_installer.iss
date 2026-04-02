@@ -37,17 +37,16 @@ Name: "{group}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\App\{#
 Name: "{autodesktop}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"; Tasks: desktopicon
 
 [Run]
-Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_app.ps1"" -BootstrapRoot ""{app}\bootstrap_payload"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -DefaultAppRoot ""{localappdata}\OpeningTrainer\App"" -Channel ""dev"" -AppVersion ""{#MyAppVersion}"" -BuildId ""bootstrap-{#MyAppVersion}"" -PayloadFilename ""OpeningTrainer-app.zip"" -DefaultManifestUrl ""https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json"" -UpdaterHelperScriptPath ""{app}\installer\apply_app_update.ps1"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install_consumer_app.log"""; \
-    StatusMsg: "Installing Opening Trainer app payload..."; \
-    Flags: waituntilterminated runasoriginaluser
-Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\install_consumer_content.ps1"" -ManifestPath ""{app}\installer\consumer_content_manifest.json"" -AppStateRoot ""{localappdata}\OpeningTrainer"" -ContentRoot ""{localappdata}\OpeningTrainerContent"" -LogPath ""{localappdata}\OpeningTrainer\install_consumer_content.log"""; \
-    StatusMsg: "Installing Opening Trainer content..."; \
-    Flags: waituntilterminated runasoriginaluser
-Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"; Description: "Launch Opening Trainer"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: ShouldLaunchPostinstallApp
 
 [Code]
+var
+  PerUserProvisioningSucceeded: Boolean;
+
+function EscapePowerShellArg(const Value: String): String;
+begin
+  Result := StringChangeEx(Value, '"', '""', True);
+end;
 
 procedure AppendMissingIfAbsent(var Missing: String; const LabelName: String; const FilePath: String);
 begin
@@ -59,7 +58,7 @@ begin
   end;
 end;
 
-function VerifyPerUserProvisioning(var FailureDetail: String): Boolean;
+function VerifyRequiredAppScaffold(var FailureDetail: String): Boolean;
 var
   AppStateRoot: String;
   MutableRoot: String;
@@ -73,8 +72,6 @@ begin
   AppendMissingIfAbsent(Missing, 'installed_app_manifest', AppStateRoot + '\installed_app_manifest.json');
   AppendMissingIfAbsent(Missing, 'app_state_updater_helper', AppStateRoot + '\updater\apply_app_update.ps1');
   AppendMissingIfAbsent(Missing, 'app_state_updater_config', AppStateRoot + '\updater\updater_config.json');
-  AppendMissingIfAbsent(Missing, 'app_install_log', AppStateRoot + '\install_consumer_app.log');
-  AppendMissingIfAbsent(Missing, 'content_install_log', AppStateRoot + '\install_consumer_content.log');
   AppendMissingIfAbsent(Missing, 'mutable_executable', MutableRoot + '\{#MyAppExeName}');
   AppendMissingIfAbsent(Missing, 'mutable_payload_identity', MutableRoot + '\payload_identity.json');
   AppendMissingIfAbsent(Missing, 'mutable_updater_helper', MutableRoot + '\updater\apply_app_update.ps1');
@@ -82,7 +79,7 @@ begin
   if Missing <> '' then
   begin
     FailureDetail :=
-      'Program Files bootstrap payload was installed, but per-user LocalAppData provisioning failed for the current interactive user.' + #13#10 +
+      'Program Files bootstrap payload was installed, but per-user APP provisioning outputs are missing for the current interactive user.' + #13#10 +
       'Missing required files under ' + AppStateRoot + ':' + #13#10 + Missing;
     Exit;
   end;
@@ -90,17 +87,150 @@ begin
   Result := True;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+function VerifyRequiredContentScaffold(var FailureDetail: String): Boolean;
+var
+  AppStateRoot: String;
+  Missing: String;
+begin
+  Result := False;
+  Missing := '';
+  AppStateRoot := ExpandConstant('{localappdata}\OpeningTrainer');
+
+  AppendMissingIfAbsent(Missing, 'content_runtime_config', AppStateRoot + '\runtime.consumer.json');
+  AppendMissingIfAbsent(Missing, 'installed_content_manifest', AppStateRoot + '\installed_content_manifest.json');
+
+  if Missing <> '' then
+  begin
+    FailureDetail :=
+      'Program Files bootstrap payload and APP provisioning succeeded, but content provisioning outputs are missing.' + #13#10 +
+      'Missing required files under ' + AppStateRoot + ':' + #13#10 + Missing;
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+function RunProvisioningScriptAsOriginalUser(
+  const ScriptName: String;
+  const Parameters: String;
+  const FailureLogHint: String;
+  var FailureDetail: String
+): Boolean;
+var
+  ScriptPath: String;
+  PowerShellPath: String;
+  ResultCode: Integer;
+  ResolvedParams: String;
+  LaunchOk: Boolean;
+begin
+  Result := False;
+  ScriptPath := ExpandConstant('{app}\installer\' + ScriptName);
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  ResolvedParams := '-NoProfile -ExecutionPolicy Bypass -File "' + EscapePowerShellArg(ScriptPath) + '" ' + Parameters;
+
+  Log('PER_USER_PROVISIONING script=' + ScriptName + ' powershell=' + PowerShellPath);
+  Log('PER_USER_PROVISIONING resolved_script_path=' + ScriptPath);
+  Log('PER_USER_PROVISIONING localappdata=' + ExpandConstant('{localappdata}'));
+  Log('PER_USER_PROVISIONING app_state_root=' + ExpandConstant('{localappdata}\OpeningTrainer'));
+  Log('PER_USER_PROVISIONING content_root=' + ExpandConstant('{localappdata}\OpeningTrainerContent'));
+  Log('PER_USER_PROVISIONING command_line=' + PowerShellPath + ' ' + ResolvedParams);
+
+  LaunchOk := ExecAsOriginalUser(
+    PowerShellPath,
+    ResolvedParams,
+    ExpandConstant('{app}\installer'),
+    SW_SHOWNORMAL,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+
+  Log(Format('PER_USER_PROVISIONING exec_result script=%s launched=%s result_code=%d', [ScriptName, BoolToStr(LaunchOk, True), ResultCode]));
+
+  if not LaunchOk then
+  begin
+    FailureDetail :=
+      'Failed to launch per-user provisioning script ' + ScriptName + ' as the original interactive user.' + #13#10 +
+      'System error: ' + SysErrorMessage(ResultCode) + #13#10 +
+      'See installer log and provisioning log: ' + FailureLogHint;
+    Exit;
+  end;
+
+  if ResultCode <> 0 then
+  begin
+    FailureDetail :=
+      'Per-user provisioning script ' + ScriptName + ' exited with code ' + IntToStr(ResultCode) + '.' + #13#10 +
+      'See provisioning log: ' + FailureLogHint;
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+procedure RunAuthoritativePerUserProvisioning;
 var
   FailureDetail: String;
+  AppParams: String;
+  ContentParams: String;
+begin
+  FailureDetail := '';
+
+  AppParams :=
+    '-BootstrapRoot "' + EscapePowerShellArg(ExpandConstant('{app}\bootstrap_payload')) + '" ' +
+    '-AppStateRoot "' + EscapePowerShellArg(ExpandConstant('{localappdata}\OpeningTrainer')) + '" ' +
+    '-DefaultAppRoot "' + EscapePowerShellArg(ExpandConstant('{localappdata}\OpeningTrainer\App')) + '" ' +
+    '-Channel "dev" ' +
+    '-AppVersion "{#MyAppVersion}" ' +
+    '-BuildId "bootstrap-{#MyAppVersion}" ' +
+    '-PayloadFilename "OpeningTrainer-app.zip" ' +
+    '-DefaultManifestUrl "https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/app_update_manifest.json" ' +
+    '-UpdaterHelperScriptPath "' + EscapePowerShellArg(ExpandConstant('{app}\installer\apply_app_update.ps1')) + '" ' +
+    '-ContentRoot "' + EscapePowerShellArg(ExpandConstant('{localappdata}\OpeningTrainerContent')) + '" ' +
+    '-LogPath "' + EscapePowerShellArg(ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_app.log')) + '"';
+
+  if not RunProvisioningScriptAsOriginalUser(
+    'install_consumer_app.ps1',
+    AppParams,
+    ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_app.log'),
+    FailureDetail
+  ) then
+    RaiseException(FailureDetail);
+
+  if not VerifyRequiredAppScaffold(FailureDetail) then
+    RaiseException(FailureDetail);
+
+  ContentParams :=
+    '-ManifestPath "' + EscapePowerShellArg(ExpandConstant('{app}\installer\consumer_content_manifest.json')) + '" ' +
+    '-AppStateRoot "' + EscapePowerShellArg(ExpandConstant('{localappdata}\OpeningTrainer')) + '" ' +
+    '-ContentRoot "' + EscapePowerShellArg(ExpandConstant('{localappdata}\OpeningTrainerContent')) + '" ' +
+    '-LogPath "' + EscapePowerShellArg(ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_content.log')) + '"';
+
+  if not RunProvisioningScriptAsOriginalUser(
+    'install_consumer_content.ps1',
+    ContentParams,
+    ExpandConstant('{localappdata}\OpeningTrainer\install_consumer_content.log'),
+    FailureDetail
+  ) then
+    RaiseException(FailureDetail);
+
+  if not VerifyRequiredContentScaffold(FailureDetail) then
+    RaiseException(FailureDetail);
+
+  PerUserProvisioningSucceeded := True;
+  Log('PER_USER_PROVISIONING status=success app_and_content_verified=true');
+end;
+
+function ShouldLaunchPostinstallApp: Boolean;
+begin
+  Result := PerUserProvisioningSucceeded;
+  Log(Format('POSTINSTALL_LAUNCH check=%s', [BoolToStr(Result, True)]));
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    if not VerifyPerUserProvisioning(FailureDetail) then
-    begin
-      MsgBox(FailureDetail, mbCriticalError, MB_OK);
-      RaiseException(FailureDetail);
-    end;
+    PerUserProvisioningSucceeded := False;
+    RunAuthoritativePerUserProvisioning;
   end;
 end;
 
