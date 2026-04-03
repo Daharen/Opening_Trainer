@@ -441,9 +441,9 @@ function Write-BootstrapLine {{
     Add-Content -LiteralPath $Path -Value ("{{0}} {{1}}" -f ([DateTime]::UtcNow.ToString('o')), $Message) -Encoding utf8
 }}
 try {{
-    $bootstrapPSEdition = ''
-    if ($PSVersionTable.PSEdition) {{ $bootstrapPSEdition = [string]$PSVersionTable.PSEdition }}
-    Write-BootstrapLine -Path $bootstrapLaunchPath -Message ("marker={BOOTSTRAP_ENTER_MARKER} update_attempt_id={{0}} pid={{1}} cwd={{2}} ps_version={{3}} ps_edition={{4}} wrapper_path={{5}} helper_path={{6}} app_state_root={{7}} manifest_ref={{8}} relaunch_exe_path={{9}} raw_relaunch_args_payload={{10}} wait_pid={{11}}" -f $updateAttemptId, $PID, (Get-Location).Path, $PSVersionTable.PSVersion, $bootstrapPSEdition, $wrapperPath, $helperPath, $appStateRoot, $manifestRef, $relaunchExePath, $rawRelaunchArgs, $waitForPid)
+    $psEdition = ''
+    if ($PSVersionTable.PSEdition) {{ $psEdition = [string]$PSVersionTable.PSEdition }}
+    Write-BootstrapLine -Path $bootstrapLaunchPath -Message ("marker={BOOTSTRAP_ENTER_MARKER} update_attempt_id={{0}} pid={{1}} cwd={{2}} ps_version={{3}} ps_edition={{4}} wrapper_path={{5}} helper_path={{6}} app_state_root={{7}} manifest_ref={{8}} relaunch_exe_path={{9}} raw_relaunch_args_payload={{10}} wait_pid={{11}}" -f $updateAttemptId, $PID, (Get-Location).Path, $PSVersionTable.PSVersion, $psEdition, $wrapperPath, $helperPath, $appStateRoot, $manifestRef, $relaunchExePath, $rawRelaunchArgs, $waitForPid)
     Write-BootstrapLine -Path $bootstrapLaunchPath -Message ("payload_transport={{0}} decoded_payload_length={{1}} wrapper_path_nonempty={{2}} helper_path_nonempty={{3}}" -f $payloadTransport, $payloadJson.Length, (-not [string]::IsNullOrWhiteSpace($wrapperPath)), (-not [string]::IsNullOrWhiteSpace($helperPath)))
     Write-BootstrapLine -Path $bootstrapLaunchPath -Message ("wrapper_exists={{0}} helper_exists={{1}}" -f (Test-Path -LiteralPath $wrapperPath -PathType Leaf), (Test-Path -LiteralPath $helperPath -PathType Leaf))
     if (-not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {{

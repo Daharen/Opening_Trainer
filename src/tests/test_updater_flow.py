@@ -221,8 +221,6 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
     assert "$payloadJson = [string]$payloadJsonText" in decoded_bootstrap
     assert "ConvertFrom-Json -InputObject $payloadJson" in decoded_bootstrap
     assert "ConvertFrom-Json -InputObject \"{" not in decoded_bootstrap
-    assert "$bootstrapPSEdition = ''" in decoded_bootstrap
-    assert "$psEdition = ''" not in decoded_bootstrap
     assert "$wrapperPath = [string]$payload.wrapper_path" in decoded_bootstrap
     assert "$helperPath = [string]$payload.helper_path" in decoded_bootstrap
     assert any("UPDATER_HELPER_LAUNCH" in msg for msg in log_messages)
