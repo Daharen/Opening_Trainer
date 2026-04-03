@@ -2144,12 +2144,18 @@ class OpeningTrainerGUI:
                 log_line(
                     "GUI_UPDATE_HELPER_INIT_UNPROVEN "
                     f"update_attempt_id={launch_result.update_attempt_id} "
+                    f"failure_detail={launch_result.failure_detail or 'unknown'} "
                     f"proof_artifact={launch_result.proof_artifact}",
                     tag="error",
                 )
+                reason_suffix = ""
+                if launch_result.failure_detail:
+                    reason_suffix = f"\nReason: {launch_result.failure_detail}"
                 messagebox.showerror(
                     "Update Error",
-                    "Updater helper failed to initialize. The application was not closed.",
+                    "Updater helper failed to initialize before apply bootstrap proof was observed. "
+                    "The application was not closed through the updater apply path."
+                    f"{reason_suffix}",
                     parent=self.root,
                 )
                 return
@@ -2790,4 +2796,3 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-

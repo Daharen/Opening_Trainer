@@ -21,6 +21,8 @@ DEFAULT_UPDATE_MANIFEST_URL = (
 UPDATER_CONFIG_FILENAME = "updater_config.json"
 PAYLOAD_IDENTITY_FILENAME = "payload_identity.json"
 INSTALL_DIAGNOSTIC_MARKER = "lane_installer_observability_v1"
+HELPER_SCRIPT_NAME = "apply_app_update.ps1"
+HELPER_WRAPPER_SCRIPT_NAME = "invoke_apply_app_update.ps1"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class HelperLaunchResult:
     update_attempt_id: str
     helper_bootstrap_proven: bool
     proof_artifact: str | None = None
+    failure_detail: str | None = None
 
 
 class UpdaterInstallStateError(RuntimeError):
@@ -119,8 +122,10 @@ def log_install_runtime_diagnostics(*, app_state_root: Path, phase: str) -> None
     manifest_path = app_state_root / "installed_app_manifest.json"
     installed_manifest = read_installed_app_manifest(app_state_root)
     mutable_root = Path(str((installed_manifest or {}).get("mutable_app_root") or app_state_root / "App")).expanduser()
-    app_state_helper = app_state_root / "updater" / "apply_app_update.ps1"
-    mutable_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    app_state_helper = app_state_root / "updater" / HELPER_SCRIPT_NAME
+    mutable_helper = mutable_root / "updater" / HELPER_SCRIPT_NAME
+    app_state_wrapper = app_state_root / "updater" / HELPER_WRAPPER_SCRIPT_NAME
+    mutable_wrapper = mutable_root / "updater" / HELPER_WRAPPER_SCRIPT_NAME
     updater_config = app_state_root / "updater" / UPDATER_CONFIG_FILENAME
     payload_marker = read_payload_identity_marker(mutable_root=mutable_root)
     payload_summary = (
@@ -137,6 +142,8 @@ def log_install_runtime_diagnostics(*, app_state_root: Path, phase: str) -> None
         f"installed_manifest_exists={manifest_path.exists()} "
         f"app_state_helper_exists={app_state_helper.exists()} "
         f"mutable_helper_exists={mutable_helper.exists()} "
+        f"app_state_wrapper_exists={app_state_wrapper.exists()} "
+        f"mutable_wrapper_exists={mutable_wrapper.exists()} "
         f"updater_config_exists={updater_config.exists()} "
         f"payload_identity={payload_summary}",
         tag="startup",
@@ -169,17 +176,27 @@ def _bootstrap_root_candidates(*, app_state_root: Path) -> list[Path]:
     ]
 
 
-def _candidate_helper_sources(*, app_state_root: Path, mutable_root: Path) -> list[Path]:
-    candidates = [mutable_root / "updater" / "apply_app_update.ps1"]
+def _candidate_helper_sources(*, app_state_root: Path, mutable_root: Path, script_name: str) -> list[Path]:
+    candidates = [mutable_root / "updater" / script_name]
     for bootstrap_root in _bootstrap_root_candidates(app_state_root=app_state_root):
-        candidates.append(bootstrap_root / "apply_app_update.ps1")
+        candidates.append(bootstrap_root / script_name)
     return candidates
 
 
 def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: dict | None) -> None:
     mutable_root = Path(str((installed_manifest or {}).get("mutable_app_root") or app_state_root / "App")).expanduser()
-    helper_target = _updater_runtime_root(app_state_root) / "apply_app_update.ps1"
-    helper_candidates = _candidate_helper_sources(app_state_root=app_state_root, mutable_root=mutable_root)
+    helper_target = _updater_runtime_root(app_state_root) / HELPER_SCRIPT_NAME
+    wrapper_target = _updater_runtime_root(app_state_root) / HELPER_WRAPPER_SCRIPT_NAME
+    helper_candidates = _candidate_helper_sources(
+        app_state_root=app_state_root,
+        mutable_root=mutable_root,
+        script_name=HELPER_SCRIPT_NAME,
+    )
+    wrapper_candidates = _candidate_helper_sources(
+        app_state_root=app_state_root,
+        mutable_root=mutable_root,
+        script_name=HELPER_WRAPPER_SCRIPT_NAME,
+    )
     config_path = updater_config_path(app_state_root)
     log_line(
         "UPDATER_PREREQ_AUDIT "
@@ -189,6 +206,7 @@ def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: di
         f"installed_manifest_path={app_state_root / 'installed_app_manifest.json'} "
         f"installed_manifest_exists={(app_state_root / 'installed_app_manifest.json').exists()} "
         f"helper_target={helper_target} helper_target_exists={helper_target.exists()} "
+        f"wrapper_target={wrapper_target} wrapper_target_exists={wrapper_target.exists()} "
         f"updater_config_path={config_path} updater_config_exists={config_path.exists()}",
         tag="startup",
     )
@@ -197,25 +215,33 @@ def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: di
             f"UPDATER_PREREQ_AUDIT helper_candidate_index={index} path={candidate} exists={candidate.exists()}",
             tag="startup",
         )
+    for index, candidate in enumerate(wrapper_candidates, start=1):
+        log_line(
+            f"UPDATER_PREREQ_AUDIT wrapper_candidate_index={index} path={candidate} exists={candidate.exists()}",
+            tag="startup",
+        )
 
 
-def _resolve_helper_script(*, app_state_root: Path, installed_manifest: dict) -> Path | None:
-    helper_target = _updater_runtime_root(app_state_root) / "apply_app_update.ps1"
+def _resolve_updater_script(*, app_state_root: Path, installed_manifest: dict, script_name: str, prerequisite: str) -> Path | None:
+    helper_target = _updater_runtime_root(app_state_root) / script_name
     mutable_root = Path(str(installed_manifest.get("mutable_app_root") or "")).expanduser()
     if not str(mutable_root).strip():
         mutable_root = app_state_root / "App"
-    candidates = [helper_target, *_candidate_helper_sources(app_state_root=app_state_root, mutable_root=mutable_root)]
+    candidates = [
+        helper_target,
+        *_candidate_helper_sources(app_state_root=app_state_root, mutable_root=mutable_root, script_name=script_name),
+    ]
     for index, candidate in enumerate(candidates, start=1):
         exists = candidate.exists()
         log_line(
-            f"UPDATER_RESOLVE prerequisite=helper candidate_index={index} path={candidate} exists={exists}",
+            f"UPDATER_RESOLVE prerequisite={prerequisite} candidate_index={index} path={candidate} exists={exists}",
             tag="startup",
         )
         if not exists:
             continue
         if candidate == helper_target:
             return helper_target
-        if _copy_file(candidate, helper_target, prerequisite="helper"):
+        if _copy_file(candidate, helper_target, prerequisite=prerequisite):
             return helper_target
     return None
 
@@ -229,7 +255,8 @@ def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
     log_line(
         "UPDATER_PREREQ_STATE "
         f"installed_manifest_present={installed_manifest is not None} "
-        f"helper_present={(updater_root / 'apply_app_update.ps1').exists()}",
+        f"helper_present={(updater_root / HELPER_SCRIPT_NAME).exists()} "
+        f"wrapper_present={(updater_root / HELPER_WRAPPER_SCRIPT_NAME).exists()}",
         tag="startup",
     )
     if installed_manifest is None:
@@ -238,10 +265,25 @@ def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
         )
     _log_installed_manifest_stale(app_state_root=app_state_root, installed_manifest=installed_manifest)
 
-    helper_script = _resolve_helper_script(app_state_root=app_state_root, installed_manifest=installed_manifest)
+    helper_script = _resolve_updater_script(
+        app_state_root=app_state_root,
+        installed_manifest=installed_manifest,
+        script_name=HELPER_SCRIPT_NAME,
+        prerequisite="helper",
+    )
     if helper_script is None or not helper_script.exists():
         raise UpdaterInstallStateError(
-            f"Installation is missing required updater helper components: {updater_root / 'apply_app_update.ps1'}"
+            f"Installation is missing required updater helper components: {updater_root / HELPER_SCRIPT_NAME}"
+        )
+    wrapper_script = _resolve_updater_script(
+        app_state_root=app_state_root,
+        installed_manifest=installed_manifest,
+        script_name=HELPER_WRAPPER_SCRIPT_NAME,
+        prerequisite="wrapper",
+    )
+    if wrapper_script is None or not wrapper_script.exists():
+        raise UpdaterInstallStateError(
+            f"Installation is missing required updater helper components: {updater_root / HELPER_WRAPPER_SCRIPT_NAME}"
         )
 
     updater_config = updater_config_path(app_state_root)
@@ -317,6 +359,7 @@ def launch_updater_helper(
     relaunch_args: list[str] | None = None,
 ) -> HelperLaunchResult:
     _installed, helper_script = ensure_updater_prerequisites(app_state_root)
+    helper_wrapper_script = helper_script.parent / HELPER_WRAPPER_SCRIPT_NAME
     manifest_ref = resolve_manifest_path_or_url(manifest_path_or_url, app_state_root=app_state_root)
     relaunch_exe = str(relaunch_exe_path) if relaunch_exe_path else ""
     update_attempt_id = uuid.uuid4().hex
@@ -326,6 +369,8 @@ def launch_updater_helper(
         "-ExecutionPolicy",
         "Bypass",
         "-File",
+        str(helper_wrapper_script),
+        "-RealHelperPath",
         str(helper_script),
         "-ManifestPathOrUrl",
         manifest_ref,
@@ -350,6 +395,7 @@ def launch_updater_helper(
         helper_cwd = fallback_launch_cwd
     log_line(
         "UPDATER_HELPER_LAUNCH "
+        f"helper_wrapper_script={helper_wrapper_script} "
         f"helper_script={helper_script} "
         f"cwd={helper_cwd} "
         f"app_state_root={app_state_root} "
@@ -363,6 +409,7 @@ def launch_updater_helper(
     launch_audit_payload = {
         "event": "UPDATER_HELPER_LAUNCH_ATTEMPT",
         "helper_script": str(helper_script),
+        "helper_wrapper_script": str(helper_wrapper_script),
         "manifest_ref": manifest_ref,
         "cwd": str(helper_cwd),
         "command": cmd,
@@ -389,6 +436,8 @@ def launch_updater_helper(
     apply_log_path = updater_root / "apply_update.log"
     bootstrap_log_path = updater_root / "apply_update.bootstrap.log"
     bootstrap_failure_path = updater_root / "apply_update.bootstrap.failure.log"
+    wrapper_log_path = updater_root / "apply_update.wrapper.log"
+    wrapper_failure_path = updater_root / "apply_update.wrapper.failure.log"
 
     def _artifact_matches_attempt(path: Path) -> bool:
         if not path.exists():
@@ -409,7 +458,13 @@ def launch_updater_helper(
     proof_path: Path | None = None
     deadline = time.monotonic() + 4.0
     while time.monotonic() < deadline:
-        for candidate in (bootstrap_log_path, bootstrap_failure_path, apply_log_path):
+        for candidate in (
+            apply_log_path,
+            bootstrap_log_path,
+            bootstrap_failure_path,
+            wrapper_log_path,
+            wrapper_failure_path,
+        ):
             if _artifact_matches_attempt(candidate):
                 proof_path = candidate
                 break
@@ -428,23 +483,35 @@ def launch_updater_helper(
         )
 
     process_exited = _process_has_exited()
-    detail = "helper_process_started_but_no_matching_bootstrap_proof"
-    if process_exited:
-        detail = "helper_process_exited_without_matching_bootstrap_proof"
+    detail = "helper_process_started_but_no_matching_proof"
+    if process_exited and _artifact_matches_attempt(wrapper_log_path):
+        detail = "wrapper_entered_but_real_helper_failed_before_helper_bootstrap"
+    elif process_exited and _artifact_matches_attempt(wrapper_failure_path):
+        detail = "wrapper_entered_and_logged_real_helper_start_failure"
+    elif process_exited:
+        detail = "wrapper_not_proven_process_exited_without_matching_proof"
+    elif not process_exited and not _artifact_matches_attempt(wrapper_log_path):
+        detail = "wrapper_not_proven_process_pending_without_matching_proof"
+    elif not process_exited:
+        detail = "wrapper_entered_helper_bootstrap_not_proven_yet"
     launch_failure_path.write_text(
         (
             "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
+            f"helper_wrapper_script={helper_wrapper_script} "
             f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
             f"manifest_ref={manifest_ref} update_attempt_id={update_attempt_id} cmd={cmd} pid={helper_pid} "
             f"detail={detail} "
-            f"apply_log_path={apply_log_path} bootstrap_log_path={bootstrap_log_path} bootstrap_failure_path={bootstrap_failure_path}"
+            f"apply_log_path={apply_log_path} bootstrap_log_path={bootstrap_log_path} bootstrap_failure_path={bootstrap_failure_path} "
+            f"wrapper_log_path={wrapper_log_path} wrapper_failure_path={wrapper_failure_path}"
         ),
         encoding="utf-8",
     )
     log_line(
         "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
         f"failure_artifact={launch_failure_path} update_attempt_id={update_attempt_id} apply_log={apply_log_path} "
-        f"bootstrap_log={bootstrap_log_path} bootstrap_failure_log={bootstrap_failure_path} pid={helper_pid}",
+        f"bootstrap_log={bootstrap_log_path} bootstrap_failure_log={bootstrap_failure_path} "
+        f"wrapper_log={wrapper_log_path} wrapper_failure_log={wrapper_failure_path} "
+        f"detail={detail} pid={helper_pid}",
         tag="error",
     )
     return HelperLaunchResult(
@@ -452,4 +519,5 @@ def launch_updater_helper(
         update_attempt_id=update_attempt_id,
         helper_bootstrap_proven=False,
         proof_artifact=None,
+        failure_detail=detail,
     )

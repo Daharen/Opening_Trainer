@@ -16,6 +16,26 @@ $issPath = Join-Path $repoRoot 'installer\opening_trainer_installer.iss'
 $outputInstaller = Join-Path $repoRoot 'installer\dist\OpeningTrainerSetup.exe'
 $payloadExe = Join-Path $repoRoot 'dist\consumer\OpeningTrainer.exe'
 $appPayloadDist = Join-Path $repoRoot 'dist\consumer_app_payload'
+$updaterHelperScript = Join-Path $repoRoot 'installer\scripts\apply_app_update.ps1'
+$updaterWrapperScript = Join-Path $repoRoot 'installer\scripts\invoke_apply_app_update.ps1'
+$installerCopyHelperScript = Join-Path $repoRoot 'installer\apply_app_update.ps1'
+$installerCopyWrapperScript = Join-Path $repoRoot 'installer\invoke_apply_app_update.ps1'
+
+function Assert-PowerShellScriptParses {
+    param([Parameter(Mandatory = $true)][string]$ScriptPath)
+
+    if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+        throw "PowerShell parse validation target is missing: $ScriptPath"
+    }
+    $tokens = $null
+    $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors -and $errors.Count -gt 0) {
+        $messages = $errors | ForEach-Object { "line=$($_.Extent.StartLineNumber) column=$($_.Extent.StartColumnNumber) message=$($_.Message)" }
+        throw "PowerShell parse validation failed for $ScriptPath`n$($messages -join \"`n\")"
+    }
+    Write-Host "PowerShell parse validation passed: $ScriptPath"
+}
 
 if (-not $SkipPayloadBuild) {
     & $payloadBuildScript
@@ -30,6 +50,12 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $appUpdateManifestPath -PathType Leaf)) {
     throw "App update manifest is missing: $appUpdateManifestPath"
+}
+if (-not (Test-Path -LiteralPath $updaterHelperScript -PathType Leaf)) {
+    throw "Updater helper script is missing: $updaterHelperScript"
+}
+if (-not (Test-Path -LiteralPath $updaterWrapperScript -PathType Leaf)) {
+    throw "Updater wrapper script is missing: $updaterWrapperScript"
 }
 if (-not (Test-Path -LiteralPath $validateAppProvisioningScript -PathType Leaf)) {
     throw "App provisioning validation script is missing: $validateAppProvisioningScript"
@@ -67,6 +93,15 @@ if (-not (Test-Path -LiteralPath $expectedAppPayloadZip -PathType Leaf)) {
 if (-not $SkipAppProvisioningValidation) {
     Write-Host "Running direct app provisioning validation: $validateAppProvisioningScript"
     & $validateAppProvisioningScript
+}
+
+Assert-PowerShellScriptParses -ScriptPath $updaterHelperScript
+Assert-PowerShellScriptParses -ScriptPath $updaterWrapperScript
+if (Test-Path -LiteralPath $installerCopyHelperScript -PathType Leaf) {
+    Assert-PowerShellScriptParses -ScriptPath $installerCopyHelperScript
+}
+if (Test-Path -LiteralPath $installerCopyWrapperScript -PathType Leaf) {
+    Assert-PowerShellScriptParses -ScriptPath $installerCopyWrapperScript
 }
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
