@@ -202,6 +202,21 @@ def test_updater_helper_and_publish_script_exist() -> None:
     assert "build_id" in publish_text
 
 
+def test_updater_lane_files_do_not_contain_merge_conflict_markers() -> None:
+    repo_root = _repo_root()
+    repair_targets = [
+        repo_root / "src" / "opening_trainer" / "updater.py",
+        repo_root / "installer" / "scripts" / "build_consumer_installer.ps1",
+        repo_root / "installer" / "scripts" / "invoke_apply_app_update.ps1",
+        repo_root / "installer" / "scripts" / "apply_app_update.ps1",
+    ]
+    merge_markers = ("<<<<<<<", "=======", ">>>>>>>")
+
+    for path in repair_targets:
+        text = path.read_text(encoding="utf-8")
+        assert not any(marker in text for marker in merge_markers), f"merge conflict marker found in {path}"
+
+
 def test_content_bootstrap_reuse_does_not_require_installed_manifest_match() -> None:
     bootstrap_path = _repo_root() / "installer" / "scripts" / "install_consumer_content.ps1"
     script = bootstrap_path.read_text(encoding="utf-8")
