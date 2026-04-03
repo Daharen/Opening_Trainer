@@ -32,7 +32,7 @@ function Assert-PowerShellScriptParses {
     [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors) | Out-Null
     if ($errors -and $errors.Count -gt 0) {
         $messages = $errors | ForEach-Object { "line=$($_.Extent.StartLineNumber) column=$($_.Extent.StartColumnNumber) message=$($_.Message)" }
-        throw "PowerShell parse validation failed for $ScriptPath`n$($messages -join \"`n\")"
+        throw "PowerShell parse validation failed for $ScriptPath`n$($messages -join "`n")"
     }
     Write-Host "PowerShell parse validation passed: $ScriptPath"
 }
