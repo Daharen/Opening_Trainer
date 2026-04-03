@@ -193,8 +193,8 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
         def poll(self):
             return 1
 
-    def _fake_popen(cmd, cwd=None):
-        popen_calls.append({"cmd": cmd, "cwd": cwd})
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append({"cmd": cmd, **kwargs})
         return DummyProcess()
 
     monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", _fake_popen)
@@ -210,8 +210,8 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
 
     assert len(popen_calls) == 1
     assert popen_calls[0]["cwd"] == str(app_state_root / "updater")
-    assert popen_calls[0]["cmd"][4] == "-EncodedCommand"
-    decoded_bootstrap = base64.b64decode(popen_calls[0]["cmd"][5]).decode("utf-16le")
+    encoded_command_index = popen_calls[0]["cmd"].index("-EncodedCommand")
+    decoded_bootstrap = base64.b64decode(popen_calls[0]["cmd"][encoded_command_index + 1]).decode("utf-16le")
     assert "encoded_bootstrap_v1_entered" in decoded_bootstrap
     assert "invoke_apply_app_update.ps1" in decoded_bootstrap
     assert "apply_app_update.ps1" in decoded_bootstrap
@@ -220,6 +220,8 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
     assert launch_audit["launch_mode"] == "encoded_bootstrap_v1"
     assert launch_audit["relaunch_args_json"] == "[\"--runtime-mode\", \"consumer\"]"
     assert "bootstrap_launch_log" in launch_audit["expected_artifacts"]
+    assert "bootstrap_host_stdout_log" in launch_audit["expected_artifacts"]
+    assert "bootstrap_host_stderr_log" in launch_audit["expected_artifacts"]
 
 
 def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, tmp_path):
@@ -263,8 +265,8 @@ def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, 
         def poll(self):
             return 1
 
-    def _fake_popen(cmd, cwd=None):
-        popen_calls.append({"cmd": cmd, "cwd": cwd})
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append({"cmd": cmd, **kwargs})
         return DummyProcess()
 
     monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", _fake_popen)
@@ -317,7 +319,7 @@ def test_launch_updater_helper_self_heals_helper_from_bootstrap_installer(monkey
         def poll(self):
             return 1
 
-    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, **kwargs: DummyProcess())
     launch_updater_helper(str(manifest_path), app_state_root=app_state_root, wait_for_pid=1234)
 
     assert (app_state_root / "updater" / "apply_app_update.ps1").read_text(encoding="utf-8") == "Write-Host installer-helper"
@@ -346,7 +348,7 @@ def test_launch_updater_helper_classifies_missing_bootstrap_proof(monkeypatch, t
         def poll(self):
             return 1
 
-    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, **kwargs: DummyProcess())
 
     result = launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
     assert result.helper_bootstrap_proven is False
@@ -384,7 +386,7 @@ def test_launch_updater_helper_classifies_bootstrap_wrapper_nonzero(monkeypatch,
             return 1
 
     monkeypatch.setattr("opening_trainer.updater.uuid.uuid4", lambda: DummyUuid())
-    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, **kwargs: DummyProcess())
 
     result = launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
     assert result.helper_bootstrap_proven is False
@@ -422,7 +424,7 @@ def test_launch_updater_helper_classifies_wrapper_proven_without_helper_bootstra
             return 1
 
     monkeypatch.setattr("opening_trainer.updater.uuid.uuid4", lambda: DummyUuid())
-    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, **kwargs: DummyProcess())
 
     result = launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
     assert result.helper_bootstrap_proven is False
@@ -451,7 +453,7 @@ def test_launch_updater_helper_serializes_relaunch_args_json(monkeypatch, tmp_pa
         def poll(self):
             return 1
 
-    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, **kwargs: DummyProcess())
     launch_updater_helper(
         None,
         app_state_root=app_state_root,
@@ -460,6 +462,59 @@ def test_launch_updater_helper_serializes_relaunch_args_json(monkeypatch, tmp_pa
     )
     payload = json.loads((updater_root / "launch_helper.audit.json").read_text(encoding="utf-8"))
     assert payload["relaunch_args_json"] == "[\"--runtime-mode\", \"consumer\"]"
+
+
+def test_launch_updater_helper_windows_launch_contract_and_host_capture(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
+
+    popen_calls: list[dict] = []
+
+    class DummyProcess:
+        def poll(self):
+            return 1
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append({"cmd": cmd, **kwargs})
+        kwargs["stderr"].write(b"host-level launch failure text")
+        kwargs["stderr"].flush()
+        return DummyProcess()
+
+    monkeypatch.setattr("opening_trainer.updater._is_windows_platform", lambda: True)
+    monkeypatch.setattr("opening_trainer.updater.subprocess.CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("opening_trainer.updater._resolve_powershell_executable", lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+
+    result = launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
+
+    assert result.helper_bootstrap_proven is False
+    assert result.failure_detail == "bootstrap_host_failed_before_script_entry"
+    assert result.proof_artifact == str(updater_root / "apply_update.bootstrap.host.stderr.log")
+    assert len(popen_calls) == 1
+    assert popen_calls[0]["cmd"][0].endswith("powershell.exe")
+    assert "-NonInteractive" in popen_calls[0]["cmd"]
+    assert popen_calls[0]["stdin"] is not None
+    assert popen_calls[0]["creationflags"] == 0x08000000
+    assert popen_calls[0]["stdout"].name.endswith("apply_update.bootstrap.host.stdout.log")
+    assert popen_calls[0]["stderr"].name.endswith("apply_update.bootstrap.host.stderr.log")
+    launch_audit = json.loads((updater_root / "launch_helper.audit.json").read_text(encoding="utf-8"))
+    assert launch_audit["popen_kwargs_summary"]["stdin"] == "DEVNULL"
+    assert launch_audit["popen_kwargs_summary"]["creationflags"] == 0x08000000
+    assert launch_audit["expected_artifacts"]["bootstrap_host_stderr_log"].endswith("apply_update.bootstrap.host.stderr.log")
 
 
 def test_check_for_update_raises_when_manifest_missing_and_not_recoverable(tmp_path):
