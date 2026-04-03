@@ -4,12 +4,16 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
 $installScript = Join-Path $repoRoot 'installer\scripts\install_consumer_app.ps1'
 $helperScript = Join-Path $repoRoot 'installer\scripts\apply_app_update.ps1'
+$wrapperScript = Join-Path $repoRoot 'installer\scripts\invoke_apply_app_update.ps1'
 
 if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
     throw "Missing script under validation: $installScript"
 }
 if (-not (Test-Path -LiteralPath $helperScript -PathType Leaf)) {
     throw "Missing updater helper script: $helperScript"
+}
+if (-not (Test-Path -LiteralPath $wrapperScript -PathType Leaf)) {
+    throw "Missing updater wrapper script: $wrapperScript"
 }
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("opening-trainer-app-validate-" + [System.Guid]::NewGuid().ToString('N'))
@@ -26,6 +30,7 @@ try {
     Set-Content -LiteralPath (Join-Path $bootstrapRoot 'OpeningTrainer.exe') -Value 'validation-exe-placeholder' -Encoding utf8
     Set-Content -LiteralPath (Join-Path $bootstrapRoot 'payload_identity.json') -Value '{"marker_schema_version":1,"app_version":"0.1.1-validation","build_id":"validation-build-from-payload","channel":"dev","payload_sha256":"payload-sha"}' -Encoding utf8
     Copy-Item -LiteralPath $helperScript -Destination (Join-Path $bootstrapRoot 'updater\apply_app_update.ps1') -Force
+    Copy-Item -LiteralPath $wrapperScript -Destination (Join-Path $bootstrapRoot 'updater\invoke_apply_app_update.ps1') -Force
 
     Write-Host "Validating install_consumer_app.ps1 via direct invocation"
     Write-Host "Script: $installScript"
@@ -49,7 +54,9 @@ try {
         (Join-Path $defaultAppRoot 'OpeningTrainer.exe'),
         (Join-Path $defaultAppRoot 'payload_identity.json'),
         (Join-Path $defaultAppRoot 'updater\apply_app_update.ps1'),
+        (Join-Path $defaultAppRoot 'updater\invoke_apply_app_update.ps1'),
         (Join-Path $appStateRoot 'updater\apply_app_update.ps1'),
+        (Join-Path $appStateRoot 'updater\invoke_apply_app_update.ps1'),
         (Join-Path $appStateRoot 'updater\updater_config.json')
     )
 

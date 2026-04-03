@@ -31,6 +31,7 @@ Source: "app_update_manifest.json"; DestDir: "{app}\installer"; Flags: ignorever
 Source: "scripts\install_consumer_content.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "scripts\install_consumer_app.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "scripts\apply_app_update.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "scripts\invoke_apply_app_update.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"
@@ -91,10 +92,12 @@ begin
 
   AppendMissingIfAbsent(Missing, 'installed_app_manifest', AppStateRoot + '\installed_app_manifest.json');
   AppendMissingIfAbsent(Missing, 'app_state_updater_helper', AppStateRoot + '\updater\apply_app_update.ps1');
+  AppendMissingIfAbsent(Missing, 'app_state_updater_wrapper', AppStateRoot + '\updater\invoke_apply_app_update.ps1');
   AppendMissingIfAbsent(Missing, 'app_state_updater_config', AppStateRoot + '\updater\updater_config.json');
   AppendMissingIfAbsent(Missing, 'mutable_executable', MutableRoot + '\{#MyAppExeName}');
   AppendMissingIfAbsent(Missing, 'mutable_payload_identity', MutableRoot + '\payload_identity.json');
   AppendMissingIfAbsent(Missing, 'mutable_updater_helper', MutableRoot + '\updater\apply_app_update.ps1');
+  AppendMissingIfAbsent(Missing, 'mutable_updater_wrapper', MutableRoot + '\updater\invoke_apply_app_update.ps1');
 
   if Missing <> '' then
   begin

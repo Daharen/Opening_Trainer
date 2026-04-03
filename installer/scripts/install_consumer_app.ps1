@@ -163,17 +163,27 @@ try {
     $bootstrapExe = Join-Path $BootstrapRoot 'OpeningTrainer.exe'
     $bootstrapUpdaterDir = Join-Path $BootstrapRoot 'updater'
     $bootstrapUpdaterHelper = Join-Path $bootstrapUpdaterDir 'apply_app_update.ps1'
+    $bootstrapUpdaterWrapper = Join-Path $bootstrapUpdaterDir 'invoke_apply_app_update.ps1'
     $bootstrapRootHelper = Join-Path $BootstrapRoot 'apply_app_update.ps1'
+    $bootstrapRootWrapper = Join-Path $BootstrapRoot 'invoke_apply_app_update.ps1'
     $payloadIdentityMarker = Join-Path $BootstrapRoot 'payload_identity.json'
 
     Assert-PathExists -Path $BootstrapRoot -Label 'bootstrap_root' -Phase 'source-precheck' -Directory
     Assert-PathExists -Path $bootstrapExe -Label 'bootstrap_executable' -Phase 'source-precheck'
     Assert-PathExists -Path $bootstrapUpdaterDir -Label 'bootstrap_updater_dir' -Phase 'source-precheck' -Directory
     Assert-PathExists -Path $bootstrapUpdaterHelper -Label 'bootstrap_updater_helper' -Phase 'source-precheck'
+    Assert-PathExists -Path $bootstrapUpdaterWrapper -Label 'bootstrap_updater_wrapper' -Phase 'source-precheck'
     Assert-PathExists -Path $payloadIdentityMarker -Label 'bootstrap_payload_identity_marker' -Phase 'source-precheck'
 
     Write-AppInstallLog "SOURCE_CHECK label=updater_helper_input path=$UpdaterHelperScriptPath exists=$(( -not [string]::IsNullOrWhiteSpace($UpdaterHelperScriptPath)) -and (Test-Path -LiteralPath $UpdaterHelperScriptPath))"
+    $updaterWrapperScriptPath = ''
+    if (-not [string]::IsNullOrWhiteSpace($UpdaterHelperScriptPath)) {
+        $helperParent = Split-Path -Parent $UpdaterHelperScriptPath
+        $updaterWrapperScriptPath = Join-Path $helperParent 'invoke_apply_app_update.ps1'
+    }
+    Write-AppInstallLog "SOURCE_CHECK label=updater_wrapper_input path=$updaterWrapperScriptPath exists=$(( -not [string]::IsNullOrWhiteSpace($updaterWrapperScriptPath)) -and (Test-Path -LiteralPath $updaterWrapperScriptPath))"
     Write-AppInstallLog "SOURCE_CHECK label=bootstrap_root_helper path=$bootstrapRootHelper exists=$(Test-Path -LiteralPath $bootstrapRootHelper)"
+    Write-AppInstallLog "SOURCE_CHECK label=bootstrap_root_wrapper path=$bootstrapRootWrapper exists=$(Test-Path -LiteralPath $bootstrapRootWrapper)"
     Write-AppInstallLog "SOURCE_CHECK label=bootstrap_tree_summary summary=$(Get-DirectoryTreeSummary -Root $BootstrapRoot)"
 
     $selected = Resolve-AppRoot -OverrideRoot $OverrideAppRoot
@@ -217,13 +227,39 @@ try {
     if ($null -eq $resolvedHelperSource) {
         throw "Updater helper source was not found. Candidates: $($helperSourceCandidates -join '; ')"
     }
+    $wrapperSourceCandidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($updaterWrapperScriptPath)) {
+        $wrapperSourceCandidates += $updaterWrapperScriptPath
+    }
+    $wrapperSourceCandidates += $bootstrapUpdaterWrapper
+    $wrapperSourceCandidates += $bootstrapRootWrapper
+    Write-AppInstallLog "WRAPPER_SOURCE_CANDIDATES=$($wrapperSourceCandidates -join '; ')"
+
+    $resolvedWrapperSource = $null
+    foreach ($candidate in $wrapperSourceCandidates) {
+        $exists = Test-Path -LiteralPath $candidate -PathType Leaf
+        Write-AppInstallLog "WRAPPER_SOURCE_CHECK path=$candidate exists=$exists"
+        if ($exists) {
+            $resolvedWrapperSource = $candidate
+            break
+        }
+    }
+    if ($null -eq $resolvedWrapperSource) {
+        throw "Updater wrapper source was not found. Candidates: $($wrapperSourceCandidates -join '; ')"
+    }
 
     $appStateHelper = Join-Path $updaterRoot 'apply_app_update.ps1'
     $mutableHelper = Join-Path $mutableUpdaterRoot 'apply_app_update.ps1'
+    $appStateWrapper = Join-Path $updaterRoot 'invoke_apply_app_update.ps1'
+    $mutableWrapper = Join-Path $mutableUpdaterRoot 'invoke_apply_app_update.ps1'
     Copy-Item -LiteralPath $resolvedHelperSource -Destination $appStateHelper -Force
     Write-AppInstallLog "Provisioned updater helper to app state: $appStateHelper source=$resolvedHelperSource"
     Copy-Item -LiteralPath $resolvedHelperSource -Destination $mutableHelper -Force
     Write-AppInstallLog "Provisioned updater helper to mutable app payload: $mutableHelper source=$resolvedHelperSource"
+    Copy-Item -LiteralPath $resolvedWrapperSource -Destination $appStateWrapper -Force
+    Write-AppInstallLog "Provisioned updater wrapper to app state: $appStateWrapper source=$resolvedWrapperSource"
+    Copy-Item -LiteralPath $resolvedWrapperSource -Destination $mutableWrapper -Force
+    Write-AppInstallLog "Provisioned updater wrapper to mutable app payload: $mutableWrapper source=$resolvedWrapperSource"
 
     $mutablePayloadIdentity = Join-Path $targetRoot 'payload_identity.json'
     Assert-PathExists -Path $mutablePayloadIdentity -Label 'mutable_payload_identity_marker' -Phase 'post-copy'

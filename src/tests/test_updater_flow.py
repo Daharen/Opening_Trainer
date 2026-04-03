@@ -76,8 +76,10 @@ def test_update_manifest_comparison(tmp_path):
     app_state = tmp_path / "OpeningTrainer"
     mutable_root = tmp_path / "app"
     bundled_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    bundled_wrapper = mutable_root / "updater" / "invoke_apply_app_update.ps1"
     bundled_helper.parent.mkdir(parents=True, exist_ok=True)
     bundled_helper.write_text("Write-Host helper", encoding="utf-8")
+    bundled_wrapper.write_text("Write-Host wrapper", encoding="utf-8")
     write_installed_app_manifest(
         app_state_root=app_state,
         app_version="1.0.0",
@@ -116,8 +118,10 @@ def test_update_available_when_version_equal_but_build_id_differs(tmp_path):
     app_state = tmp_path / "OpeningTrainer"
     mutable_root = tmp_path / "app"
     bundled_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    bundled_wrapper = mutable_root / "updater" / "invoke_apply_app_update.ps1"
     bundled_helper.parent.mkdir(parents=True, exist_ok=True)
     bundled_helper.write_text("Write-Host helper", encoding="utf-8")
+    bundled_wrapper.write_text("Write-Host wrapper", encoding="utf-8")
     write_installed_app_manifest(
         app_state_root=app_state,
         app_version="2.0.0",
@@ -161,7 +165,9 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
     updater_root = app_state_root / "updater"
     updater_root.mkdir(parents=True, exist_ok=True)
     helper_path = updater_root / "apply_app_update.ps1"
+    wrapper_path = updater_root / "invoke_apply_app_update.ps1"
     helper_path.write_text("Write-Host helper", encoding="utf-8")
+    wrapper_path.write_text("Write-Host wrapper", encoding="utf-8")
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -202,6 +208,8 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
 
     assert len(popen_calls) == 1
     assert popen_calls[0]["cwd"] == str(app_state_root / "updater")
+    assert "invoke_apply_app_update.ps1" in popen_calls[0]["cmd"][5]
+    assert "-RealHelperPath" in popen_calls[0]["cmd"]
     assert any("UPDATER_HELPER_LAUNCH" in msg for msg in log_messages)
 
 
@@ -209,8 +217,10 @@ def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, 
     app_state_root = tmp_path / "Local" / "OpeningTrainer"
     mutable_root = app_state_root / "App"
     bundled_helper = mutable_root / "updater" / "apply_app_update.ps1"
+    bundled_wrapper = mutable_root / "updater" / "invoke_apply_app_update.ps1"
     bundled_helper.parent.mkdir(parents=True, exist_ok=True)
     bundled_helper.write_text("Write-Host bundled-helper", encoding="utf-8")
+    bundled_wrapper.write_text("Write-Host wrapper", encoding="utf-8")
     write_installed_app_manifest(
         app_state_root=app_state_root,
         app_version="1.0.0",
@@ -252,6 +262,7 @@ def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, 
     launch_updater_helper(str(manifest_path), app_state_root=app_state_root, wait_for_pid=1234)
 
     assert (app_state_root / "updater" / "apply_app_update.ps1").exists()
+    assert (app_state_root / "updater" / "invoke_apply_app_update.ps1").exists()
     assert len(popen_calls) == 1
 
 
@@ -272,6 +283,7 @@ def test_launch_updater_helper_self_heals_helper_from_bootstrap_installer(monkey
     bootstrap_root = tmp_path / "Program Files" / "Opening Trainer" / "installer"
     bootstrap_root.mkdir(parents=True, exist_ok=True)
     (bootstrap_root / "apply_app_update.ps1").write_text("Write-Host installer-helper", encoding="utf-8")
+    (bootstrap_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
     monkeypatch.setattr("opening_trainer.updater._bootstrap_root_candidates", lambda app_state_root: [bootstrap_root])
 
     manifest_path = tmp_path / "manifest.json"
@@ -295,6 +307,7 @@ def test_launch_updater_helper_self_heals_helper_from_bootstrap_installer(monkey
     launch_updater_helper(str(manifest_path), app_state_root=app_state_root, wait_for_pid=1234)
 
     assert (app_state_root / "updater" / "apply_app_update.ps1").read_text(encoding="utf-8") == "Write-Host installer-helper"
+    assert (app_state_root / "updater" / "invoke_apply_app_update.ps1").read_text(encoding="utf-8") == "Write-Host wrapper"
 
 
 def test_check_for_update_raises_when_manifest_missing_and_not_recoverable(tmp_path):
@@ -302,6 +315,7 @@ def test_check_for_update_raises_when_manifest_missing_and_not_recoverable(tmp_p
     updater_root = app_state_root / "updater"
     updater_root.mkdir(parents=True, exist_ok=True)
     (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -339,9 +353,11 @@ def test_log_install_runtime_diagnostics_reports_payload_identity(monkeypatch, t
     updater_root = app_state_root / "updater"
     updater_root.mkdir(parents=True, exist_ok=True)
     (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
     (updater_root / "updater_config.json").write_text(json.dumps({"channel": "dev"}), encoding="utf-8")
     (mutable_root / "updater").mkdir(parents=True, exist_ok=True)
     (mutable_root / "updater" / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (mutable_root / "updater" / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
     (mutable_root / "payload_identity.json").write_text(
         json.dumps({"marker_schema_version": 1, "app_version": "1.0.0", "build_id": "commit-old", "channel": "dev"}),
         encoding="utf-8",

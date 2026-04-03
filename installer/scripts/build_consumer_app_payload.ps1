@@ -12,6 +12,7 @@ $appPayloadDist = Join-Path $repoRoot 'dist\consumer_app_payload'
 $payloadZip = Join-Path $appPayloadDist 'OpeningTrainer-app.zip'
 $stagingRoot = Join-Path $appPayloadDist 'staging'
 $updaterHelperSource = Join-Path $repoRoot 'installer\scripts\apply_app_update.ps1'
+$updaterWrapperSource = Join-Path $repoRoot 'installer\scripts\invoke_apply_app_update.ps1'
 
 $appUpdateManifestPath = Join-Path $repoRoot 'installer\app_update_manifest.json'
 $payloadIdentityFilename = 'payload_identity.json'
@@ -50,6 +51,9 @@ if (-not (Test-Path -LiteralPath $consumerDist)) {
 if (-not (Test-Path -LiteralPath $updaterHelperSource -PathType Leaf)) {
     throw "Updater helper script missing: $updaterHelperSource"
 }
+if (-not (Test-Path -LiteralPath $updaterWrapperSource -PathType Leaf)) {
+    throw "Updater wrapper script missing: $updaterWrapperSource"
+}
 if (-not (Test-Path -LiteralPath $appUpdateManifestPath -PathType Leaf)) {
     throw "App update manifest missing: $appUpdateManifestPath"
 }
@@ -71,6 +75,7 @@ Write-Host "Wrote payload identity marker: $payloadIdentityPath"
 $consumerUpdaterRoot = Join-Path $consumerDist 'updater'
 New-Item -ItemType Directory -Path $consumerUpdaterRoot -Force | Out-Null
 Copy-Item -LiteralPath $updaterHelperSource -Destination (Join-Path $consumerUpdaterRoot 'apply_app_update.ps1') -Force
+Copy-Item -LiteralPath $updaterWrapperSource -Destination (Join-Path $consumerUpdaterRoot 'invoke_apply_app_update.ps1') -Force
 
 New-Item -ItemType Directory -Path $appPayloadDist -Force | Out-Null
 if (Test-Path -LiteralPath $payloadZip) {
