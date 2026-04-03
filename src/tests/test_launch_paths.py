@@ -237,12 +237,19 @@ def test_powershell_runner_bootstraps_pytest_for_validation_profiles():
     assert 'Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip' in script
 
 
-def test_powershell_runner_validation_commands_use_python_module_pytest_invocation():
+def test_powershell_runner_validation_commands_resolve_pytest_entrypoint_with_module_fallback():
     script = Path('run.ps1').read_text(encoding='utf-8')
 
-    assert 'Invoke-ValidationCommand -Name "autosafe_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q"' in script
-    assert 'Invoke-ValidationCommand -Name "devfast_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q"' in script
-    assert 'Invoke-ValidationCommand -Name "pytest_full" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q")' in script
+    assert 'function Resolve-PytestRunner' in script
+    assert '(Join-Path $VenvDir "Scripts\\py.test.exe")' in script
+    assert '(Join-Path $VenvDir "Scripts\\pytest.exe")' in script
+    assert 'ArgumentsPrefix = @("-m", "pytest")' in script
+    assert 'Invoke-ValidationCommand -Name "autosafe_pytest_subset" -FilePath $pytestRunner.FilePath' in script
+    assert 'Invoke-ValidationCommand -Name "devfast_pytest_subset" -FilePath $pytestRunner.FilePath' in script
+    assert 'Invoke-ValidationCommand -Name "pytest_full" -FilePath $pytestRunner.FilePath' in script
+    assert 'pytest entrypoint reused' in script
+    assert 'python -m pytest fallback used' in script
+    assert 'chosen executable path' in script
 
 
 def test_powershell_runner_bundle_validation_recognizes_sqlite_and_legacy_fallback_order():
