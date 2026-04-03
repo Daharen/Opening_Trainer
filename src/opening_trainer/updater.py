@@ -8,6 +8,7 @@ import sys
 import time
 import urllib.request
 import uuid
+from base64 import b64encode
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,7 @@ PAYLOAD_IDENTITY_FILENAME = "payload_identity.json"
 INSTALL_DIAGNOSTIC_MARKER = "lane_installer_observability_v1"
 HELPER_SCRIPT_NAME = "apply_app_update.ps1"
 HELPER_WRAPPER_SCRIPT_NAME = "invoke_apply_app_update.ps1"
+BOOTSTRAP_ENTER_MARKER = "encoded_bootstrap_v1_entered"
 
 
 @dataclass(frozen=True)
@@ -350,6 +352,105 @@ def check_for_update(manifest_path_or_url: str, *, app_state_root: Path) -> tupl
     return _has_newer_build(installed, manifest), manifest, installed
 
 
+def _normalize_updater_path(path: Path) -> str:
+    return str(path.expanduser().resolve(strict=False))
+
+
+def _bootstrap_artifact_paths(updater_root: Path) -> dict[str, Path]:
+    return {
+        "bootstrap_launch_log": updater_root / "apply_update.bootstrap.launch.log",
+        "bootstrap_failure_log": updater_root / "apply_update.bootstrap.failure.log",
+        "wrapper_log": updater_root / "apply_update.wrapper.log",
+        "wrapper_failure_log": updater_root / "apply_update.wrapper.failure.log",
+        "helper_bootstrap_log": updater_root / "apply_update.bootstrap.log",
+        "helper_apply_log": updater_root / "apply_update.log",
+    }
+
+
+def _build_encoded_bootstrap_command(
+    *,
+    wrapper_script: Path,
+    helper_script: Path,
+    manifest_ref: str,
+    app_state_root: Path,
+    wait_for_pid: int,
+    relaunch_exe: str,
+    relaunch_args_json: str,
+    update_attempt_id: str,
+    artifacts: dict[str, Path],
+) -> tuple[str, str]:
+    payload = {
+        "wrapper_path": _normalize_updater_path(wrapper_script),
+        "helper_path": _normalize_updater_path(helper_script),
+        "manifest_ref": manifest_ref,
+        "app_state_root": _normalize_updater_path(app_state_root),
+        "wait_for_pid": int(wait_for_pid),
+        "relaunch_exe_path": relaunch_exe,
+        "relaunch_args_json": relaunch_args_json,
+        "update_attempt_id": update_attempt_id,
+        "bootstrap_launch_log_path": _normalize_updater_path(artifacts["bootstrap_launch_log"]),
+        "bootstrap_failure_log_path": _normalize_updater_path(artifacts["bootstrap_failure_log"]),
+        "wrapper_log_path": _normalize_updater_path(artifacts["wrapper_log"]),
+        "wrapper_failure_log_path": _normalize_updater_path(artifacts["wrapper_failure_log"]),
+    }
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    quoted_payload = json.dumps(payload_json)
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$payload = ConvertFrom-Json -InputObject {quoted_payload}
+$bootstrapLaunchPath = [string]$payload.bootstrap_launch_log_path
+$bootstrapFailurePath = [string]$payload.bootstrap_failure_log_path
+$wrapperPath = [string]$payload.wrapper_path
+$helperPath = [string]$payload.helper_path
+$manifestRef = [string]$payload.manifest_ref
+$appStateRoot = [string]$payload.app_state_root
+$updateAttemptId = [string]$payload.update_attempt_id
+$relaunchExePath = [string]$payload.relaunch_exe_path
+$rawRelaunchArgs = [string]$payload.relaunch_args_json
+$waitForPid = [int]$payload.wait_for_pid
+function Write-BootstrapLine {{
+    param([string]$Path, [string]$Message)
+    $folder = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($folder)) {{
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+    }}
+    Add-Content -LiteralPath $Path -Value ("{{0}} {{1}}" -f ([DateTime]::UtcNow.ToString('o')), $Message) -Encoding utf8
+}}
+try {{
+    $psEdition = ''
+    if ($PSVersionTable.PSEdition) {{ $psEdition = [string]$PSVersionTable.PSEdition }}
+    Write-BootstrapLine -Path $bootstrapLaunchPath -Message ("marker={BOOTSTRAP_ENTER_MARKER} update_attempt_id={{0}} pid={{1}} cwd={{2}} ps_version={{3}} ps_edition={{4}} wrapper_path={{5}} helper_path={{6}} app_state_root={{7}} manifest_ref={{8}} relaunch_exe_path={{9}} raw_relaunch_args_payload={{10}} wait_pid={{11}}" -f $updateAttemptId, $PID, (Get-Location).Path, $PSVersionTable.PSVersion, $psEdition, $wrapperPath, $helperPath, $appStateRoot, $manifestRef, $relaunchExePath, $rawRelaunchArgs, $waitForPid)
+    Write-BootstrapLine -Path $bootstrapLaunchPath -Message ("wrapper_exists={{0}} helper_exists={{1}}" -f (Test-Path -LiteralPath $wrapperPath -PathType Leaf), (Test-Path -LiteralPath $helperPath -PathType Leaf))
+    if (-not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {{
+        Write-BootstrapLine -Path $bootstrapFailurePath -Message ("stage=bootstrap_wrapper_missing update_attempt_id={{0}} wrapper_path={{1}} helper_path={{2}} cwd={{3}}" -f $updateAttemptId, $wrapperPath, $helperPath, (Get-Location).Path)
+        exit 42
+    }}
+    if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {{
+        Write-BootstrapLine -Path $bootstrapFailurePath -Message ("stage=bootstrap_helper_missing update_attempt_id={{0}} wrapper_path={{1}} helper_path={{2}} cwd={{3}}" -f $updateAttemptId, $wrapperPath, $helperPath, (Get-Location).Path)
+        exit 43
+    }}
+    & $wrapperPath -RealHelperPath $helperPath -ManifestPathOrUrl $manifestRef -AppStateRoot $appStateRoot -WaitForPid $waitForPid -RelaunchExePath $relaunchExePath -RelaunchArgs $rawRelaunchArgs -UpdateAttemptId $updateAttemptId
+    $wrapperExit = $LASTEXITCODE
+    if ($null -eq $wrapperExit) {{ $wrapperExit = 0 }}
+    if ($wrapperExit -ne 0) {{
+        Write-BootstrapLine -Path $bootstrapFailurePath -Message ("stage=bootstrap_wrapper_nonzero_exit update_attempt_id={{0}} exit_code={{1}} wrapper_path={{2}} helper_path={{3}} cwd={{4}}" -f $updateAttemptId, $wrapperExit, $wrapperPath, $helperPath, (Get-Location).Path)
+        exit $wrapperExit
+    }}
+    Write-BootstrapLine -Path $bootstrapLaunchPath -Message ("stage=bootstrap_wrapper_handoff_success update_attempt_id={{0}} wrapper_path={{1}} helper_path={{2}}" -f $updateAttemptId, $wrapperPath, $helperPath)
+    exit 0
+}} catch {{
+    $exType = ''
+    if ($_.Exception -and $_.Exception.GetType()) {{ $exType = $_.Exception.GetType().FullName }}
+    $stack = ''
+    if ($_.ScriptStackTrace) {{ $stack = [string]$_.ScriptStackTrace }}
+    Write-BootstrapLine -Path $bootstrapFailurePath -Message ("stage=bootstrap_wrapper_invocation_threw update_attempt_id={{0}} wrapper_path={{1}} helper_path={{2}} cwd={{3}} exception_type={{4}} exception_message={{5}} stack={{6}}" -f $updateAttemptId, $wrapperPath, $helperPath, (Get-Location).Path, $exType, $_.Exception.Message, $stack)
+    exit 41
+}}
+""".strip()
+    encoded = b64encode(script.encode("utf-16le")).decode("ascii")
+    return script, encoded
+
+
 def launch_updater_helper(
     manifest_path_or_url: str | None,
     *,
@@ -362,29 +463,8 @@ def launch_updater_helper(
     helper_wrapper_script = helper_script.parent / HELPER_WRAPPER_SCRIPT_NAME
     manifest_ref = resolve_manifest_path_or_url(manifest_path_or_url, app_state_root=app_state_root)
     relaunch_exe = str(relaunch_exe_path) if relaunch_exe_path else ""
+    relaunch_args_json = json.dumps(relaunch_args or ["--runtime-mode", "consumer"])
     update_attempt_id = uuid.uuid4().hex
-    cmd = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(helper_wrapper_script),
-        "-RealHelperPath",
-        str(helper_script),
-        "-ManifestPathOrUrl",
-        manifest_ref,
-        "-AppStateRoot",
-        str(app_state_root),
-        "-WaitForPid",
-        str(wait_for_pid),
-        "-RelaunchExePath",
-        relaunch_exe,
-        "-UpdateAttemptId",
-        update_attempt_id,
-    ]
-    if relaunch_args:
-        cmd.extend(["-RelaunchArgs", json.dumps(relaunch_args)])
     safe_launch_cwd = app_state_root / "updater"
     fallback_launch_cwd = app_state_root
     try:
@@ -404,17 +484,42 @@ def launch_updater_helper(
     )
     updater_root = app_state_root / "updater"
     updater_root.mkdir(parents=True, exist_ok=True)
+    artifacts = _bootstrap_artifact_paths(updater_root)
+    inline_bootstrap_script, encoded_bootstrap_command = _build_encoded_bootstrap_command(
+        wrapper_script=helper_wrapper_script,
+        helper_script=helper_script,
+        manifest_ref=manifest_ref,
+        app_state_root=app_state_root,
+        wait_for_pid=wait_for_pid,
+        relaunch_exe=relaunch_exe,
+        relaunch_args_json=relaunch_args_json,
+        update_attempt_id=update_attempt_id,
+        artifacts=artifacts,
+    )
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encoded_bootstrap_command,
+    ]
     launch_audit_path = updater_root / "launch_helper.audit.json"
     launch_failure_path = updater_root / "launch_helper.failure.log"
     launch_audit_payload = {
         "event": "UPDATER_HELPER_LAUNCH_ATTEMPT",
+        "launch_mode": "encoded_bootstrap_v1",
         "helper_script": str(helper_script),
         "helper_wrapper_script": str(helper_wrapper_script),
         "manifest_ref": manifest_ref,
         "cwd": str(helper_cwd),
         "command": cmd,
+        "inline_bootstrap_script": inline_bootstrap_script,
+        "encoded_command_length": len(encoded_bootstrap_command),
         "app_state_root": str(app_state_root),
         "wait_for_pid": wait_for_pid,
+        "relaunch_args_json": relaunch_args_json,
+        "expected_artifacts": {key: str(value) for key, value in artifacts.items()},
         "update_attempt_id": update_attempt_id,
     }
     launch_audit_path.write_text(json.dumps(launch_audit_payload, indent=2), encoding="utf-8")
@@ -433,11 +538,12 @@ def launch_updater_helper(
             encoding="utf-8",
         )
         raise
-    apply_log_path = updater_root / "apply_update.log"
-    bootstrap_log_path = updater_root / "apply_update.bootstrap.log"
-    bootstrap_failure_path = updater_root / "apply_update.bootstrap.failure.log"
-    wrapper_log_path = updater_root / "apply_update.wrapper.log"
-    wrapper_failure_path = updater_root / "apply_update.wrapper.failure.log"
+    apply_log_path = artifacts["helper_apply_log"]
+    helper_bootstrap_log_path = artifacts["helper_bootstrap_log"]
+    bootstrap_launch_log_path = artifacts["bootstrap_launch_log"]
+    bootstrap_failure_path = artifacts["bootstrap_failure_log"]
+    wrapper_log_path = artifacts["wrapper_log"]
+    wrapper_failure_path = artifacts["wrapper_failure_log"]
 
     def _artifact_matches_attempt(path: Path) -> bool:
         if not path.exists():
@@ -456,44 +562,64 @@ def launch_updater_helper(
         return poll_method() is not None
 
     proof_path: Path | None = None
+    helper_proof_path: Path | None = None
     deadline = time.monotonic() + 4.0
     while time.monotonic() < deadline:
         for candidate in (
-            apply_log_path,
-            bootstrap_log_path,
+            bootstrap_launch_log_path,
             bootstrap_failure_path,
             wrapper_log_path,
             wrapper_failure_path,
+            apply_log_path,
+            helper_bootstrap_log_path,
         ):
             if _artifact_matches_attempt(candidate):
                 proof_path = candidate
+                if candidate in (apply_log_path, helper_bootstrap_log_path):
+                    helper_proof_path = candidate
                 break
-        if proof_path is not None:
+        if helper_proof_path is not None:
             break
         if _process_has_exited():
             break
         time.sleep(0.2)
 
-    if proof_path is not None:
+    if helper_proof_path is not None:
         return HelperLaunchResult(
             process=process,
             update_attempt_id=update_attempt_id,
             helper_bootstrap_proven=True,
-            proof_artifact=str(proof_path),
+            proof_artifact=str(helper_proof_path),
         )
 
     process_exited = _process_has_exited()
+    bootstrap_proven = _artifact_matches_attempt(bootstrap_launch_log_path) or _artifact_matches_attempt(bootstrap_failure_path)
+    wrapper_proven = _artifact_matches_attempt(wrapper_log_path) or _artifact_matches_attempt(wrapper_failure_path)
+    helper_proven = _artifact_matches_attempt(helper_bootstrap_log_path) or _artifact_matches_attempt(apply_log_path)
     detail = "helper_process_started_but_no_matching_proof"
-    if process_exited and _artifact_matches_attempt(wrapper_log_path):
-        detail = "wrapper_entered_but_real_helper_failed_before_helper_bootstrap"
-    elif process_exited and _artifact_matches_attempt(wrapper_failure_path):
-        detail = "wrapper_entered_and_logged_real_helper_start_failure"
-    elif process_exited:
-        detail = "wrapper_not_proven_process_exited_without_matching_proof"
-    elif not process_exited and not _artifact_matches_attempt(wrapper_log_path):
-        detail = "wrapper_not_proven_process_pending_without_matching_proof"
-    elif not process_exited:
-        detail = "wrapper_entered_helper_bootstrap_not_proven_yet"
+    if wrapper_proven and not helper_proven and process_exited:
+        detail = "wrapper_proven_process_exited_without_helper_bootstrap"
+    elif process_exited and not bootstrap_proven:
+        detail = "bootstrap_not_proven_process_exited_without_matching_proof"
+    elif bootstrap_proven and not wrapper_proven and _artifact_matches_attempt(bootstrap_failure_path):
+        try:
+            bootstrap_failure_text = bootstrap_failure_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            bootstrap_failure_text = ""
+        if "stage=bootstrap_wrapper_missing" in bootstrap_failure_text:
+            detail = "bootstrap_proven_wrapper_missing"
+        elif "stage=bootstrap_helper_missing" in bootstrap_failure_text:
+            detail = "bootstrap_proven_helper_missing"
+        elif "stage=bootstrap_wrapper_invocation_threw" in bootstrap_failure_text:
+            detail = "bootstrap_proven_wrapper_invocation_threw"
+        elif "stage=bootstrap_wrapper_nonzero_exit" in bootstrap_failure_text:
+            detail = "bootstrap_proven_wrapper_nonzero_exit"
+        else:
+            detail = "bootstrap_proven_wrapper_invocation_threw"
+    elif not process_exited and not bootstrap_proven:
+        detail = "bootstrap_not_proven_process_pending_without_matching_proof"
+    elif not process_exited and wrapper_proven and not helper_proven:
+        detail = "wrapper_proven_helper_bootstrap_not_proven_yet"
     launch_failure_path.write_text(
         (
             "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
@@ -501,7 +627,7 @@ def launch_updater_helper(
             f"helper_script={helper_script} cwd={helper_cwd} app_state_root={app_state_root} "
             f"manifest_ref={manifest_ref} update_attempt_id={update_attempt_id} cmd={cmd} pid={helper_pid} "
             f"detail={detail} "
-            f"apply_log_path={apply_log_path} bootstrap_log_path={bootstrap_log_path} bootstrap_failure_path={bootstrap_failure_path} "
+            f"apply_log_path={apply_log_path} helper_bootstrap_log_path={helper_bootstrap_log_path} bootstrap_launch_log_path={bootstrap_launch_log_path} bootstrap_failure_path={bootstrap_failure_path} "
             f"wrapper_log_path={wrapper_log_path} wrapper_failure_path={wrapper_failure_path}"
         ),
         encoding="utf-8",
@@ -509,7 +635,7 @@ def launch_updater_helper(
     log_line(
         "UPDATER_HELPER_LAUNCH_PATH_DEFECT "
         f"failure_artifact={launch_failure_path} update_attempt_id={update_attempt_id} apply_log={apply_log_path} "
-        f"bootstrap_log={bootstrap_log_path} bootstrap_failure_log={bootstrap_failure_path} "
+        f"helper_bootstrap_log={helper_bootstrap_log_path} bootstrap_launch_log={bootstrap_launch_log_path} bootstrap_failure_log={bootstrap_failure_path} "
         f"wrapper_log={wrapper_log_path} wrapper_failure_log={wrapper_failure_path} "
         f"detail={detail} pid={helper_pid}",
         tag="error",
@@ -518,6 +644,6 @@ def launch_updater_helper(
         process=process,
         update_attempt_id=update_attempt_id,
         helper_bootstrap_proven=False,
-        proof_artifact=None,
+        proof_artifact=str(proof_path or launch_failure_path),
         failure_detail=detail,
     )
