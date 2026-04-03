@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $WrapperLogDir = Join-Path $ScriptRoot "logs"
-$WrapperLogPath = Join-Path $WrapperLogDir "opening_trainer_online_wrapper.log"
+$WrapperLogPath = Join-Path $WrapperLogDir "opening_trainer_online_wrapper_log.txt"
 
 function Ensure-WrapperLogDir {
     if (-not (Test-Path -LiteralPath $WrapperLogDir)) {
@@ -115,8 +115,13 @@ function Ensure-RepoSynchronized {
     )
 
     $remoteRef = "refs/remotes/origin/$TargetBranch"
+    $repoUrl = Get-GitValueOrEmpty -RepoPath $RepoPath -Arguments @("remote", "get-url", "origin")
+    if ([string]::IsNullOrWhiteSpace($repoUrl)) {
+        throw "Unable to determine origin URL for repository at $RepoPath."
+    }
 
-    Invoke-GitLogged -RepoPath $RepoPath -Arguments @("fetch", "--all", "--prune")
+    Invoke-GitLogged -RepoPath $RepoPath -Arguments @("remote", "set-url", "origin", $repoUrl)
+    Invoke-GitLogged -RepoPath $RepoPath -Arguments @("fetch", "origin", "--prune", "--tags")
 
     try {
         Invoke-GitLogged -RepoPath $RepoPath -Arguments @("show-ref", "--verify", "--quiet", $remoteRef)
@@ -125,35 +130,36 @@ function Ensure-RepoSynchronized {
         throw "Remote ref missing after fetch: $remoteRef. Ensure origin/$TargetBranch exists. $($_.Exception.Message)"
     }
 
-    Invoke-GitLogged -RepoPath $RepoPath -Arguments @("reset", "--hard", "HEAD")
-    Invoke-GitLogged -RepoPath $RepoPath -Arguments @("clean", "-ffd", "-e", ".venv", "-e", "logs")
-
-    $checkoutSucceeded = $true
+    $syncSucceeded = $true
     try {
-        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("checkout", "-f", $TargetBranch)
+        try {
+            Invoke-GitLogged -RepoPath $RepoPath -Arguments @("checkout", $TargetBranch)
+        }
+        catch {
+            Write-WrapperLog "Local branch '$TargetBranch' checkout failed. Attempting tracked branch creation from origin/$TargetBranch."
+            Write-WrapperLog "Checkout failure details: $($_.Exception.Message)"
+            Invoke-GitLogged -RepoPath $RepoPath -Arguments @("checkout", "-b", $TargetBranch, "--track", "origin/$TargetBranch")
+        }
+
+        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("reset", "--hard", "origin/$TargetBranch")
+        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("clean", "-ffd", "-e", ".venv", "-e", "logs")
     }
     catch {
-        $checkoutSucceeded = $false
-        Write-WrapperLog "Primary checkout path failed for branch '$TargetBranch'. Attempting detached recovery path."
-        Write-WrapperLog "Primary checkout failure details: $($_.Exception.Message)"
+        $syncSucceeded = $false
+        Write-WrapperLog "Primary sync path failed for branch '$TargetBranch'. Entering fallback recovery path."
+        Write-WrapperLog "Primary sync failure details: $($_.Exception.Message)"
     }
 
-    if (-not $checkoutSucceeded) {
-        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("checkout", "--force", "--detach", $remoteRef)
+    if (-not $syncSucceeded) {
+        Write-WrapperLog "Fallback recovery: git checkout --detach origin/$TargetBranch"
+        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("checkout", "--detach", "origin/$TargetBranch")
+        Write-WrapperLog "Fallback recovery: git branch -f $TargetBranch origin/$TargetBranch"
         Invoke-GitLogged -RepoPath $RepoPath -Arguments @("branch", "-f", $TargetBranch, $remoteRef)
-        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("checkout", "-f", $TargetBranch)
-    }
-
-    Invoke-GitLogged -RepoPath $RepoPath -Arguments @("reset", "--hard", $remoteRef)
-    Invoke-GitLogged -RepoPath $RepoPath -Arguments @("clean", "-ffd", "-e", ".venv", "-e", "logs")
-
-    $filteredStatus = Get-FilteredStatusLines -RepoPath $RepoPath
-    if ($filteredStatus.Count -gt 0) {
-        Write-WrapperLog "Filtered status check found changes:" 
-        foreach ($line in $filteredStatus) {
-            Write-WrapperLog "[status] $line"
-        }
-        throw "Repository is not clean after synchronization."
+        Write-WrapperLog "Fallback recovery: git checkout $TargetBranch"
+        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("checkout", $TargetBranch)
+        Write-WrapperLog "Fallback recovery: git reset --hard origin/$TargetBranch"
+        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("reset", "--hard", "origin/$TargetBranch")
+        Invoke-GitLogged -RepoPath $RepoPath -Arguments @("clean", "-ffd", "-e", ".venv", "-e", "logs")
     }
 
     $head = Get-GitValueOrEmpty -RepoPath $RepoPath -Arguments @("rev-parse", "--verify", "HEAD")
@@ -163,18 +169,19 @@ function Ensure-RepoSynchronized {
         Write-WrapperLog "Repository congruence failed."
         Write-WrapperLog "Current HEAD: $head"
         Write-WrapperLog "Target remote ref hash ($remoteRef): $remoteHead"
-        $statusLines = Get-FilteredStatusLines -RepoPath $RepoPath
-        if ($statusLines.Count -eq 0) {
-            Write-WrapperLog "Filtered git status --short: <clean>"
-        }
-        else {
-            Write-WrapperLog "Filtered git status --short:"
-            foreach ($line in $statusLines) {
-                Write-WrapperLog "[status] $line"
-            }
-        }
-
         throw "Repository HEAD does not match $remoteRef."
+    }
+
+    $filteredStatus = Get-FilteredStatusLines -RepoPath $RepoPath
+    if ($filteredStatus.Count -eq 0) {
+        Write-WrapperLog "Filtered git status --short: <clean>"
+    }
+    else {
+        Write-WrapperLog "Filtered status check found changes:"
+        foreach ($line in $filteredStatus) {
+            Write-WrapperLog "[status] $line"
+        }
+        throw "Repository is not clean after synchronization."
     }
 
     Write-WrapperLog "Repository congruence verified."
