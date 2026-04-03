@@ -60,12 +60,18 @@ if (-not (Test-Path -LiteralPath $appUpdateManifestPath -PathType Leaf)) {
 
 $appUpdateManifest = Get-Content -LiteralPath $appUpdateManifestPath -Raw | ConvertFrom-Json
 $payloadIdentityPath = Join-Path $consumerDist $payloadIdentityFilename
+
+$commit = (& git -C $repoRoot rev-parse --short=12 HEAD).Trim()
+if ([string]::IsNullOrWhiteSpace($commit)) {
+    $commit = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
+}
+
 $payloadIdentity = [ordered]@{
     marker_schema_version = 1
     app_version = [string]$appUpdateManifest.app_version
-    build_id = [string]$appUpdateManifest.build_id
+    build_id = [string]$commit
     channel = [string]$appUpdateManifest.channel
-    payload_sha256 = [string]$appUpdateManifest.payload_sha256
+    payload_sha256 = ''
     generated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
 }
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
