@@ -133,6 +133,7 @@ def test_packaging_build_scripts_exist() -> None:
     assert "validate_install_consumer_app.ps1" in installer_text
     assert "app_update_manifest.json" in installer_text
     assert "Assert-PowerShellScriptParses" in installer_text
+    assert "error_id=$($_.ErrorId)" in installer_text
     assert "invoke_apply_app_update.ps1" in installer_text
     assert "staging" in app_payload_text
     assert "Copy-WithRetry" in app_payload_text
@@ -195,6 +196,7 @@ def test_updater_helper_and_publish_script_exist() -> None:
     assert "build_id" in helper_text
     assert "WRAPPER_ENTERED" in wrapper_text
     assert "WRAPPER_REAL_HELPER_EXCEPTION" in wrapper_text
+    assert "WRAPPER_RELAUNCH_ARGS_PARSE_FAILED" in wrapper_text
     assert "build_consumer_app_payload.ps1" in publish_text
     assert "Get-FileHash" in publish_text
     assert "build_id" in publish_text

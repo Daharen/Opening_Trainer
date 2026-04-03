@@ -27,41 +27,49 @@ $wrapperFailurePath = Join-Path $updaterRoot 'apply_update.wrapper.failure.log'
 function Write-WrapperLine {
     param([string]$Message)
     New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
-    $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message
-    Add-Content -LiteralPath $wrapperLogPath -Value $line -Encoding utf8
+    Add-Content -LiteralPath $wrapperLogPath -Value ("{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message) -Encoding utf8
 }
 
 function Write-WrapperFailure {
     param([string]$Message)
     New-Item -ItemType Directory -Path $updaterRoot -Force | Out-Null
-    $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message
-    Add-Content -LiteralPath $wrapperFailurePath -Value $line -Encoding utf8
+    Add-Content -LiteralPath $wrapperFailurePath -Value ("{0} {1}" -f ([DateTime]::UtcNow.ToString('o')), $Message) -Encoding utf8
 }
 
 if ([string]::IsNullOrWhiteSpace($UpdateAttemptId)) {
     $UpdateAttemptId = [guid]::NewGuid().ToString('N')
 }
 
-$rawArgs = ''
-if ($args -and $args.Count -gt 0) {
-    $rawArgs = ($args -join ' ')
-}
-
-$boundParamsRaw = ''
-try {
-    $boundParamsRaw = ($PSBoundParameters | ConvertTo-Json -Compress -Depth 6)
-} catch {
-    $boundParamsRaw = "bound_parameter_json_failure=$($_.Exception.Message)"
-}
-
+$wrapperPath = $PSCommandPath
 $resolvedHelperPath = [System.IO.Path]::GetFullPath($RealHelperPath)
-Write-WrapperLine "WRAPPER_ENTERED entered-wrapper=true update_attempt_id=$UpdateAttemptId wrapper_pid=$PID wrapper_script_path=$PSCommandPath cwd=$((Get-Location).Path) powershell_path=$($PSHOME) ps_version=$($PSVersionTable.PSVersion) raw_args=$rawArgs raw_parameters=$boundParamsRaw real_helper_path=$resolvedHelperPath app_state_root=$AppStateRoot relaunch_exe_path=$RelaunchExePath wait_pid=$WaitForPid manifest_ref=$ManifestPathOrUrl"
+$resolvedAppStateRoot = [System.IO.Path]::GetFullPath($AppStateRoot)
+$rawArgs = if ($args -and $args.Count -gt 0) { $args -join ' ' } else { '' }
 
+Write-WrapperLine "WRAPPER_ENTERED update_attempt_id=$UpdateAttemptId wrapper_pid=$PID wrapper_script_path=$wrapperPath cwd=$((Get-Location).Path) ps_version=$($PSVersionTable.PSVersion) helper_path=$resolvedHelperPath app_state_root=$resolvedAppStateRoot manifest_ref=$ManifestPathOrUrl relaunch_exe_path=$RelaunchExePath raw_relaunch_args=$RelaunchArgs wait_pid=$WaitForPid raw_args=$rawArgs"
+
+if ([string]::IsNullOrWhiteSpace($ManifestPathOrUrl)) {
+    $message = "WRAPPER_PARAM_INVALID update_attempt_id=$UpdateAttemptId param=ManifestPathOrUrl reason=empty"
+    Write-WrapperFailure $message
+    throw $message
+}
 if (-not (Test-Path -LiteralPath $resolvedHelperPath -PathType Leaf)) {
     $message = "WRAPPER_REAL_HELPER_MISSING update_attempt_id=$UpdateAttemptId real_helper_path=$resolvedHelperPath"
     Write-WrapperFailure $message
     throw $message
 }
+
+$parsedRelaunchArgs = @('--runtime-mode', 'consumer')
+try {
+    $candidate = ConvertFrom-Json -InputObject $RelaunchArgs -ErrorAction Stop
+    if ($candidate -is [System.Array]) {
+        $parsedRelaunchArgs = @($candidate | ForEach-Object { [string]$_ })
+    } elseif ($candidate -is [string]) {
+        $parsedRelaunchArgs = @([string]$candidate)
+    }
+} catch {
+    Write-WrapperFailure "WRAPPER_RELAUNCH_ARGS_PARSE_FAILED update_attempt_id=$UpdateAttemptId raw_relaunch_args=$RelaunchArgs error=$($_.Exception.Message)"
+}
+$relaunchArgsJson = ConvertTo-Json -InputObject $parsedRelaunchArgs -Compress -Depth 8
 
 $helperStdoutPath = Join-Path $updaterRoot 'apply_update.wrapper.helper.stdout.log'
 $helperStderrPath = Join-Path $updaterRoot 'apply_update.wrapper.helper.stderr.log'
@@ -71,29 +79,17 @@ if (Test-Path -LiteralPath $helperStderrPath) { Remove-Item -LiteralPath $helper
 try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $resolvedHelperPath `
         -ManifestPathOrUrl $ManifestPathOrUrl `
-        -AppStateRoot $AppStateRoot `
+        -AppStateRoot $resolvedAppStateRoot `
         -WaitForPid $WaitForPid `
         -RelaunchExePath $RelaunchExePath `
-        -RelaunchArgs $RelaunchArgs `
+        -RelaunchArgs $relaunchArgsJson `
         -UpdateAttemptId $UpdateAttemptId `
         1>>$helperStdoutPath 2>>$helperStderrPath
     $helperExit = $LASTEXITCODE
-    if ($null -eq $helperExit) {
-        $helperExit = 0
-    }
-    Write-WrapperLine "WRAPPER_REAL_HELPER_COMPLETED update_attempt_id=$UpdateAttemptId real_helper_path=$resolvedHelperPath helper_exit_code=$helperExit helper_stdout_path=$helperStdoutPath helper_stderr_path=$helperStderrPath"
-    if (Test-Path -LiteralPath (Join-Path $updaterRoot 'apply_update.bootstrap.log')) {
-        Write-WrapperLine "WRAPPER_OBSERVED_HELPER_BOOTSTRAP_LOG update_attempt_id=$UpdateAttemptId"
-    }
-    if (Test-Path -LiteralPath (Join-Path $updaterRoot 'apply_update.log')) {
-        Write-WrapperLine "WRAPPER_OBSERVED_HELPER_APPLY_LOG update_attempt_id=$UpdateAttemptId"
-    }
+    if ($null -eq $helperExit) { $helperExit = 0 }
+    Write-WrapperLine "WRAPPER_REAL_HELPER_COMPLETED update_attempt_id=$UpdateAttemptId helper_exit_code=$helperExit helper_stdout_path=$helperStdoutPath helper_stderr_path=$helperStderrPath"
     if ($helperExit -ne 0) {
-        $stderrTail = ''
-        if (Test-Path -LiteralPath $helperStderrPath) {
-            $stderrTail = (Get-Content -LiteralPath $helperStderrPath -Tail 40 -ErrorAction SilentlyContinue) -join ' | '
-        }
-        Write-WrapperFailure "WRAPPER_REAL_HELPER_NONZERO_EXIT update_attempt_id=$UpdateAttemptId helper_exit_code=$helperExit stderr_tail=$stderrTail"
+        Write-WrapperFailure "WRAPPER_REAL_HELPER_NONZERO_EXIT update_attempt_id=$UpdateAttemptId helper_exit_code=$helperExit"
         exit $helperExit
     }
     exit 0

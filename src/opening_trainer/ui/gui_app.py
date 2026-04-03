@@ -2151,11 +2151,14 @@ class OpeningTrainerGUI:
                 reason_suffix = ""
                 if launch_result.failure_detail:
                     reason_suffix = f"\nReason: {launch_result.failure_detail}"
+                artifact_suffix = ""
+                if launch_result.proof_artifact:
+                    artifact_suffix = f"\nProof artifact: {launch_result.proof_artifact}"
                 messagebox.showerror(
                     "Update Error",
                     "Updater helper failed to initialize before apply bootstrap proof was observed. "
                     "The application was not closed through the updater apply path."
-                    f"{reason_suffix}",
+                    f"{reason_suffix}{artifact_suffix}",
                     parent=self.root,
                 )
                 return
@@ -2796,5 +2799,4 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-
 

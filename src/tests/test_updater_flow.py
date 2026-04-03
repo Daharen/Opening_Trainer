@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -189,7 +190,8 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
     log_messages: list[str] = []
 
     class DummyProcess:
-        pass
+        def poll(self):
+            return 1
 
     def _fake_popen(cmd, cwd=None):
         popen_calls.append({"cmd": cmd, "cwd": cwd})
@@ -208,9 +210,16 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
 
     assert len(popen_calls) == 1
     assert popen_calls[0]["cwd"] == str(app_state_root / "updater")
-    assert "invoke_apply_app_update.ps1" in popen_calls[0]["cmd"][5]
-    assert "-RealHelperPath" in popen_calls[0]["cmd"]
+    assert popen_calls[0]["cmd"][4] == "-EncodedCommand"
+    decoded_bootstrap = base64.b64decode(popen_calls[0]["cmd"][5]).decode("utf-16le")
+    assert "encoded_bootstrap_v1_entered" in decoded_bootstrap
+    assert "invoke_apply_app_update.ps1" in decoded_bootstrap
+    assert "apply_app_update.ps1" in decoded_bootstrap
     assert any("UPDATER_HELPER_LAUNCH" in msg for msg in log_messages)
+    launch_audit = json.loads((app_state_root / "updater" / "launch_helper.audit.json").read_text(encoding="utf-8"))
+    assert launch_audit["launch_mode"] == "encoded_bootstrap_v1"
+    assert launch_audit["relaunch_args_json"] == "[\"--runtime-mode\", \"consumer\"]"
+    assert "bootstrap_launch_log" in launch_audit["expected_artifacts"]
 
 
 def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, tmp_path):
@@ -251,7 +260,8 @@ def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, 
     popen_calls: list[dict] = []
 
     class DummyProcess:
-        pass
+        def poll(self):
+            return 1
 
     def _fake_popen(cmd, cwd=None):
         popen_calls.append({"cmd": cmd, "cwd": cwd})
@@ -303,11 +313,153 @@ def test_launch_updater_helper_self_heals_helper_from_bootstrap_installer(monkey
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: object())
+    class DummyProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
     launch_updater_helper(str(manifest_path), app_state_root=app_state_root, wait_for_pid=1234)
 
     assert (app_state_root / "updater" / "apply_app_update.ps1").read_text(encoding="utf-8") == "Write-Host installer-helper"
     assert (app_state_root / "updater" / "invoke_apply_app_update.ps1").read_text(encoding="utf-8") == "Write-Host wrapper"
+
+
+def test_launch_updater_helper_classifies_missing_bootstrap_proof(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
+
+    class DummyProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+
+    result = launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
+    assert result.helper_bootstrap_proven is False
+    assert result.failure_detail == "bootstrap_not_proven_process_exited_without_matching_proof"
+
+
+def test_launch_updater_helper_classifies_bootstrap_wrapper_nonzero(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
+    attempt_id = "attempt-fixed-1"
+    (updater_root / "apply_update.bootstrap.failure.log").write_text(
+        f"2026-04-03T00:00:00Z stage=bootstrap_wrapper_nonzero_exit update_attempt_id={attempt_id}",
+        encoding="utf-8",
+    )
+
+    class DummyUuid:
+        hex = attempt_id
+
+    class DummyProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("opening_trainer.updater.uuid.uuid4", lambda: DummyUuid())
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+
+    result = launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
+    assert result.helper_bootstrap_proven is False
+    assert result.failure_detail == "bootstrap_proven_wrapper_nonzero_exit"
+
+
+def test_launch_updater_helper_classifies_wrapper_proven_without_helper_bootstrap(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
+    attempt_id = "attempt-fixed-2"
+    (updater_root / "apply_update.wrapper.log").write_text(
+        f"2026-04-03T00:00:00Z WRAPPER_ENTERED update_attempt_id={attempt_id}",
+        encoding="utf-8",
+    )
+
+    class DummyUuid:
+        hex = attempt_id
+
+    class DummyProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("opening_trainer.updater.uuid.uuid4", lambda: DummyUuid())
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+
+    result = launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
+    assert result.helper_bootstrap_proven is False
+    assert result.failure_detail == "wrapper_proven_process_exited_without_helper_bootstrap"
+
+
+def test_launch_updater_helper_serializes_relaunch_args_json(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
+
+    class DummyProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", lambda cmd, cwd=None: DummyProcess())
+    launch_updater_helper(
+        None,
+        app_state_root=app_state_root,
+        wait_for_pid=1234,
+        relaunch_args=["--runtime-mode", "consumer"],
+    )
+    payload = json.loads((updater_root / "launch_helper.audit.json").read_text(encoding="utf-8"))
+    assert payload["relaunch_args_json"] == "[\"--runtime-mode\", \"consumer\"]"
 
 
 def test_check_for_update_raises_when_manifest_missing_and_not_recoverable(tmp_path):
