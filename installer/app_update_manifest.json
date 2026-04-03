@@ -2,11 +2,11 @@
   "manifest_version": 1,
   "channel": "dev",
   "app_version": "0.1.1",
-  "build_id": "b150654a6259",
+  "build_id": "efe9f19ab002",
   "payload_filename": "OpeningTrainer-app.zip",
   "payload_url": "https://raw.githubusercontent.com/daharen/Opening_Trainer/main/installer/payloads/dev/OpeningTrainer-app.zip",
-  "payload_sha256": "e9cdfde62fe45391bc12ed9d0aba091b9cb20129f59e577ba4e89ab39a9bf9df",
-  "published_at_utc": "2026-04-03T04:16:43Z",
+  "payload_sha256": "9fedb7598cc3ca045eba7cdd0916251a527dbc4e527540b232d766bcc323cf1a",
+  "published_at_utc": "2026-04-03T04:30:15Z",
   "minimum_bootstrap_version": "0.1.0",
-  "notes": "Dev publish b150654a6259"
+  "notes": "Dev publish efe9f19ab002"
 }
