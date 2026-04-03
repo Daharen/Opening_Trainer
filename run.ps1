@@ -154,6 +154,36 @@ function Ensure-Pytest {
     Log "Validation tool bootstrap: pytest install completed."
 }
 
+function Resolve-PytestRunner {
+    param(
+        [string]$VenvDir,
+        [string]$VenvPython
+    )
+
+    $pytestEntryPoints = @(
+        (Join-Path $VenvDir "Scripts\py.test.exe"),
+        (Join-Path $VenvDir "Scripts\pytest.exe")
+    )
+
+    foreach ($entryPoint in $pytestEntryPoints) {
+        if (Test-Path $entryPoint -PathType Leaf) {
+            Write-SessionLogLine -Tag "validation" -Message "pytest entrypoint reused | chosen executable path=$entryPoint"
+            Log "Validation pytest runner: pytest entrypoint reused; chosen executable path: $entryPoint"
+            return @{
+                FilePath = $entryPoint
+                ArgumentsPrefix = @()
+            }
+        }
+    }
+
+    Write-SessionLogLine -Tag "validation" -Message "python -m pytest fallback used | chosen executable path=$VenvPython"
+    Log "Validation pytest runner: python -m pytest fallback used; chosen executable path: $VenvPython"
+    return @{
+        FilePath = $VenvPython
+        ArgumentsPrefix = @("-m", "pytest")
+    }
+}
+
 function Ensure-WorkspaceLogs {
     if (-not (Test-Path $WorkspaceLogsDir)) {
         New-Item -ItemType Directory -Force -Path $WorkspaceLogsDir | Out-Null
@@ -766,17 +796,20 @@ function Invoke-ValidationProfile {
     switch ($ProfileName) {
         "AutoSafe" {
             Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip
+            $pytestRunner = Resolve-PytestRunner -VenvDir $venv.VenvDir -VenvPython $VenvPython
             Invoke-ValidationCommand -Name "compileall_src" -FilePath $VenvPython -Arguments @("-m", "compileall", "src") -TimeoutSeconds $AutoSafeValidationTimeoutSeconds
-            Invoke-ValidationCommand -Name "autosafe_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q", "src/tests/test_launch_paths.py", "src/tests/test_gui_app.py", "src/tests/test_shutdown_and_single_instance.py", "src/tests/test_session_logging.py") -TimeoutSeconds $AutoSafeValidationTimeoutSeconds -CleanupStockfishOnFailure $true
+            Invoke-ValidationCommand -Name "autosafe_pytest_subset" -FilePath $pytestRunner.FilePath -Arguments @($pytestRunner.ArgumentsPrefix + @("-q", "src/tests/test_launch_paths.py", "src/tests/test_gui_app.py", "src/tests/test_shutdown_and_single_instance.py", "src/tests/test_session_logging.py")) -TimeoutSeconds $AutoSafeValidationTimeoutSeconds -CleanupStockfishOnFailure $true
         }
         "DevFast" {
             Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip
+            $pytestRunner = Resolve-PytestRunner -VenvDir $venv.VenvDir -VenvPython $VenvPython
             Invoke-ValidationCommand -Name "compileall_src" -FilePath $VenvPython -Arguments @("-m", "compileall", "src") -TimeoutSeconds $DevFastValidationTimeoutSeconds
-            Invoke-ValidationCommand -Name "devfast_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q", "src/tests/test_launch_paths.py", "src/tests/test_gui_app.py", "src/tests/test_shutdown_and_single_instance.py", "src/tests/test_session_logging.py", "src/tests/test_smoke.py") -TimeoutSeconds $DevFastValidationTimeoutSeconds -CleanupStockfishOnFailure $true
+            Invoke-ValidationCommand -Name "devfast_pytest_subset" -FilePath $pytestRunner.FilePath -Arguments @($pytestRunner.ArgumentsPrefix + @("-q", "src/tests/test_launch_paths.py", "src/tests/test_gui_app.py", "src/tests/test_shutdown_and_single_instance.py", "src/tests/test_session_logging.py", "src/tests/test_smoke.py")) -TimeoutSeconds $DevFastValidationTimeoutSeconds -CleanupStockfishOnFailure $true
         }
         "DevFull" {
             Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip
-            Invoke-ValidationCommand -Name "pytest_full" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q") -TimeoutSeconds $DevFullValidationTimeoutSeconds -CleanupStockfishOnFailure $true
+            $pytestRunner = Resolve-PytestRunner -VenvDir $venv.VenvDir -VenvPython $VenvPython
+            Invoke-ValidationCommand -Name "pytest_full" -FilePath $pytestRunner.FilePath -Arguments @($pytestRunner.ArgumentsPrefix + @("-q")) -TimeoutSeconds $DevFullValidationTimeoutSeconds -CleanupStockfishOnFailure $true
             Invoke-ValidationCommand -Name "compileall_src" -FilePath $VenvPython -Arguments @("-m", "compileall", "src") -TimeoutSeconds $DevFullValidationTimeoutSeconds
         }
         default {
