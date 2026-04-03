@@ -360,11 +360,30 @@ def _bootstrap_artifact_paths(updater_root: Path) -> dict[str, Path]:
     return {
         "bootstrap_launch_log": updater_root / "apply_update.bootstrap.launch.log",
         "bootstrap_failure_log": updater_root / "apply_update.bootstrap.failure.log",
+        "bootstrap_host_stdout_log": updater_root / "apply_update.bootstrap.host.stdout.log",
+        "bootstrap_host_stderr_log": updater_root / "apply_update.bootstrap.host.stderr.log",
         "wrapper_log": updater_root / "apply_update.wrapper.log",
         "wrapper_failure_log": updater_root / "apply_update.wrapper.failure.log",
         "helper_bootstrap_log": updater_root / "apply_update.bootstrap.log",
         "helper_apply_log": updater_root / "apply_update.log",
     }
+
+
+def _is_windows_platform() -> bool:
+    return os.name == "nt"
+
+
+def _resolve_powershell_executable() -> str:
+    if not _is_windows_platform():
+        return "powershell.exe"
+    candidates = [
+        Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+        Path(os.environ.get("WINDIR", r"C:\Windows")) / "Sysnative" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return "powershell.exe"
 
 
 def _build_encoded_bootstrap_command(
@@ -496,9 +515,11 @@ def launch_updater_helper(
         update_attempt_id=update_attempt_id,
         artifacts=artifacts,
     )
+    powershell_executable = _resolve_powershell_executable()
     cmd = [
-        "powershell.exe",
+        powershell_executable,
         "-NoProfile",
+        "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
         "-EncodedCommand",
@@ -506,9 +527,15 @@ def launch_updater_helper(
     ]
     launch_audit_path = updater_root / "launch_helper.audit.json"
     launch_failure_path = updater_root / "launch_helper.failure.log"
+    host_stdout_path = artifacts["bootstrap_host_stdout_log"]
+    host_stderr_path = artifacts["bootstrap_host_stderr_log"]
+    host_stdout_path.write_text("", encoding="utf-8")
+    host_stderr_path.write_text("", encoding="utf-8")
+
     launch_audit_payload = {
         "event": "UPDATER_HELPER_LAUNCH_ATTEMPT",
         "launch_mode": "encoded_bootstrap_v1",
+        "powershell_executable": powershell_executable,
         "helper_script": str(helper_script),
         "helper_wrapper_script": str(helper_wrapper_script),
         "manifest_ref": manifest_ref,
@@ -523,12 +550,29 @@ def launch_updater_helper(
         "update_attempt_id": update_attempt_id,
     }
     launch_audit_path.write_text(json.dumps(launch_audit_payload, indent=2), encoding="utf-8")
-    popen_kwargs: dict[str, object] = {"cwd": str(helper_cwd)}
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    host_stdout_handle = host_stdout_path.open("ab")
+    host_stderr_handle = host_stderr_path.open("ab")
+    popen_kwargs: dict[str, object] = {
+        "cwd": str(helper_cwd),
+        "stdin": subprocess.DEVNULL,
+        "stdout": host_stdout_handle,
+        "stderr": host_stderr_handle,
+    }
+    if _is_windows_platform():
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    launch_audit_payload["popen_kwargs_summary"] = {
+        "cwd": str(helper_cwd),
+        "stdin": "DEVNULL",
+        "stdout": str(host_stdout_path),
+        "stderr": str(host_stderr_path),
+        "creationflags": int(popen_kwargs.get("creationflags", 0)),
+    }
+    launch_audit_path.write_text(json.dumps(launch_audit_payload, indent=2), encoding="utf-8")
     try:
         process = subprocess.Popen(cmd, **popen_kwargs)
     except Exception as exc:
+        host_stdout_handle.close()
+        host_stderr_handle.close()
         launch_failure_path.write_text(
             (
                 "UPDATER_HELPER_LAUNCH_FAILED "
@@ -538,18 +582,30 @@ def launch_updater_helper(
             encoding="utf-8",
         )
         raise
+    host_stdout_handle.close()
+    host_stderr_handle.close()
     apply_log_path = artifacts["helper_apply_log"]
     helper_bootstrap_log_path = artifacts["helper_bootstrap_log"]
     bootstrap_launch_log_path = artifacts["bootstrap_launch_log"]
     bootstrap_failure_path = artifacts["bootstrap_failure_log"]
     wrapper_log_path = artifacts["wrapper_log"]
     wrapper_failure_path = artifacts["wrapper_failure_log"]
+    host_stdout_path = artifacts["bootstrap_host_stdout_log"]
+    host_stderr_path = artifacts["bootstrap_host_stderr_log"]
 
     def _artifact_matches_attempt(path: Path) -> bool:
         if not path.exists():
             return False
         try:
             return f"update_attempt_id={update_attempt_id}" in path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+
+    def _artifact_has_content(path: Path) -> bool:
+        if not path.exists():
+            return False
+        try:
+            return path.stat().st_size > 0
         except OSError:
             return False
 
@@ -596,11 +652,20 @@ def launch_updater_helper(
     bootstrap_proven = _artifact_matches_attempt(bootstrap_launch_log_path) or _artifact_matches_attempt(bootstrap_failure_path)
     wrapper_proven = _artifact_matches_attempt(wrapper_log_path) or _artifact_matches_attempt(wrapper_failure_path)
     helper_proven = _artifact_matches_attempt(helper_bootstrap_log_path) or _artifact_matches_attempt(apply_log_path)
+    host_capture_proven = _artifact_has_content(host_stderr_path) or _artifact_has_content(host_stdout_path)
     detail = "helper_process_started_but_no_matching_proof"
+    preferred_host_artifact: Path | None = None
+    if _artifact_has_content(host_stderr_path):
+        preferred_host_artifact = host_stderr_path
+    elif _artifact_has_content(host_stdout_path):
+        preferred_host_artifact = host_stdout_path
     if wrapper_proven and not helper_proven and process_exited:
         detail = "wrapper_proven_process_exited_without_helper_bootstrap"
     elif process_exited and not bootstrap_proven:
-        detail = "bootstrap_not_proven_process_exited_without_matching_proof"
+        if host_capture_proven:
+            detail = "bootstrap_host_failed_before_script_entry"
+        else:
+            detail = "bootstrap_not_proven_process_exited_without_matching_proof"
     elif bootstrap_proven and not wrapper_proven and _artifact_matches_attempt(bootstrap_failure_path):
         try:
             bootstrap_failure_text = bootstrap_failure_path.read_text(encoding="utf-8", errors="replace")
@@ -644,6 +709,6 @@ def launch_updater_helper(
         process=process,
         update_attempt_id=update_attempt_id,
         helper_bootstrap_proven=False,
-        proof_artifact=str(proof_path or launch_failure_path),
+        proof_artifact=str(preferred_host_artifact or proof_path or launch_failure_path),
         failure_detail=detail,
     )
