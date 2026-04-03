@@ -128,17 +128,47 @@ try {
     Write-Log ("STAGED_PAYLOAD_IDENTITY_VERIFIED manifest_path={0} staged_identity_path={1} manifest_build_id={2} staged_build_id={3} manifest_channel={4} staged_channel={5}" -f $ManifestPath, $StagedPayloadIdentityPath, $manifestBuildId, $stagedBuildId, $manifestChannel, $stagedChannel)
 }
 
-    function Wait-ForProcessExit {
+function Wait-ForProcessExit {
     param([int]$WaitForProcessId, [int]$TimeoutSeconds = 180)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ($true) {
         $proc = Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue
-        if (-not $proc) { return }
+        if (-not $proc) { return $true }
         if ((Get-Date) -gt $deadline) {
-            throw "Timed out waiting for process $WaitForProcessId to exit."
+            return $false
         }
         Start-Sleep -Milliseconds 300
     }
+}
+
+    function Ensure-ProcessStopped {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$WaitForProcessId,
+        [int]$GracePeriodSeconds = 6,
+        [int]$ForcedWaitSeconds = 10
+    )
+    Write-Log "PROCESS_EXIT_WAIT_BEGIN wait_pid=$WaitForProcessId grace_period_seconds=$GracePeriodSeconds"
+    $exitedDuringGrace = Wait-ForProcessExit -WaitForProcessId $WaitForProcessId -TimeoutSeconds $GracePeriodSeconds
+    if ($exitedDuringGrace) {
+        Write-Log "PROCESS_EXIT_WAIT_RESULT result=exited_during_grace wait_pid=$WaitForProcessId"
+        return
+    }
+
+    Write-Log "PROCESS_EXIT_WAIT_RESULT result=still_running_after_grace wait_pid=$WaitForProcessId action=force_terminate"
+    try {
+        Stop-Process -Id $WaitForProcessId -Force -ErrorAction Stop
+        Write-Log "PROCESS_FORCE_TERMINATE_RESULT result=issued wait_pid=$WaitForProcessId"
+    } catch {
+        $errorMessage = $_.Exception.Message
+        Write-Log "PROCESS_FORCE_TERMINATE_RESULT result=failed wait_pid=$WaitForProcessId error=$errorMessage"
+    }
+
+    $exitedAfterForce = Wait-ForProcessExit -WaitForProcessId $WaitForProcessId -TimeoutSeconds $ForcedWaitSeconds
+    if (-not $exitedAfterForce) {
+        throw "Process $WaitForProcessId is still running after force-termination attempt."
+    }
+    Write-Log "PROCESS_FORCE_TERMINATE_RESULT result=confirmed_stopped wait_pid=$WaitForProcessId forced_wait_seconds=$ForcedWaitSeconds"
 }
 
     function Wait-ForMutableRootSwapReady {
@@ -286,8 +316,8 @@ try {
 
     $phase = 'wait_for_app_exit'
     Write-Log "HELPER_WAITING_FOR_APP_RELEASE wait_pid=$WaitForPid"
-    Wait-ForProcessExit -WaitForProcessId $WaitForPid
-    Write-Log "HELPER_WAIT_FOR_APP_RELEASE_COMPLETE wait_pid=$WaitForPid"
+    Ensure-ProcessStopped -WaitForProcessId $WaitForPid
+    Write-Log "HELPER_WAIT_FOR_APP_RELEASE_COMPLETE wait_pid=$WaitForPid strategy=polite_then_forceful"
     $phase = 'wait_for_mutable_root_release'
     Wait-ForMutableRootSwapReady -MutableRoot $mutableRoot
     $phase = 'swap_begin'
@@ -321,8 +351,40 @@ try {
         $RelaunchExePath = Join-Path $mutableRoot 'OpeningTrainer.exe'
     }
     if (Test-Path -LiteralPath $RelaunchExePath) {
-        Start-Process -FilePath $RelaunchExePath -ArgumentList $relaunchArgsArray
-        Write-Log "RELAUNCH_RESULT result=ok exe=$RelaunchExePath"
+        $delaySeconds = 4
+        $relaunchPayload = @{
+            exe = [string]$RelaunchExePath
+            args = @($relaunchArgsArray | ForEach-Object { [string]$_ })
+            delay_seconds = $delaySeconds
+            update_attempt_id = [string]$UpdateAttemptId
+        } | ConvertTo-Json -Compress -Depth 8
+        $relaunchPayloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($relaunchPayload))
+        $relaunchScript = @"
+`$ErrorActionPreference = 'SilentlyContinue'
+try {
+    `$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$relaunchPayloadBase64'))
+    `$payload = ConvertFrom-Json -InputObject `$json
+    `$delaySeconds = [int]`$payload.delay_seconds
+    if (`$delaySeconds -lt 1) { `$delaySeconds = 1 }
+    Start-Sleep -Seconds `$delaySeconds
+    `$argsArray = @()
+    if (`$payload.args -is [System.Array]) {
+        `$argsArray = @(`$payload.args | ForEach-Object { [string]`$_ })
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]`$payload.args)) {
+        `$argsArray = @([string]`$payload.args)
+    }
+    Start-Process -FilePath ([string]`$payload.exe) -ArgumentList `$argsArray -ErrorAction SilentlyContinue | Out-Null
+} catch {
+}
+"@
+        $encodedRelaunchScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($relaunchScript))
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-EncodedCommand', $encodedRelaunchScript
+        ) | Out-Null
+        Write-Log "RELAUNCH_RESULT result=scheduled_detached exe=$RelaunchExePath delay_seconds=$delaySeconds"
     } else {
         Write-Log "RELAUNCH_RESULT result=skipped missing_exe=$RelaunchExePath"
     }

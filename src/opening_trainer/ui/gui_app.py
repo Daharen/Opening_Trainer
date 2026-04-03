@@ -2140,28 +2140,14 @@ class OpeningTrainerGUI:
                 relaunch_args=["--runtime-mode", "consumer"],
             )
             if not launch_result.helper_bootstrap_proven:
-                self._exit_updater_mode()
                 log_line(
-                    "GUI_UPDATE_HELPER_INIT_UNPROVEN "
+                    "GUI_UPDATE_HELPER_INIT_UNPROVEN_SOFT_HANDOFF "
                     f"update_attempt_id={launch_result.update_attempt_id} "
                     f"failure_detail={launch_result.failure_detail or 'unknown'} "
-                    f"proof_artifact={launch_result.proof_artifact}",
-                    tag="error",
+                    f"proof_artifact={launch_result.proof_artifact} "
+                    "action=continue_without_modal",
+                    tag="startup",
                 )
-                reason_suffix = ""
-                if launch_result.failure_detail:
-                    reason_suffix = f"\nReason: {launch_result.failure_detail}"
-                artifact_suffix = ""
-                if launch_result.proof_artifact:
-                    artifact_suffix = f"\nProof artifact: {launch_result.proof_artifact}"
-                messagebox.showerror(
-                    "Update Error",
-                    "Updater helper failed to initialize before apply bootstrap proof was observed. "
-                    "The application was not closed through the updater apply path."
-                    f"{reason_suffix}{artifact_suffix}",
-                    parent=self.root,
-                )
-                return
             self._updater_apply_started = True
             log_line(
                 "GUI_UPDATE_HELPER_LAUNCHED "
@@ -2799,7 +2785,6 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-
 
 
 
