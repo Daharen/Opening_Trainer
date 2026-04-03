@@ -129,6 +129,7 @@ function Ensure-Pytest {
         [string]$VenvPip
     )
 
+    Log "Validation tool bootstrap: checking pytest availability in repo-local virtual environment..."
     $oldErrorActionPreference = $ErrorActionPreference
     try {
         $script:ErrorActionPreference = "Continue"
@@ -141,14 +142,16 @@ function Ensure-Pytest {
     }
 
     if ($hasPytest) {
+        Log "Validation tool bootstrap: pytest already available in repo-local virtual environment."
         return
     }
 
-    Log "pytest not found in repo-local virtual environment. Installing pytest..."
+    Log "Validation tool bootstrap: pytest missing in repo-local virtual environment; installing pytest..."
     & $VenvPip install pytest
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to install pytest."
     }
+    Log "Validation tool bootstrap: pytest install completed."
 }
 
 function Ensure-WorkspaceLogs {
