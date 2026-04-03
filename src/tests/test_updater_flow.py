@@ -213,8 +213,18 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
     encoded_command_index = popen_calls[0]["cmd"].index("-EncodedCommand")
     decoded_bootstrap = base64.b64decode(popen_calls[0]["cmd"][encoded_command_index + 1]).decode("utf-16le")
     assert "encoded_bootstrap_v1_entered" in decoded_bootstrap
-    assert "invoke_apply_app_update.ps1" in decoded_bootstrap
-    assert "apply_app_update.ps1" in decoded_bootstrap
+    assert "$payloadTransport = 'json_base64_utf8'" in decoded_bootstrap
+    assert "payload_transport={0}" in decoded_bootstrap
+    assert "$payloadJsonBase64 = '" in decoded_bootstrap
+    assert "[System.Convert]::FromBase64String($payloadJsonBase64)" in decoded_bootstrap
+    assert "[System.Text.Encoding]::UTF8.GetString($payloadJsonBytes)" in decoded_bootstrap
+    assert "$payloadJson = [string]$payloadJsonText" in decoded_bootstrap
+    assert "ConvertFrom-Json -InputObject $payloadJson" in decoded_bootstrap
+    assert "ConvertFrom-Json -InputObject \"{" not in decoded_bootstrap
+    assert "$bootstrapPSEdition = ''" in decoded_bootstrap
+    assert "$psEdition = ''" not in decoded_bootstrap
+    assert "$wrapperPath = [string]$payload.wrapper_path" in decoded_bootstrap
+    assert "$helperPath = [string]$payload.helper_path" in decoded_bootstrap
     assert any("UPDATER_HELPER_LAUNCH" in msg for msg in log_messages)
     launch_audit = json.loads((app_state_root / "updater" / "launch_helper.audit.json").read_text(encoding="utf-8"))
     assert launch_audit["launch_mode"] == "encoded_bootstrap_v1"
@@ -222,6 +232,45 @@ def test_launch_updater_helper_sets_safe_cwd_outside_mutable_root(monkeypatch, t
     assert "bootstrap_launch_log" in launch_audit["expected_artifacts"]
     assert "bootstrap_host_stdout_log" in launch_audit["expected_artifacts"]
     assert "bootstrap_host_stderr_log" in launch_audit["expected_artifacts"]
+
+
+def test_launch_updater_helper_bootstrap_avoids_inline_raw_json_payload(monkeypatch, tmp_path):
+    app_state_root = tmp_path / "Local" / "OpeningTrainer"
+    mutable_root = app_state_root / "App"
+    updater_root = app_state_root / "updater"
+    updater_root.mkdir(parents=True, exist_ok=True)
+    write_installed_app_manifest(
+        app_state_root=app_state_root,
+        app_version="1.0.0",
+        channel="dev",
+        mutable_app_root=mutable_root,
+        payload_filename="OpeningTrainer-app.zip",
+        payload_sha256="hash",
+        bootstrap_version="1.0.0",
+        build_id="commit-old",
+    )
+    (updater_root / "apply_app_update.ps1").write_text("Write-Host helper", encoding="utf-8")
+    (updater_root / "invoke_apply_app_update.ps1").write_text("Write-Host wrapper", encoding="utf-8")
+
+    popen_calls: list[dict] = []
+
+    class DummyProcess:
+        def poll(self):
+            return 1
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append({"cmd": cmd, **kwargs})
+        return DummyProcess()
+
+    monkeypatch.setattr("opening_trainer.updater.subprocess.Popen", _fake_popen)
+
+    launch_updater_helper(None, app_state_root=app_state_root, wait_for_pid=1234)
+
+    encoded_command_index = popen_calls[0]["cmd"].index("-EncodedCommand")
+    decoded_bootstrap = base64.b64decode(popen_calls[0]["cmd"][encoded_command_index + 1]).decode("utf-16le")
+    assert "quoted_payload" not in decoded_bootstrap
+    assert "ConvertFrom-Json -InputObject \"{" not in decoded_bootstrap
+    assert "ConvertFrom-Json -InputObject $payloadJson" in decoded_bootstrap
 
 
 def test_launch_updater_helper_self_heals_helper_from_mutable_root(monkeypatch, tmp_path):
