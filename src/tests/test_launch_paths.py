@@ -226,6 +226,25 @@ def test_powershell_runner_has_split_validation_profiles_and_timeout_markers():
     assert 'src/tests/test_engine_process.py' not in script
 
 
+def test_powershell_runner_bootstraps_pytest_for_validation_profiles():
+    script = Path('run.ps1').read_text(encoding='utf-8')
+
+    assert 'function Ensure-Pytest' in script
+    assert 'Validation tool bootstrap: checking pytest availability in repo-local virtual environment...' in script
+    assert 'Validation tool bootstrap: pytest already available in repo-local virtual environment.' in script
+    assert 'Validation tool bootstrap: pytest missing in repo-local virtual environment; installing pytest...' in script
+    assert 'Validation tool bootstrap: pytest install completed.' in script
+    assert 'Ensure-Pytest -VenvPython $VenvPython -VenvPip $venv.VenvPip' in script
+
+
+def test_powershell_runner_validation_commands_use_python_module_pytest_invocation():
+    script = Path('run.ps1').read_text(encoding='utf-8')
+
+    assert 'Invoke-ValidationCommand -Name "autosafe_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q"' in script
+    assert 'Invoke-ValidationCommand -Name "devfast_pytest_subset" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q"' in script
+    assert 'Invoke-ValidationCommand -Name "pytest_full" -FilePath $VenvPython -Arguments @("-m", "pytest", "-q")' in script
+
+
 def test_powershell_runner_bundle_validation_recognizes_sqlite_and_legacy_fallback_order():
     script = Path('run.ps1').read_text(encoding='utf-8')
 
