@@ -352,10 +352,16 @@ function Wait-ForProcessExit {
     }
     if (Test-Path -LiteralPath $RelaunchExePath) {
         $delaySeconds = 5
+        $suppressorTimeoutSeconds = 20
+        $suppressorPollMilliseconds = 100
         $relaunchPayload = @{
             exe = [string]$RelaunchExePath
             args = @($relaunchArgsArray | ForEach-Object { [string]$_ })
             delay_seconds = $delaySeconds
+            suppressor_timeout_seconds = $suppressorTimeoutSeconds
+            suppressor_poll_milliseconds = $suppressorPollMilliseconds
+            suppressor_script_path = [string](Join-Path $updaterRoot ("popup_suppressor_{0}.ps1" -f $UpdateAttemptId))
+            suppressor_log_path = [string]$logPath
             update_attempt_id = [string]$UpdateAttemptId
         } | ConvertTo-Json -Compress -Depth 8
         $relaunchPayloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($relaunchPayload))
@@ -382,6 +388,114 @@ public static class OpeningTrainerNativeMethods {
     `$payload = ConvertFrom-Json -InputObject `$json
     `$delaySeconds = [int]`$payload.delay_seconds
     if (`$delaySeconds -lt 1) { `$delaySeconds = 1 }
+    `$suppressorTimeoutSeconds = [int]`$payload.suppressor_timeout_seconds
+    if (`$suppressorTimeoutSeconds -lt 1) { `$suppressorTimeoutSeconds = 20 }
+    `$suppressorPollMilliseconds = [int]`$payload.suppressor_poll_milliseconds
+    if (`$suppressorPollMilliseconds -lt 50) { `$suppressorPollMilliseconds = 100 }
+    `$suppressorScriptPath = [string]`$payload.suppressor_script_path
+    `$suppressorLogPath = [string]`$payload.suppressor_log_path
+    `$suppressorScript = @'
+`$ErrorActionPreference = 'SilentlyContinue'
+`$ProgressPreference = 'SilentlyContinue'
+`$attemptId = '__UPDATE_ATTEMPT_ID__'
+`$timeoutSeconds = __SUPPRESSOR_TIMEOUT_SECONDS__
+`$pollMilliseconds = __SUPPRESSOR_POLL_MILLISECONDS__
+`$logPath = '__SUPPRESSOR_LOG_PATH__'
+function Write-SuppressorLog {
+    param([string]`$Message)
+    if ([string]::IsNullOrWhiteSpace(`$logPath)) { return }
+    try {
+        Add-Content -LiteralPath `$logPath -Value ("{0} update_attempt_id={1} helper_pid=popup_suppressor {2}" -f ([DateTime]::UtcNow.ToString('o')), `$attemptId, `$Message) -Encoding utf8
+    } catch {
+    }
+}
+try {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class PopupSuppressorNative {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    public static string ReadWindowText(IntPtr hWnd) {
+        int length = GetWindowTextLength(hWnd);
+        var sb = new StringBuilder(Math.Max(length + 1, 1024));
+        GetWindowText(hWnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
+}
+"@ -ErrorAction Stop | Out-Null
+    `$wmClose = 0x0010
+    `$deadline = (Get-Date).AddSeconds(`$timeoutSeconds)
+    Write-SuppressorLog "POPUP_SUPPRESSOR_STARTED timeout_seconds=`$timeoutSeconds poll_milliseconds=`$pollMilliseconds"
+    while ((Get-Date) -lt `$deadline) {
+        `$topLevelWindows = New-Object 'System.Collections.Generic.List[System.IntPtr]'
+        `$collector = [PopupSuppressorNative+EnumWindowsProc]{
+            param([System.IntPtr]`$hWnd, [System.IntPtr]`$lParam)
+            `$topLevelWindows.Add(`$hWnd) | Out-Null
+            return `$true
+        }
+        [PopupSuppressorNative]::EnumWindows(`$collector, [IntPtr]::Zero) | Out-Null
+        foreach (`$hWnd in `$topLevelWindows) {
+            if (-not [PopupSuppressorNative]::IsWindowVisible(`$hWnd)) { continue }
+            `$title = [PopupSuppressorNative]::ReadWindowText(`$hWnd)
+            if (`$title -cne 'Error') { continue }
+            `$chunks = New-Object 'System.Collections.Generic.List[string]'
+            `$chunks.Add([string]`$title) | Out-Null
+            `$childCollector = [PopupSuppressorNative+EnumWindowsProc]{
+                param([System.IntPtr]`$childHwnd, [System.IntPtr]`$lParam)
+                `$text = [PopupSuppressorNative]::ReadWindowText(`$childHwnd)
+                if (-not [string]::IsNullOrWhiteSpace(`$text)) {
+                    `$chunks.Add([string]`$text) | Out-Null
+                }
+                return `$true
+            }
+            [PopupSuppressorNative]::EnumChildWindows(`$hWnd, `$childCollector, [IntPtr]::Zero) | Out-Null
+            `$dialogText = (`$chunks -join "`n")
+            if (`$dialogText -notlike '*Failed to load Python DLL*') { continue }
+            if (`$dialogText -notlike '*_MEI*') { continue }
+            if (`$dialogText -notlike '*python311.dll*') { continue }
+            [uint32]`$ownerPid = 0
+            [PopupSuppressorNative]::GetWindowThreadProcessId(`$hWnd, [ref]`$ownerPid) | Out-Null
+            Write-SuppressorLog "POPUP_SUPPRESSOR_MATCH_DETECTED title=Error owner_pid=`$ownerPid"
+            [PopupSuppressorNative]::PostMessage(`$hWnd, `$wmClose, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+            Write-SuppressorLog "POPUP_SUPPRESSOR_CLOSE_ISSUED owner_pid=`$ownerPid"
+            Start-Sleep -Milliseconds 300
+            if ([PopupSuppressorNative]::IsWindow(`$hWnd) -and `$ownerPid -gt 0) {
+                Stop-Process -Id ([int]`$ownerPid) -Force -ErrorAction SilentlyContinue
+                Write-SuppressorLog "POPUP_SUPPRESSOR_OWNER_KILLED owner_pid=`$ownerPid"
+            }
+        }
+        Start-Sleep -Milliseconds `$pollMilliseconds
+    }
+    Write-SuppressorLog "POPUP_SUPPRESSOR_EXITED_AFTER_TIMEOUT timeout_seconds=`$timeoutSeconds"
+} catch {
+    Write-SuppressorLog "POPUP_SUPPRESSOR_EXCEPTION error=`$($_.Exception.Message)"
+} finally {
+    Remove-Item -LiteralPath `$PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+'@
+    if (-not [string]::IsNullOrWhiteSpace(`$suppressorScriptPath)) {
+        `$suppressorScript = `$suppressorScript.Replace('__UPDATE_ATTEMPT_ID__', `$payload.update_attempt_id)
+        `$suppressorScript = `$suppressorScript.Replace('__SUPPRESSOR_TIMEOUT_SECONDS__', [string]`$suppressorTimeoutSeconds)
+        `$suppressorScript = `$suppressorScript.Replace('__SUPPRESSOR_POLL_MILLISECONDS__', [string]`$suppressorPollMilliseconds)
+        `$suppressorScript = `$suppressorScript.Replace('__SUPPRESSOR_LOG_PATH__', `$suppressorLogPath.Replace("'", "''"))
+        [System.IO.File]::WriteAllText(`$suppressorScriptPath, `$suppressorScript, [System.Text.UTF8Encoding]::new(`$false))
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', `$suppressorScriptPath
+        ) -ErrorAction SilentlyContinue | Out-Null
+    }
     Start-Sleep -Seconds `$delaySeconds
     `$argsArray = @()
     if (`$payload.args -is [System.Array]) {
@@ -403,7 +517,7 @@ public static class OpeningTrainerNativeMethods {
                 '-ExecutionPolicy', 'Bypass',
                 '-File', $relaunchTrampolinePath
             ) -ErrorAction Stop | Out-Null
-            Write-Log "RELAUNCH_RESULT result=scheduled_detached_trampoline exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath restart_env=PYINSTALLER_RESET_ENVIRONMENT:1 error_mode_suppression=SetErrorMode:SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX"
+            Write-Log "RELAUNCH_RESULT result=scheduled_detached_trampoline exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath restart_env=PYINSTALLER_RESET_ENVIRONMENT:1 error_mode_suppression=SetErrorMode:SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX popup_suppressor_timeout_seconds=$suppressorTimeoutSeconds popup_suppressor_poll_milliseconds=$suppressorPollMilliseconds popup_signature=Error+Failed_to_load_Python_DLL+_MEI+python311.dll"
         } catch {
             Write-Log "RELAUNCH_RESULT result=schedule_failed exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath error=$($_.Exception.Message)"
         }
