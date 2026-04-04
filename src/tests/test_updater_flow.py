@@ -645,3 +645,14 @@ def test_apply_helper_rejects_manifest_and_staged_identity_drift_before_swap():
     assert "manifest.latest.json" in script
     assert "STAGED_PAYLOAD_IDENTITY_MISMATCH" in script
     assert "before swap" in script
+
+
+def test_apply_helper_uses_detached_relaunch_trampoline_with_longer_delay():
+    script_path = Path("installer/scripts/apply_app_update.ps1")
+    script = script_path.read_text(encoding="utf-8")
+
+    assert 'relaunch_trampoline_' in script
+    assert "$delaySeconds = 5" in script
+    assert "Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden" in script
+    assert "-File', $relaunchTrampolinePath" in script
+    assert "scheduled_detached_trampoline" in script
