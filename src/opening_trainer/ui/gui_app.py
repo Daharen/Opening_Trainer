@@ -164,11 +164,11 @@ class OpeningTrainerGUI:
             toolbar,
             text='Start drill',
             command=self._start_game,
-            bg='#ffd600',
-            fg='black',
-            activebackground='#ffb300',
-            activeforeground='black',
-            disabledforeground='#fff1a8',
+            bg='#00c853',
+            fg='white',
+            activebackground='#009624',
+            activeforeground='white',
+            disabledforeground='#d9fbe3',
         )
         self.start_button.pack(side='left')
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
@@ -2785,6 +2785,7 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
+
 
 
 
