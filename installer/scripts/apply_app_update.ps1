@@ -421,19 +421,38 @@ public static class PopupSuppressorNative {
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr hWnd);
     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+    [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr SetActiveWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")] public static extern short VkKeyScan(char ch);
     public static string ReadWindowText(IntPtr hWnd) {
         int length = GetWindowTextLength(hWnd);
         var sb = new StringBuilder(Math.Max(length + 1, 1024));
         GetWindowText(hWnd, sb, sb.Capacity);
         return sb.ToString();
     }
+    public static string ReadClassName(IntPtr hWnd) {
+        var sb = new StringBuilder(256);
+        GetClassName(hWnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
 }
 "@ -ErrorAction Stop | Out-Null
-    `$wmClose = 0x0010
+    `$bmClick = 0x00F5
+    `$wmCommand = 0x0111
+    `$dmGetDefId = 0x0400
+    `$dmSetDefId = 0x0401
+    `$vkReturn = 0x0D
+    `$vkSpace = 0x20
+    `$idOk = 1
     `$deadline = (Get-Date).AddSeconds(`$timeoutSeconds)
     Write-SuppressorLog "POPUP_SUPPRESSOR_STARTED timeout_seconds=`$timeoutSeconds poll_milliseconds=`$pollMilliseconds"
     while ((Get-Date) -lt `$deadline) {
@@ -466,9 +485,78 @@ public static class PopupSuppressorNative {
             [uint32]`$ownerPid = 0
             [PopupSuppressorNative]::GetWindowThreadProcessId(`$hWnd, [ref]`$ownerPid) | Out-Null
             Write-SuppressorLog "POPUP_SUPPRESSOR_MATCH_DETECTED title=Error owner_pid=`$ownerPid"
-            [PopupSuppressorNative]::PostMessage(`$hWnd, `$wmClose, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-            Write-SuppressorLog "POPUP_SUPPRESSOR_CLOSE_ISSUED owner_pid=`$ownerPid"
-            Start-Sleep -Milliseconds 300
+            `$okButtonHandle = [IntPtr]::Zero
+            `$defaultButtonHandle = [IntPtr]::Zero
+            `$buttonCollector = [PopupSuppressorNative+EnumWindowsProc]{
+                param([System.IntPtr]`$childHwnd, [System.IntPtr]`$lParam)
+                `$className = [PopupSuppressorNative]::ReadClassName(`$childHwnd)
+                if (`$className -ne 'Button') { return `$true }
+                if (-not [PopupSuppressorNative]::IsWindowEnabled(`$childHwnd)) { return `$true }
+                `$buttonText = [PopupSuppressorNative]::ReadWindowText(`$childHwnd)
+                `$ctrlId = [PopupSuppressorNative]::GetDlgCtrlID(`$childHwnd)
+                if (`$ctrlId -eq `$idOk -and `$defaultButtonHandle -eq [IntPtr]::Zero) {
+                    `$defaultButtonHandle = `$childHwnd
+                }
+                if (`$buttonText -ceq 'OK' -or `$buttonText -ceq '&OK') {
+                    `$okButtonHandle = `$childHwnd
+                    return `$false
+                }
+                return `$true
+            }
+            [PopupSuppressorNative]::EnumChildWindows(`$hWnd, `$buttonCollector, [IntPtr]::Zero) | Out-Null
+            if (`$okButtonHandle -eq [IntPtr]::Zero) {
+                `$defIdResult = [PopupSuppressorNative]::SendMessage(`$hWnd, `$dmGetDefId, [IntPtr]::Zero, [IntPtr]::Zero)
+                `$defIdRaw = `$defIdResult.ToInt64() -band 0xFFFF
+                if (`$defIdRaw -gt 0) {
+                    `$candidateHandle = [IntPtr]::Zero
+                    `$candidateCollector = [PopupSuppressorNative+EnumWindowsProc]{
+                        param([System.IntPtr]`$childHwnd, [System.IntPtr]`$lParam)
+                        `$className = [PopupSuppressorNative]::ReadClassName(`$childHwnd)
+                        if (`$className -ne 'Button') { return `$true }
+                        if ([PopupSuppressorNative]::GetDlgCtrlID(`$childHwnd) -eq [int]`$defIdRaw) {
+                            `$candidateHandle = `$childHwnd
+                            return `$false
+                        }
+                        return `$true
+                    }
+                    [PopupSuppressorNative]::EnumChildWindows(`$hWnd, `$candidateCollector, [IntPtr]::Zero) | Out-Null
+                    if (`$candidateHandle -ne [IntPtr]::Zero) {
+                        `$okButtonHandle = `$candidateHandle
+                    }
+                }
+            }
+            if (`$okButtonHandle -eq [IntPtr]::Zero -and `$defaultButtonHandle -ne [IntPtr]::Zero) {
+                `$okButtonHandle = `$defaultButtonHandle
+            }
+            if (`$okButtonHandle -ne [IntPtr]::Zero) {
+                Write-SuppressorLog "POPUP_SUPPRESSOR_OK_BUTTON_FOUND owner_pid=`$ownerPid"
+                [PopupSuppressorNative]::SendMessage(`$okButtonHandle, `$bmClick, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+                Write-SuppressorLog "POPUP_SUPPRESSOR_BM_CLICK_SENT owner_pid=`$ownerPid"
+            }
+            [PopupSuppressorNative]::SendMessage(`$hWnd, `$wmCommand, [IntPtr]`$idOk, [IntPtr]::Zero) | Out-Null
+            Write-SuppressorLog "POPUP_SUPPRESSOR_IDOK_SENT owner_pid=`$ownerPid"
+            [PopupSuppressorNative]::SendMessage(`$hWnd, `$dmSetDefId, [IntPtr]`$idOk, [IntPtr]::Zero) | Out-Null
+            Start-Sleep -Milliseconds 120
+            if ([PopupSuppressorNative]::IsWindow(`$hWnd)) {
+                [PopupSuppressorNative]::SetForegroundWindow(`$hWnd) | Out-Null
+                [PopupSuppressorNative]::SetActiveWindow(`$hWnd) | Out-Null
+                [PopupSuppressorNative]::SetFocus(`$hWnd) | Out-Null
+                for (`$keyAttempt = 0; `$keyAttempt -lt 3 -and [PopupSuppressorNative]::IsWindow(`$hWnd); `$keyAttempt++) {
+                    [PopupSuppressorNative]::PostMessage(`$hWnd, 0x0100, [IntPtr]`$vkReturn, [IntPtr]::Zero) | Out-Null
+                    [PopupSuppressorNative]::PostMessage(`$hWnd, 0x0101, [IntPtr]`$vkReturn, [IntPtr]::Zero) | Out-Null
+                    Write-SuppressorLog "POPUP_SUPPRESSOR_ENTER_SENT owner_pid=`$ownerPid key_attempt=`$keyAttempt"
+                    Start-Sleep -Milliseconds 80
+                    if (-not [PopupSuppressorNative]::IsWindow(`$hWnd)) { break }
+                    [PopupSuppressorNative]::PostMessage(`$hWnd, 0x0100, [IntPtr]`$vkSpace, [IntPtr]::Zero) | Out-Null
+                    [PopupSuppressorNative]::PostMessage(`$hWnd, 0x0101, [IntPtr]`$vkSpace, [IntPtr]::Zero) | Out-Null
+                    Write-SuppressorLog "POPUP_SUPPRESSOR_SPACE_SENT owner_pid=`$ownerPid key_attempt=`$keyAttempt"
+                    Start-Sleep -Milliseconds 80
+                }
+            }
+            if (-not [PopupSuppressorNative]::IsWindow(`$hWnd)) {
+                Write-SuppressorLog "POPUP_SUPPRESSOR_DIALOG_DISMISSED owner_pid=`$ownerPid"
+                continue
+            }
             if ([PopupSuppressorNative]::IsWindow(`$hWnd) -and `$ownerPid -gt 0) {
                 Stop-Process -Id ([int]`$ownerPid) -Force -ErrorAction SilentlyContinue
                 Write-SuppressorLog "POPUP_SUPPRESSOR_OWNER_KILLED owner_pid=`$ownerPid"
