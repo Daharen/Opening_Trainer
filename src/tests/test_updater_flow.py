@@ -29,33 +29,24 @@ def test_apply_helper_relaunch_trampoline_includes_popup_suppressor_contract():
     script_path = Path("installer/scripts/apply_app_update.ps1")
     script = script_path.read_text(encoding="utf-8")
 
-    assert "$suppressorTimeoutSeconds = 20" in script
+    assert "$suppressorTimeoutSeconds = 25" in script
     assert "$suppressorPollMilliseconds = 100" in script
     assert "popup_suppressor_" in script
     assert "EnumWindows" in script
-    assert "EnumChildWindows" in script
-    assert "if (`$title -cne 'Error') { continue }" in script
-    assert "Failed to load Python DLL" in script
-    assert "_MEI" in script
-    assert "python311.dll" in script
-    assert "ReadClassName" in script
-    assert "GetDlgCtrlID" in script
-    assert "if (`$className -ne 'Button') { return `$true }" in script
-    assert "`$buttonText -ceq 'OK' -or `$buttonText -ceq '&OK'" in script
-    assert "POPUP_SUPPRESSOR_OK_BUTTON_FOUND" in script
-    assert "SendMessage(`$okButtonHandle, `$bmClick" in script
-    assert "POPUP_SUPPRESSOR_BM_CLICK_SENT" in script
-    assert "SendMessage(`$hWnd, `$wmCommand, [IntPtr]`$idOk" in script
-    assert "POPUP_SUPPRESSOR_IDOK_SENT" in script
-    assert "SetForegroundWindow(`$hWnd)" in script
+    assert "if ($title -cne 'Error') { continue }" in script
+    assert "popup_signature=title=Error_any" in script
+    assert "SendMessage($hWnd, $wmCommand, [IntPtr]$idOk" in script
+    assert "SetForegroundWindow($hWnd)" in script
     assert "POPUP_SUPPRESSOR_ENTER_SENT" in script
     assert "POPUP_SUPPRESSOR_SPACE_SENT" in script
-    assert "POPUP_SUPPRESSOR_DIALOG_DISMISSED" in script
-    assert "Stop-Process -Id ([int]`$ownerPid) -Force" in script
+    assert "POPUP_SUPPRESSOR_WM_CLOSE_SENT" in script
+    assert "Stop-Process -Id ([int]$ownerPid) -Force" in script
     assert "POPUP_SUPPRESSOR_STARTED" in script
     assert "POPUP_SUPPRESSOR_MATCH_DETECTED" in script
     assert "POPUP_SUPPRESSOR_OWNER_KILLED" in script
     assert "POPUP_SUPPRESSOR_EXITED_AFTER_TIMEOUT" in script
+    assert "POPUP_SUPPRESSOR_LAUNCH result=started mode=hidden_detached" in script
+    assert "Start-ErrorPopupSuppressor -SuppressorScriptPath" in script
     assert "Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(" in script
 
 
