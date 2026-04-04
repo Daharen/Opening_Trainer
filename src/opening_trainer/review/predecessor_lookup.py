@@ -7,6 +7,7 @@ from pathlib import Path
 import chess
 
 from ..bundle_corpus import normalize_builder_position_key
+from ..sqlite_mounts import MountedSQLiteLease, SQLitePayloadResolutionError, get_mounted_sqlite_manager
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class PredecessorMasterLookupService:
     def __init__(self, db_path: str | None, *, max_depth: int = 256):
         self.db_path = db_path
         self.max_depth = max_depth
+        self._mount_lease: MountedSQLiteLease | None = None
 
     def find_predecessor_route_for_fen(self, fen: str) -> RouteLookupResult:
         try:
@@ -65,18 +67,21 @@ class PredecessorMasterLookupService:
             )
 
         db_file = Path(self.db_path)
-        if not db_file.exists():
+        try:
+            resolution, lease = get_mounted_sqlite_manager().resolve(db_file)
+        except SQLitePayloadResolutionError as exc:
             return RouteLookupResult(
                 success=False,
                 normalized_position_key=normalized_position_key,
                 predecessor_line_uci=None,
                 ply_count=0,
                 failure_reason="db_unavailable",
-                failure_detail=f"Predecessor database file not found: {db_file}",
+                failure_detail=f"Unable to resolve predecessor database: {exc}",
             )
+        self._mount_lease = lease
 
         try:
-            connection = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+            connection = sqlite3.connect(f"file:{resolution.active_path}?mode=ro", uri=True)
         except sqlite3.Error as exc:
             return RouteLookupResult(
                 success=False,
@@ -110,6 +115,9 @@ class PredecessorMasterLookupService:
             )
         finally:
             connection.close()
+            if self._mount_lease is not None:
+                self._mount_lease.release()
+                self._mount_lease = None
 
     def _resolve_schema(self, connection: sqlite3.Connection) -> _ResolvedSchema | None:
         table_rows = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

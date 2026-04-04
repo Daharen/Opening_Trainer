@@ -17,6 +17,7 @@ from .bundle_contract import (
     resolve_timing_conditioned_exact_payload,
 )
 from .bundle_corpus import BuilderAggregateCorpusProvider, CompactSQLiteAggregateCorpusProvider, JsonlAggregateCorpusProvider, SQLiteAggregateCorpusProvider
+from .sqlite_mounts import SQLitePayloadResolutionError, get_mounted_sqlite_manager
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,11 @@ class TimingConditionedCorpusBundleHandle:
             )
         return None
 
+    def close(self) -> None:
+        close_fn = getattr(self.exact_corpus, "close", None)
+        if callable(close_fn):
+            close_fn()
+
 
 class TimingConditionedCorpusBundleLoader:
     def load(self, bundle_dir: str | Path, rng=None) -> TimingConditionedCorpusBundleHandle:
@@ -220,8 +226,26 @@ def _load_exact_corpus_provider(bundle_dir: Path, manifest: dict[str, object], r
         payload_format = str(manifest.get("payload_format", "")).strip().lower()
         payload_version = str(manifest_payload_version(manifest) or "").strip().lower()
         if payload_format in {"sqlite_compact_v2", "compact_exact_payload_v2", "compact_sqlite_v2"} or payload_version in {"2", "v2"}:
-            return CompactSQLiteAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path), "timing_conditioned", payload_resolution.payload_path
-        return SQLiteAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path), "timing_conditioned", payload_resolution.payload_path
+            return (
+                CompactSQLiteAggregateCorpusProvider(
+                    bundle_dir,
+                    manifest_for_provider,
+                    payload_resolution.payload_path,
+                    mount_lease=payload_resolution.mounted_sqlite_lease,
+                ),
+                "timing_conditioned",
+                payload_resolution.payload_path,
+            )
+        return (
+            SQLiteAggregateCorpusProvider(
+                bundle_dir,
+                manifest_for_provider,
+                payload_resolution.payload_path,
+                mount_lease=payload_resolution.mounted_sqlite_lease,
+            ),
+            "timing_conditioned",
+            payload_resolution.payload_path,
+        )
     return JsonlAggregateCorpusProvider(bundle_dir, manifest_for_provider, payload_resolution.payload_path, rng=rng), "timing_conditioned", payload_resolution.payload_path
 
 
@@ -247,14 +271,20 @@ def _load_overlay_from_behavioral_profile_set_sqlite(bundle_dir: Path, manifest:
     candidate_paths = [declared] if declared is not None else []
     candidate_paths.append(bundle_dir / BUNDLE_BEHAVIORAL_PROFILE_SET_DEFAULT_RELATIVE_PATH)
     for candidate in candidate_paths:
-        if candidate is None or not candidate.exists() or not candidate.is_file():
+        if candidate is None:
             continue
-        connection = sqlite3.connect(f"file:{candidate}?mode=ro", uri=True)
+        try:
+            resolved, lease = get_mounted_sqlite_manager().resolve(candidate)
+        except SQLitePayloadResolutionError:
+            continue
+        connection = sqlite3.connect(f"file:{resolved.active_path}?mode=ro", uri=True)
         connection.row_factory = sqlite3.Row
         try:
             return _parse_overlay_sqlite_connection(connection, manifest)
         finally:
             connection.close()
+            if lease is not None:
+                lease.release()
     return None
 
 

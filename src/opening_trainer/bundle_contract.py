@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .sqlite_mounts import MountedSQLiteLease, SQLitePayloadResolutionError, get_mounted_sqlite_manager
+
 SUPPORTED_BUNDLE_POSITION_KEY_FORMAT = "fen_normalized"
 SUPPORTED_BUNDLE_MOVE_KEY_FORMAT = "uci"
 BUNDLE_MANIFEST_NAME = "manifest.json"
@@ -19,6 +21,11 @@ class BundlePayloadResolution:
     payload_format: str
     payload_path: Path
     payload_version: str | None = None
+    requested_path: Path | None = None
+    used_plain_sqlite: bool | None = None
+    used_compressed_sqlite: bool | None = None
+    mounted_sqlite_path: Path | None = None
+    mounted_sqlite_lease: MountedSQLiteLease | None = None
 
 
 def manifest_declared_aggregate_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
@@ -120,11 +127,7 @@ def resolve_bundle_payload(manifest: dict[str, object], bundle_dir: Path) -> tup
             return None, f"unsupported payload_format {declared_payload_format!r}"
         if payload_format == "sqlite":
             sqlite_path = manifest_declared_sqlite_path(manifest, bundle_dir) or (bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH)
-            if not sqlite_path.exists():
-                return None, f"sqlite payload is missing at {sqlite_path}"
-            if not sqlite_path.is_file():
-                return None, f"sqlite payload path {sqlite_path} is not a file"
-            return BundlePayloadResolution(payload_format="sqlite", payload_path=sqlite_path, payload_version=manifest_payload_version(manifest)), None
+            return _resolve_sqlite_payload(sqlite_path, manifest)
         aggregate_path = manifest_declared_aggregate_path(manifest, bundle_dir) or (bundle_dir / BUNDLE_AGGREGATE_RELATIVE_PATH)
         if not aggregate_path.exists():
             return None, f"aggregate payload is missing at {aggregate_path}"
@@ -133,8 +136,9 @@ def resolve_bundle_payload(manifest: dict[str, object], bundle_dir: Path) -> tup
         return BundlePayloadResolution(payload_format="jsonl", payload_path=aggregate_path, payload_version=manifest_payload_version(manifest)), None
 
     sqlite_default_path = bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH
-    if sqlite_default_path.exists() and sqlite_default_path.is_file():
-        return BundlePayloadResolution(payload_format="sqlite", payload_path=sqlite_default_path, payload_version=manifest_payload_version(manifest)), None
+    sqlite_default_resolution, sqlite_default_error = _resolve_sqlite_payload(sqlite_default_path, manifest, strict=False)
+    if sqlite_default_resolution is not None:
+        return sqlite_default_resolution, None
 
     declared_aggregate_path = manifest_declared_aggregate_path(manifest, bundle_dir)
     if declared_aggregate_path is not None:
@@ -170,11 +174,14 @@ def is_supported_builder_aggregate_bundle(manifest: dict[str, object], bundle_di
     payload_resolution, resolution_error = resolve_bundle_payload(manifest, bundle_dir)
     if payload_resolution is None:
         return False, None, resolution_error or "unsupported bundle payload"
+    inspection_lease = payload_resolution.mounted_sqlite_lease
 
     payload_status = manifest.get("payload_status")
     if payload_resolution.payload_format == "jsonl":
         if not (aggregate_payload_exposes_raw_counts(payload_resolution.payload_path) or payload_status_mentions_counts(payload_status)):
             return False, payload_resolution.payload_path, "aggregate payload does not expose raw counts required by the trainer runtime"
+    if inspection_lease is not None:
+        inspection_lease.release()
     return True, payload_resolution.payload_path, "supported builder aggregate bundle"
 
 
@@ -183,11 +190,10 @@ def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle
     declared_compatibility = manifest_declared_compatibility_exact_payload_path(manifest, bundle_dir)
     declared_sqlite = manifest_declared_exact_sqlite_path(manifest, bundle_dir)
     if declared_canonical is not None:
-        if not declared_canonical.exists():
-            return None, f"canonical exact payload is missing at {declared_canonical}"
-        if not declared_canonical.is_file():
-            return None, f"canonical exact payload path {declared_canonical} is not a file"
-        return BundlePayloadResolution(payload_format="sqlite", payload_path=declared_canonical, payload_version=manifest_payload_version(manifest)), None
+        resolution, error = _resolve_sqlite_payload(declared_canonical, manifest)
+        if resolution is None:
+            return None, error
+        return resolution, None
     candidate_paths: list[Path] = []
     if declared_compatibility is not None:
         candidate_paths.append(declared_compatibility)
@@ -200,18 +206,49 @@ def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle
         ]
     )
     for candidate in candidate_paths:
-        if not candidate.exists():
-            continue
-        if not candidate.is_file():
-            return None, f"exact corpus payload path {candidate} is not a file"
-        return BundlePayloadResolution(payload_format="sqlite", payload_path=candidate, payload_version=manifest_payload_version(manifest)), None
+        resolution, error = _resolve_sqlite_payload(candidate, manifest, strict=False)
+        if resolution is not None:
+            return resolution, None
+        if error and "not a file" in error:
+            return None, error
     return None, "timing-conditioned bundle did not expose a supported exact SQLite payload"
+
+
+def _resolve_sqlite_payload(
+    requested_path: Path,
+    manifest: dict[str, object],
+    *,
+    strict: bool = True,
+) -> tuple[BundlePayloadResolution | None, str | None]:
+    manager = get_mounted_sqlite_manager()
+    try:
+        resolution, lease = manager.resolve(requested_path)
+    except SQLitePayloadResolutionError as exc:
+        if not strict and exc.code == "sqlite_payload_missing":
+            return None, None
+        return None, exc.detail
+    return (
+        BundlePayloadResolution(
+            payload_format="sqlite",
+            payload_path=resolution.active_path,
+            payload_version=manifest_payload_version(manifest),
+            requested_path=resolution.requested_path,
+            used_plain_sqlite=resolution.used_plain_sqlite,
+            used_compressed_sqlite=resolution.used_compressed_sqlite,
+            mounted_sqlite_path=resolution.mounted_path,
+            mounted_sqlite_lease=lease,
+        ),
+        None,
+    )
 
 
 def is_supported_timing_conditioned_bundle(manifest: dict[str, object], bundle_dir: Path) -> tuple[bool, Path | None, str]:
     payload_resolution, error = resolve_timing_conditioned_exact_payload(manifest, bundle_dir)
     if payload_resolution is None:
         return False, None, error or "missing exact payload"
+    inspection_lease = payload_resolution.mounted_sqlite_lease
+    if inspection_lease is not None:
+        inspection_lease.release()
     return True, payload_resolution.payload_path, "supported timing-conditioned bundle"
 
 
