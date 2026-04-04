@@ -6,6 +6,7 @@ import chess
 
 from opening_trainer.bundle_corpus import normalize_builder_position_key
 from opening_trainer.review.predecessor_lookup import find_predecessor_route_for_fen
+from opening_trainer.zstd_compat import compress as zstd_compress
 
 
 def _create_predecessor_db(path, rows):
@@ -88,3 +89,26 @@ def test_route_lookup_normalizes_input_fen_identity(tmp_path):
 
     assert result.success is True
     assert result.normalized_position_key == normalized_key
+
+
+def test_route_lookup_supports_zst_when_plain_predecessor_sqlite_is_absent(tmp_path):
+    board = chess.Board()
+    key_start = normalize_builder_position_key(board)
+    board.push_uci("e2e4")
+    key_after_e4 = normalize_builder_position_key(board)
+    db_path = tmp_path / "predecessor.sqlite"
+    _create_predecessor_db(
+        db_path,
+        [
+            (key_start, None, None),
+            (key_after_e4, key_start, "e2e4"),
+        ],
+    )
+    zst_path = tmp_path / "predecessor.sqlite.zst"
+    zst_path.write_bytes(zstd_compress(db_path.read_bytes()))
+    db_path.unlink()
+
+    result = find_predecessor_route_for_fen(board.fen(), predecessor_master_db_path=str(db_path))
+
+    assert result.success is True
+    assert result.predecessor_line_uci == "e2e4"

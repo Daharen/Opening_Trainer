@@ -65,6 +65,30 @@ def _python_314_available() -> bool:
     return _PYTHON_314.exists()
 
 
+
+
+def open_binary_reader(binary_handle: BinaryIO):
+    if _stdlib_zstd is not None:
+        return _stdlib_zstd.open(binary_handle, mode="rb")
+    if _third_party_zstd is not None:
+        return _third_party_zstd.ZstdDecompressor().stream_reader(binary_handle)
+    if _python_314_available():
+        process = subprocess.Popen(
+            [
+                str(_PYTHON_314),
+                "-c",
+                "import sys; from compression import zstd; sys.stdout.buffer.write(zstd.decompress(sys.stdin.buffer.read()))",
+            ],
+            stdin=binary_handle,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert process.stdout is not None
+        return process.stdout
+    raise ZstdUnavailableError(
+        "Zstandard support requires Python 3.14+, the zstandard package, or the bundled Python 3.14 helper."
+    )
+
 def open_text_reader(binary_handle: BinaryIO):
     if _stdlib_zstd is not None:
         return _stdlib_zstd.open(binary_handle, mode="rt", encoding="utf-8")

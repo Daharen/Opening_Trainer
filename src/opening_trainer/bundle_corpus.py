@@ -18,6 +18,7 @@ from .bundle_contract import (
     is_supported_builder_aggregate_bundle,
     resolve_bundle_payload,
 )
+from .sqlite_mounts import MountedSQLiteLease
 
 
 @dataclass(frozen=True)
@@ -198,9 +199,18 @@ class JsonlAggregateCorpusProvider:
 
 
 class SQLiteAggregateCorpusProvider:
-    def __init__(self, bundle_dir: Path, manifest: dict[str, object], payload_path: Path, cache_size: int = 512):
+    def __init__(
+        self,
+        bundle_dir: Path,
+        manifest: dict[str, object],
+        payload_path: Path,
+        *,
+        mount_lease: MountedSQLiteLease | None = None,
+        cache_size: int = 512,
+    ):
         self.bundle_dir = bundle_dir
         self.payload_path = payload_path
+        self._mount_lease = mount_lease
         self.cache_size = max(0, cache_size)
         self._position_cache: OrderedDict[str, BuilderAggregatePosition | None] = OrderedDict()
         self._cache_lock = threading.Lock()
@@ -273,6 +283,11 @@ class SQLiteAggregateCorpusProvider:
         )
         return self._remember(position_key, position)
 
+    def close(self) -> None:
+        if self._mount_lease is not None:
+            self._mount_lease.release()
+            self._mount_lease = None
+
     def _get_connection_for_current_thread(self) -> sqlite3.Connection:
         connection = getattr(self._thread_local, "connection", None)
         if connection is None:
@@ -293,9 +308,18 @@ class SQLiteAggregateCorpusProvider:
 
 
 class CompactSQLiteAggregateCorpusProvider:
-    def __init__(self, bundle_dir: Path, manifest: dict[str, object], payload_path: Path, cache_size: int = 512):
+    def __init__(
+        self,
+        bundle_dir: Path,
+        manifest: dict[str, object],
+        payload_path: Path,
+        *,
+        mount_lease: MountedSQLiteLease | None = None,
+        cache_size: int = 512,
+    ):
         self.bundle_dir = bundle_dir
         self.payload_path = payload_path
+        self._mount_lease = mount_lease
         self.cache_size = max(0, cache_size)
         self._position_cache: OrderedDict[str, BuilderAggregatePosition | None] = OrderedDict()
         self._cache_lock = threading.Lock()
@@ -467,6 +491,11 @@ class CompactSQLiteAggregateCorpusProvider:
         )
         return self._remember(position_key, position)
 
+    def close(self) -> None:
+        if self._mount_lease is not None:
+            self._mount_lease.release()
+            self._mount_lease = None
+
     def _get_connection_for_current_thread(self) -> sqlite3.Connection:
         connection = getattr(self._thread_local, "connection", None)
         if connection is None:
@@ -519,10 +548,20 @@ class BuilderAggregateCorpusProvider:
             payload_format_hint in {"sqlite_compact_v2", "compact_exact_payload_v2", "compact_sqlite_v2"}
             or payload_version_hint in {"2", "v2"}
         ):
-            return CompactSQLiteAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path)
+            return CompactSQLiteAggregateCorpusProvider(
+                self.bundle_dir,
+                manifest,
+                payload_resolution.payload_path,
+                mount_lease=payload_resolution.mounted_sqlite_lease,
+            )
 
         if payload_resolution.payload_format == "sqlite":
-            return SQLiteAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path)
+            return SQLiteAggregateCorpusProvider(
+                self.bundle_dir,
+                manifest,
+                payload_resolution.payload_path,
+                mount_lease=payload_resolution.mounted_sqlite_lease,
+            )
 
         provider = JsonlAggregateCorpusProvider(self.bundle_dir, manifest, payload_resolution.payload_path, rng=self.rng)
         self.last_parse_issue = provider.last_parse_issue
@@ -530,3 +569,8 @@ class BuilderAggregateCorpusProvider:
 
     def lookup_position(self, position_key: str) -> BuilderAggregatePosition | None:
         return self._provider.lookup_position(position_key)
+
+    def close(self) -> None:
+        close_fn = getattr(self._provider, "close", None)
+        if callable(close_fn):
+            close_fn()

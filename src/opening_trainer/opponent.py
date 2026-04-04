@@ -394,6 +394,11 @@ class BuilderAggregateOpponentProvider:
             timing_invariants_ignored_for_match=timing_invariants_ignored_for_match,
         )
 
+    def close(self) -> None:
+        close_fn = getattr(self.bundle, "close", None)
+        if callable(close_fn):
+            close_fn()
+
 
 class OpponentProvider:
     def __init__(
@@ -546,6 +551,9 @@ class OpponentProvider:
         return choice
 
     def close(self) -> None:
+        bundle_close = getattr(self.bundle_provider, "close", None)
+        if callable(bundle_close):
+            bundle_close()
         self.stockfish_provider.close()
 
     def _cross_bundle_fallback_choice(self, board: chess.Board) -> OpponentMoveChoice | None:
