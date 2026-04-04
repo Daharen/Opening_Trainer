@@ -360,10 +360,24 @@ function Wait-ForProcessExit {
         } | ConvertTo-Json -Compress -Depth 8
         $relaunchPayloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($relaunchPayload))
         $relaunchTrampolinePath = Join-Path $updaterRoot ("relaunch_trampoline_{0}.ps1" -f $UpdateAttemptId)
-        $relaunchTrampolineScript = @"
+$relaunchTrampolineScript = @"
 `$ErrorActionPreference = 'SilentlyContinue'
 `$ProgressPreference = 'SilentlyContinue'
 try {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class OpeningTrainerNativeMethods {
+    [DllImport("kernel32.dll")]
+    public static extern uint SetErrorMode(uint uMode);
+}
+"@ -ErrorAction SilentlyContinue | Out-Null
+    `$semFailCriticalErrors = 0x0001
+    `$semNoGpFaultErrorBox = 0x0002
+    `$semNoOpenFileErrorBox = 0x8000
+    `$errorModeFlags = [uint32](`$semFailCriticalErrors -bor `$semNoGpFaultErrorBox -bor `$semNoOpenFileErrorBox)
+    [OpeningTrainerNativeMethods]::SetErrorMode(`$errorModeFlags) | Out-Null
+    [System.Environment]::SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1', 'Process')
     `$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$relaunchPayloadBase64'))
     `$payload = ConvertFrom-Json -InputObject `$json
     `$delaySeconds = [int]`$payload.delay_seconds
@@ -389,7 +403,7 @@ try {
                 '-ExecutionPolicy', 'Bypass',
                 '-File', $relaunchTrampolinePath
             ) -ErrorAction Stop | Out-Null
-            Write-Log "RELAUNCH_RESULT result=scheduled_detached_trampoline exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath"
+            Write-Log "RELAUNCH_RESULT result=scheduled_detached_trampoline exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath restart_env=PYINSTALLER_RESET_ENVIRONMENT:1 error_mode_suppression=SetErrorMode:SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX"
         } catch {
             Write-Log "RELAUNCH_RESULT result=schedule_failed exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath error=$($_.Exception.Message)"
         }
