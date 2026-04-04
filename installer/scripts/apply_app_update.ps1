@@ -489,14 +489,15 @@ $relaunchTrampolineScript = @"
 `$ErrorActionPreference = 'SilentlyContinue'
 `$ProgressPreference = 'SilentlyContinue'
 try {
-    Add-Type -TypeDefinition @"
+    `$nativeTypeDefinition = @'
 using System;
 using System.Runtime.InteropServices;
 public static class OpeningTrainerNativeMethods {
     [DllImport("kernel32.dll")]
     public static extern uint SetErrorMode(uint uMode);
 }
-"@ -ErrorAction SilentlyContinue | Out-Null
+'@
+    Add-Type -TypeDefinition `$nativeTypeDefinition -ErrorAction SilentlyContinue | Out-Null
     `$semFailCriticalErrors = 0x0001
     `$semNoGpFaultErrorBox = 0x0002
     `$semNoOpenFileErrorBox = 0x8000
