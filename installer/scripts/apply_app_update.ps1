@@ -351,7 +351,7 @@ function Wait-ForProcessExit {
         $RelaunchExePath = Join-Path $mutableRoot 'OpeningTrainer.exe'
     }
     if (Test-Path -LiteralPath $RelaunchExePath) {
-        $delaySeconds = 4
+        $delaySeconds = 5
         $relaunchPayload = @{
             exe = [string]$RelaunchExePath
             args = @($relaunchArgsArray | ForEach-Object { [string]$_ })
@@ -359,8 +359,10 @@ function Wait-ForProcessExit {
             update_attempt_id = [string]$UpdateAttemptId
         } | ConvertTo-Json -Compress -Depth 8
         $relaunchPayloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($relaunchPayload))
-        $relaunchScript = @"
+        $relaunchTrampolinePath = Join-Path $updaterRoot ("relaunch_trampoline_{0}.ps1" -f $UpdateAttemptId)
+        $relaunchTrampolineScript = @"
 `$ErrorActionPreference = 'SilentlyContinue'
+`$ProgressPreference = 'SilentlyContinue'
 try {
     `$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$relaunchPayloadBase64'))
     `$payload = ConvertFrom-Json -InputObject `$json
@@ -373,18 +375,24 @@ try {
     } elseif (-not [string]::IsNullOrWhiteSpace([string]`$payload.args)) {
         `$argsArray = @([string]`$payload.args)
     }
-    Start-Process -FilePath ([string]`$payload.exe) -ArgumentList `$argsArray -ErrorAction SilentlyContinue | Out-Null
+    Start-Process -FilePath ([string]`$payload.exe) -ArgumentList `$argsArray -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
 } catch {
+} finally {
+    Remove-Item -LiteralPath `$PSCommandPath -Force -ErrorAction SilentlyContinue
 }
 "@
-        $encodedRelaunchScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($relaunchScript))
-        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
-            '-NoProfile',
-            '-NonInteractive',
-            '-ExecutionPolicy', 'Bypass',
-            '-EncodedCommand', $encodedRelaunchScript
-        ) | Out-Null
-        Write-Log "RELAUNCH_RESULT result=scheduled_detached exe=$RelaunchExePath delay_seconds=$delaySeconds"
+        [System.IO.File]::WriteAllText($relaunchTrampolinePath, $relaunchTrampolineScript, [System.Text.UTF8Encoding]::new($false))
+        try {
+            Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', $relaunchTrampolinePath
+            ) -ErrorAction Stop | Out-Null
+            Write-Log "RELAUNCH_RESULT result=scheduled_detached_trampoline exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath"
+        } catch {
+            Write-Log "RELAUNCH_RESULT result=schedule_failed exe=$RelaunchExePath delay_seconds=$delaySeconds trampoline=$relaunchTrampolinePath error=$($_.Exception.Message)"
+        }
     } else {
         Write-Log "RELAUNCH_RESULT result=skipped missing_exe=$RelaunchExePath"
     }
