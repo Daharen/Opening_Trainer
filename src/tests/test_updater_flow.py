@@ -647,12 +647,23 @@ def test_apply_helper_rejects_manifest_and_staged_identity_drift_before_swap():
     assert "before swap" in script
 
 
-def test_apply_helper_uses_detached_relaunch_trampoline_with_longer_delay():
+def test_apply_helper_uses_detached_relaunch_trampoline_with_restart_contract():
     script_path = Path("installer/scripts/apply_app_update.ps1")
     script = script_path.read_text(encoding="utf-8")
 
     assert 'relaunch_trampoline_' in script
     assert "$delaySeconds = 5" in script
+    assert "PYINSTALLER_RESET_ENVIRONMENT" in script
+    assert "[System.Environment]::SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1', 'Process')" in script
+    assert "SetErrorMode" in script
+    assert "SEM_FAILCRITICALERRORS" in script
+    assert "SEM_NOGPFAULTERRORBOX" in script
+    assert "SEM_NOOPENFILEERRORBOX" in script
+    assert "`$errorModeFlags = [uint32](`$semFailCriticalErrors -bor `$semNoGpFaultErrorBox -bor `$semNoOpenFileErrorBox)" in script
+    assert "Start-Process -FilePath ([string]`$payload.exe) -ArgumentList `$argsArray -WindowStyle Hidden" in script
     assert "Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden" in script
+    assert "-NonInteractive" in script
     assert "-File', $relaunchTrampolinePath" in script
     assert "scheduled_detached_trampoline" in script
+    assert "restart_env=PYINSTALLER_RESET_ENVIRONMENT:1" in script
+    assert "error_mode_suppression=SetErrorMode:SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX" in script
