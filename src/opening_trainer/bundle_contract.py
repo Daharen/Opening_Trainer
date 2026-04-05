@@ -90,6 +90,12 @@ def manifest_payload_version(manifest: dict[str, object]) -> str | None:
     return None
 
 
+def sqlite_payload_path_exists(requested_path: Path) -> bool:
+    plain = requested_path
+    compressed = requested_path.with_name(requested_path.name + ".zst")
+    return (plain.exists() and plain.is_file()) or (compressed.exists() and compressed.is_file())
+
+
 def manifest_declared_behavioral_profile_set_path(manifest: dict[str, object], bundle_dir: Path) -> Path | None:
     for key in ("behavioral_profile_set_file", "behavioral_profile_set_sqlite_file", "timing_profile_set_file"):
         declared_path = manifest.get(key)
@@ -180,9 +186,10 @@ def is_supported_builder_aggregate_bundle(manifest: dict[str, object], bundle_di
     if payload_resolution.payload_format == "jsonl":
         if not (aggregate_payload_exposes_raw_counts(payload_resolution.payload_path) or payload_status_mentions_counts(payload_status)):
             return False, payload_resolution.payload_path, "aggregate payload does not expose raw counts required by the trainer runtime"
+    selected_payload_path = payload_resolution.requested_path or payload_resolution.payload_path
     if inspection_lease is not None:
         inspection_lease.release()
-    return True, payload_resolution.payload_path, "supported builder aggregate bundle"
+    return True, selected_payload_path, "supported builder aggregate bundle"
 
 
 def resolve_timing_conditioned_exact_payload(manifest: dict[str, object], bundle_dir: Path) -> tuple[BundlePayloadResolution | None, str | None]:
@@ -247,9 +254,10 @@ def is_supported_timing_conditioned_bundle(manifest: dict[str, object], bundle_d
     if payload_resolution is None:
         return False, None, error or "missing exact payload"
     inspection_lease = payload_resolution.mounted_sqlite_lease
+    selected_payload_path = payload_resolution.requested_path or payload_resolution.payload_path
     if inspection_lease is not None:
         inspection_lease.release()
-    return True, payload_resolution.payload_path, "supported timing-conditioned bundle"
+    return True, selected_payload_path, "supported timing-conditioned bundle"
 
 
 def classify_bundle_contract(manifest: dict[str, object]) -> str:

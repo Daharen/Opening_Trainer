@@ -19,6 +19,7 @@ from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.settings import TrainerSettingsStore
 from opening_trainer.session import TrainingSession
 from opening_trainer.session_contracts import OutcomeModalContract
+from opening_trainer.zstd_compat import compress as zstd_compress
 
 
 class StubBookAuthority:
@@ -205,6 +206,34 @@ def test_profile_reset_clears_review_state_without_touching_runtime_config(tmp_p
     service.reset_profile(session.active_profile_id)
     assert storage.load_items(session.active_profile_id) == []
     assert session.runtime_context.config is not None
+
+
+def test_manual_target_auto_resolve_uses_zst_only_predecessor_at_default_canonical_path(tmp_path):
+    board = chess.Board()
+    key_start = normalize_builder_position_key(board)
+    board.push_uci("e2e4")
+    target_fen = board.fen()
+    target_key = normalize_builder_position_key(board)
+    canonical_db_path = tmp_path / "canonical_predecessor_master.sqlite"
+    _write_predecessor_db(
+        canonical_db_path,
+        [
+            (key_start, None, None),
+            (target_key, key_start, "e2e4"),
+        ],
+    )
+    (tmp_path / "canonical_predecessor_master.sqlite.zst").write_bytes(zstd_compress(canonical_db_path.read_bytes()))
+    canonical_db_path.unlink()
+
+    _target_board, predecessor_path, predecessor_line = validate_manual_target(
+        target_fen=target_fen,
+        predecessor_line_uci=None,
+        auto_resolve_predecessor=True,
+        predecessor_master_db_path=str(canonical_db_path),
+    )
+
+    assert predecessor_line == "e2e4"
+    assert len(predecessor_path) == 1
 
 
 def test_session_reset_profile_resets_persisted_smart_state_for_non_active_profile(tmp_path):

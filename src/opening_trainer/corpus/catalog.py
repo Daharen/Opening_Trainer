@@ -7,6 +7,7 @@ from ..bundle_contract import (
     manifest_declared_behavioral_profile_set_path,
     manifest_declared_canonical_exact_payload_path,
     manifest_payload_version,
+    sqlite_payload_path_exists,
 )
 from ..runtime import inspect_corpus_bundle
 
@@ -154,7 +155,7 @@ def _catalog_entry_from_manifest(bundle_dir: Path, manifest_path: Path) -> tuple
         rating_policy=_coerce_text(manifest.get("rating_policy")),
         retained_ply_depth=retained_ply_depth,
         max_supported_player_moves=max_supported_player_moves,
-        canonical_exact_payload_exists=bool(canonical_payload_path and canonical_payload_path.exists()),
+        canonical_exact_payload_exists=bool(canonical_payload_path and sqlite_payload_path_exists(canonical_payload_path)),
         timing_overlay_exists=timing_overlay_exists,
         display_label=_build_display_label(time_control_id=time_control_id, rating_band=rating_band, retained_ply_depth=retained_ply_depth),
     )
@@ -163,7 +164,7 @@ def _catalog_entry_from_manifest(bundle_dir: Path, manifest_path: Path) -> tuple
 
 def _timing_overlay_exists(manifest: dict[str, object], bundle_dir: Path) -> bool:
     behavioral = manifest_declared_behavioral_profile_set_path(manifest, bundle_dir)
-    if behavioral is not None and behavioral.exists():
+    if behavioral is not None and sqlite_payload_path_exists(behavioral):
         return True
     overlay_relative = manifest.get("timing_overlay_file") or manifest.get("timing_overlay_payload_file")
     if isinstance(overlay_relative, str) and overlay_relative.strip():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from opening_trainer.review.storage import ReviewStorage
@@ -14,6 +15,7 @@ from opening_trainer.smart_profile import (
     SmartProfileService,
     resolve_track_category,
 )
+from opening_trainer.zstd_compat import compress as zstd_compress
 
 
 def _service(tmp_path: Path) -> SmartProfileService:
@@ -43,6 +45,39 @@ def _bundle(tmp_path: Path, *, time_control: str = "600+0", minimum: int = 1000,
         encoding="utf-8",
     )
     (data_dir / "aggregated_position_move_counts.jsonl").write_text("", encoding="utf-8")
+    return bundle_dir
+
+
+def _timing_exact_zst_only_bundle(tmp_path: Path, *, time_control: str = "600+0", minimum: int = 1000, maximum: int = 1200) -> Path:
+    bundle_dir = tmp_path / f"timing_bundle_{time_control.replace('+', '_')}"
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    exact_path = data_dir / "exact_corpus.sqlite"
+    connection = sqlite3.connect(exact_path)
+    try:
+        connection.execute(
+            "CREATE TABLE opening_positions(position_key TEXT PRIMARY KEY, total_observed_count INTEGER, candidate_moves_json TEXT)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    (data_dir / "exact_corpus.sqlite.zst").write_bytes(zstd_compress(exact_path.read_bytes()))
+    exact_path.unlink()
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "build_status": "timing_conditioned_ready",
+                "time_control_id": time_control,
+                "initial_time_seconds": int(time_control.split("+")[0]),
+                "increment_seconds": int(time_control.split("+")[1]),
+                "target_rating_band": {"minimum": minimum, "maximum": maximum},
+                "retained_ply_depth": 20,
+                "canonical_exact_payload_file": "data/exact_corpus.sqlite",
+                "behavioral_profile_set_file": "data/behavioral_profile_set.sqlite",
+            }
+        ),
+        encoding="utf-8",
+    )
     return bundle_dir
 
 
@@ -260,6 +295,16 @@ def test_selected_time_control_drives_expected_bundle_resolution(tmp_path):
     assert resolution.category_id == "600+1"
     assert resolution.resolved_entry is not None
     assert str(resolution.resolved_entry.bundle_dir).endswith("bundle_600_1")
+
+
+def test_expected_bundle_resolution_accepts_zst_only_canonical_exact_payload(tmp_path):
+    service = _service(tmp_path)
+    _timing_exact_zst_only_bundle(tmp_path, time_control="600+0", minimum=400, maximum=600)
+
+    resolution = service.resolve_expected_bundle(str(tmp_path))
+
+    assert resolution.blocked_reason is None
+    assert resolution.resolved_entry is not None
 
 
 def test_reset_all_preserves_selected_exact_control_and_resets_active_track_state(tmp_path):
