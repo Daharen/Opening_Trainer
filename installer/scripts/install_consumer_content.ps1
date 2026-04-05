@@ -204,7 +204,7 @@ function Write-RuntimeConfig {
     }
 
     $runtimeConfig = [ordered]@{
-        predecessor_master_db_path = (Join-Path $EffectiveContentRoot 'canonical_predecessor_master.sqlite')
+        predecessor_master_db_path = (Join-Path $EffectiveContentRoot 'canonical_predecessor_master.sqlite.zst')
         opening_book_path = (Join-Path $EffectiveContentRoot 'opening_book.bin')
         engine_executable_path = $enginePath
         strict_assets = $false
