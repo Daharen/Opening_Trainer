@@ -12,17 +12,21 @@ from .runtime_mode import ENV_RUNTIME_MODE, RuntimeMode, resolve_runtime_mode_wi
 from .runtime_paths import RuntimePaths, resolve_runtime_paths
 from .bundle_contract import (
     BUNDLE_AGGREGATE_RELATIVE_PATH,
+    BUNDLE_EXACT_SQLITE_DEFAULT_RELATIVE_PATH,
     BUNDLE_MANIFEST_NAME,
     BUNDLE_SQLITE_RELATIVE_PATH,
+    SUPPORTED_BUNDLE_MOVE_KEY_FORMAT,
+    SUPPORTED_BUNDLE_POSITION_KEY_FORMAT,
     classify_bundle_contract,
+    manifest_declared_aggregate_path,
     manifest_declared_canonical_exact_payload_path,
+    manifest_declared_exact_sqlite_path,
     manifest_declared_compatibility_exact_payload_path,
+    manifest_declared_sqlite_path,
     manifest_payload_version,
+    payload_status_mentions_counts,
     sqlite_payload_path_exists,
-    is_supported_builder_aggregate_bundle,
-    is_supported_timing_conditioned_bundle,
-    resolve_bundle_payload,
-    resolve_timing_conditioned_exact_payload,
+    aggregate_payload_exposes_raw_counts,
 )
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact
 from .evaluation import EvaluatorConfig
@@ -456,24 +460,19 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
     payload_version = manifest_payload_version(manifest)
     canonical_exact_payload = manifest_declared_canonical_exact_payload_path(manifest, resolved_dir)
     compatibility_exact_payload = manifest_declared_compatibility_exact_payload_path(manifest, resolved_dir)
+    payload_status = manifest.get("payload_status")
     if bundle_kind == "legacy_aggregate":
-        payload_resolution, _ = resolve_bundle_payload(manifest, resolved_dir)
-        supported, declared_payload_path, failure_reason = is_supported_builder_aggregate_bundle(manifest, resolved_dir)
+        supported, payload_path, payload_format, failure_reason = _supports_builder_aggregate_bundle_without_mount(manifest, resolved_dir)
     else:
-        payload_resolution, _ = resolve_timing_conditioned_exact_payload(manifest, resolved_dir)
-        supported, declared_payload_path, failure_reason = is_supported_timing_conditioned_bundle(manifest, resolved_dir)
-        if payload_resolution is None:
-            payload_resolution, _ = resolve_bundle_payload(manifest, resolved_dir)
-    payload_path = payload_resolution.payload_path if payload_resolution is not None else (resolved_dir / BUNDLE_SQLITE_RELATIVE_PATH)
+        supported, payload_path, payload_format, failure_reason = _supports_timing_conditioned_bundle_without_mount(manifest, resolved_dir)
     if not supported:
         detail = f"bundle manifest rejected: {failure_reason}"
-        payload_status = manifest.get("payload_status")
         if payload_status is not None:
             detail = f"{detail} (builder_payload_status={payload_status!r})"
         return BundleCompatibility(
             resolved_dir,
             manifest_path,
-            declared_payload_path or payload_path,
+            payload_path,
             False,
             detail,
             failure_reason,
@@ -482,15 +481,12 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
             bundle_kind=bundle_kind,
         )
 
-    payload_path = declared_payload_path or payload_path
-    payload_format = payload_resolution.payload_format if payload_resolution is not None else manifest.get("payload_format")
-    if not isinstance(payload_format, str) or not payload_format.strip():
+    if not payload_format:
         payload_format = "jsonl"
     canonical_exact_payload_available = bool(canonical_exact_payload and sqlite_payload_path_exists(canonical_exact_payload))
     compatibility_exact_payload_available = bool(compatibility_exact_payload and sqlite_payload_path_exists(compatibility_exact_payload))
     position_key_format = manifest.get("position_key_format")
     move_key_format = manifest.get("move_key_format")
-    payload_status = manifest.get("payload_status")
     return BundleCompatibility(
         resolved_dir.resolve(),
         manifest_path.resolve(),
@@ -512,6 +508,80 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         payload_format=str(payload_format),
         bundle_kind=bundle_kind,
     )
+
+
+def _supports_timing_conditioned_bundle_without_mount(
+    manifest: dict[str, object],
+    bundle_dir: Path,
+) -> tuple[bool, Path, str, str]:
+    candidate_paths: list[Path] = []
+    canonical = manifest_declared_canonical_exact_payload_path(manifest, bundle_dir)
+    if canonical is not None:
+        candidate_paths.append(canonical)
+    compatibility = manifest_declared_compatibility_exact_payload_path(manifest, bundle_dir)
+    if compatibility is not None:
+        candidate_paths.append(compatibility)
+    exact_declared = manifest_declared_exact_sqlite_path(manifest, bundle_dir)
+    if exact_declared is not None:
+        candidate_paths.append(exact_declared)
+    candidate_paths.extend(
+        [
+            bundle_dir / BUNDLE_EXACT_SQLITE_DEFAULT_RELATIVE_PATH,
+            bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH,
+        ]
+    )
+    for candidate in candidate_paths:
+        if sqlite_payload_path_exists(candidate):
+            return True, candidate, "sqlite", "supported timing-conditioned bundle"
+    return False, candidate_paths[0] if candidate_paths else (bundle_dir / BUNDLE_EXACT_SQLITE_DEFAULT_RELATIVE_PATH), "sqlite", "timing-conditioned bundle did not expose a supported exact SQLite payload"
+
+
+def _supports_builder_aggregate_bundle_without_mount(
+    manifest: dict[str, object],
+    bundle_dir: Path,
+) -> tuple[bool, Path, str, str]:
+    build_status = manifest.get("build_status")
+    if build_status != "aggregation_complete":
+        return False, bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH, "sqlite", f"build_status {build_status!r} is not supported"
+
+    position_key_format = manifest.get("position_key_format")
+    if position_key_format != SUPPORTED_BUNDLE_POSITION_KEY_FORMAT:
+        return False, bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH, "sqlite", f"unsupported position_key_format {position_key_format!r}"
+
+    move_key_format = manifest.get("move_key_format")
+    if move_key_format != SUPPORTED_BUNDLE_MOVE_KEY_FORMAT:
+        return False, bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH, "sqlite", f"unsupported move_key_format {move_key_format!r}"
+
+    payload_format_declared = manifest.get("payload_format")
+    if isinstance(payload_format_declared, str) and payload_format_declared.strip():
+        normalized = payload_format_declared.strip().lower()
+        if normalized == "sqlite":
+            requested = manifest_declared_sqlite_path(manifest, bundle_dir) or (bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH)
+            if sqlite_payload_path_exists(requested):
+                return True, requested, "sqlite", "supported builder aggregate bundle"
+            return False, requested, "sqlite", "missing sqlite payload"
+        if normalized == "jsonl":
+            aggregate_path = manifest_declared_aggregate_path(manifest, bundle_dir) or (bundle_dir / BUNDLE_AGGREGATE_RELATIVE_PATH)
+            if not aggregate_path.exists():
+                return False, aggregate_path, "jsonl", f"aggregate payload is missing at {aggregate_path}"
+            if not aggregate_path.is_file():
+                return False, aggregate_path, "jsonl", f"aggregate payload path {aggregate_path} is not a file"
+            if not (aggregate_payload_exposes_raw_counts(aggregate_path) or payload_status_mentions_counts(manifest.get("payload_status"))):
+                return False, aggregate_path, "jsonl", "aggregate payload does not expose raw counts required by the trainer runtime"
+            return True, aggregate_path, "jsonl", "supported builder aggregate bundle"
+        return False, bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH, normalized, f"unsupported payload_format {payload_format_declared!r}"
+
+    sqlite_default = bundle_dir / BUNDLE_SQLITE_RELATIVE_PATH
+    if sqlite_payload_path_exists(sqlite_default):
+        return True, sqlite_default, "sqlite", "supported builder aggregate bundle"
+
+    aggregate_path = manifest_declared_aggregate_path(manifest, bundle_dir) or (bundle_dir / BUNDLE_AGGREGATE_RELATIVE_PATH)
+    if aggregate_path.exists() and aggregate_path.is_file():
+        if not (aggregate_payload_exposes_raw_counts(aggregate_path) or payload_status_mentions_counts(manifest.get("payload_status"))):
+            return False, aggregate_path, "jsonl", "aggregate payload does not expose raw counts required by the trainer runtime"
+        return True, aggregate_path, "jsonl", "supported builder aggregate bundle"
+
+    return False, sqlite_default, "sqlite", "bundle did not expose a supported payload; expected manifest payload_format, data/corpus.sqlite, or data/aggregated_position_move_counts.jsonl"
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:

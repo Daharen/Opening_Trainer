@@ -147,6 +147,30 @@ def test_catalog_marks_canonical_exact_payload_present_for_zst_only_bundle(tmp_p
     assert catalog.entries[0].canonical_exact_payload_exists is True
 
 
+def test_catalog_discovery_does_not_mount_sqlite_payloads_for_availability(monkeypatch, tmp_path):
+    _write_timing_bundle(
+        tmp_path,
+        "zst_only_exact",
+        time_control_id="600+0",
+        initial=600,
+        increment=0,
+        minimum=1000,
+        maximum=1200,
+        retained=30,
+        zst_only_exact_payload=True,
+    )
+
+    def _unexpected_mount(*_args, **_kwargs):
+        raise AssertionError("catalog discovery should not mount sqlite payloads")
+
+    monkeypatch.setattr("opening_trainer.bundle_contract.get_mounted_sqlite_manager", _unexpected_mount)
+
+    catalog = discover_corpus_catalog(tmp_path)
+
+    assert len(catalog.entries) == 1
+    assert catalog.entries[0].canonical_exact_payload_exists is True
+
+
 def test_structured_and_legacy_paths_converge_to_same_authoritative_bundle_state(tmp_path):
     bundle_dir = _write_timing_bundle(
         tmp_path,

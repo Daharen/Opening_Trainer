@@ -307,6 +307,21 @@ def test_expected_bundle_resolution_accepts_zst_only_canonical_exact_payload(tmp
     assert resolution.resolved_entry is not None
 
 
+def test_expected_bundle_resolution_is_metadata_only_and_does_not_mount_sqlite(monkeypatch, tmp_path):
+    service = _service(tmp_path)
+    _timing_exact_zst_only_bundle(tmp_path, time_control="600+0", minimum=400, maximum=600)
+
+    def _unexpected_mount(*_args, **_kwargs):
+        raise AssertionError("smart expected-bundle resolution must remain metadata-only")
+
+    monkeypatch.setattr("opening_trainer.bundle_contract.get_mounted_sqlite_manager", _unexpected_mount)
+
+    resolution = service.resolve_expected_bundle(str(tmp_path))
+
+    assert resolution.blocked_reason is None
+    assert resolution.resolved_entry is not None
+
+
 def test_reset_all_preserves_selected_exact_control_and_resets_active_track_state(tmp_path):
     service = _service(tmp_path)
     assert service.set_selected_time_control("600+1") is True
