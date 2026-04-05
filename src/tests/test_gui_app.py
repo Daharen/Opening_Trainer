@@ -1626,6 +1626,44 @@ def test_validate_catalog_root_requires_manifest_driven_entries(tmp_path):
     assert entries == 1
 
 
+def test_validate_catalog_root_uses_metadata_checks_without_sqlite_mount(monkeypatch, tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    bundle_dir = tmp_path / "bundle_a"
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "exact_corpus.sqlite").write_bytes(b"sqlite")
+    (data_dir / "exact_corpus.sqlite.zst").write_bytes(b"zstd")
+    (data_dir / "exact_corpus.sqlite").unlink()
+    (data_dir / "behavioral_profile_set.sqlite").write_bytes(b"overlay")
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "build_status": "finalized",
+                "time_control_id": "600+0",
+                "initial_time_seconds": 600,
+                "increment_seconds": 0,
+                "target_rating_band": {"minimum": 1000, "maximum": 1200},
+                "retained_ply_depth": 30,
+                "payload_version": "v1",
+                "canonical_exact_payload_file": "data/exact_corpus.sqlite",
+                "behavioral_profile_set_file": "data/behavioral_profile_set.sqlite",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _unexpected_mount(*_args, **_kwargs):
+        raise AssertionError("catalog-root validation must not mount sqlite payloads")
+
+    monkeypatch.setattr("opening_trainer.bundle_contract.get_mounted_sqlite_manager", _unexpected_mount)
+
+    ok, reason, entries = gui._validate_catalog_root(str(tmp_path))
+
+    assert ok is True
+    assert "validation_passed" in reason
+    assert entries == 1
+
+
 class FakeRoot:
     def __init__(self):
         self.after_calls = []
