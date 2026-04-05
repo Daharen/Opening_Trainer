@@ -10,12 +10,12 @@
   "wrapper_folder_name": "opening_trainer_content_seed_rapid600_v1",
   "installed_manifest_filename": "installed_content_manifest.json",
   "required_entry_alternates": {
-    "canonical_predecessor_master.sqlite": [
-      "canonical_predecessor_master.sqlite.zst"
+    "canonical_predecessor_master.sqlite.zst": [
+      "canonical_predecessor_master.sqlite"
     ]
   },
   "required_entries": [
-    "canonical_predecessor_master.sqlite",
+    "canonical_predecessor_master.sqlite.zst",
     "opening_book.bin",
     "opening_book_names.zip",
     "stockfish",
