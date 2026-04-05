@@ -49,27 +49,60 @@ function Set-Phase {
 function Get-MissingRequiredEntries {
     param(
         [string]$Root,
-        [string[]]$RequiredEntries
+        [object[]]$RequiredEntryGroups
     )
 
     $missing = @()
-    foreach ($relativePath in $RequiredEntries) {
-        $requiredPath = Join-Path -Path $Root -ChildPath $relativePath
-        if (-not (Test-Path -LiteralPath $requiredPath)) {
-            $missing += $relativePath
+    foreach ($group in $RequiredEntryGroups) {
+        $candidates = @($group | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+        if (-not $candidates -or $candidates.Count -eq 0) {
+            continue
+        }
+        $groupSatisfied = $false
+        foreach ($relativePath in $candidates) {
+            $requiredPath = Join-Path -Path $Root -ChildPath $relativePath
+            if (Test-Path -LiteralPath $requiredPath) {
+                $groupSatisfied = $true
+                break
+            }
+        }
+        if (-not $groupSatisfied) {
+            $missing += ($candidates -join ' | ')
         }
     }
 
     return $missing
 }
 
+function Get-RequiredEntryGroups {
+    param(
+        [string[]]$RequiredEntries,
+        [object]$RequiredEntryAlternates
+    )
+
+    $groups = @()
+    foreach ($entry in $RequiredEntries) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry)) {
+            continue
+        }
+        $normalizedEntry = [string]$entry
+        $alternates = @()
+        if ($RequiredEntryAlternates -and $RequiredEntryAlternates.PSObject -and $RequiredEntryAlternates.PSObject.Properties.Name -contains $normalizedEntry) {
+            $alternates = @($RequiredEntryAlternates.$normalizedEntry | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+        }
+        $groups += ,@($normalizedEntry) + $alternates
+    }
+
+    return $groups
+}
+
 function Test-RequiredEntries {
     param(
         [string]$Root,
-        [string[]]$RequiredEntries
+        [object[]]$RequiredEntryGroups
     )
 
-    $missing = Get-MissingRequiredEntries -Root $Root -RequiredEntries $RequiredEntries
+    $missing = Get-MissingRequiredEntries -Root $Root -RequiredEntryGroups $RequiredEntryGroups
     return $missing.Count -eq 0
 }
 
@@ -140,7 +173,7 @@ function Copy-NormalizedContent {
     param(
         [string]$SourceRoot,
         [string]$DestinationRoot,
-        [string[]]$RequiredEntries
+        [object[]]$RequiredEntryGroups
     )
 
     if (Test-Path -LiteralPath $DestinationRoot) {
@@ -150,9 +183,9 @@ function Copy-NormalizedContent {
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
     Copy-Item -Path (Join-Path $SourceRoot '*') -Destination $DestinationRoot -Recurse -Force
 
-    $missing = Get-MissingRequiredEntries -Root $DestinationRoot -RequiredEntries $RequiredEntries
+    $missing = Get-MissingRequiredEntries -Root $DestinationRoot -RequiredEntryGroups $RequiredEntryGroups
     if ($missing.Count -gt 0) {
-        throw "Required content entries missing after copy to '$DestinationRoot': $($missing -join ', ')"
+        throw "Required content entry groups missing after copy to '$DestinationRoot': $($missing -join ', ')"
     }
 }
 
@@ -247,6 +280,7 @@ try {
     $archiveFileName = [string]$manifest.archive_filename
     $expectedSha256 = [string]$manifest.archive_sha256
     $requiredEntries = @($manifest.required_entries)
+    $requiredEntryAlternates = $manifest.required_entry_alternates
     $wrapperFolderName = [string]$manifest.wrapper_folder_name
     $installedManifestFileName = [string]$manifest.installed_manifest_filename
 
@@ -259,6 +293,10 @@ try {
     if (-not $requiredEntries -or $requiredEntries.Count -eq 0) {
         throw 'Manifest required_entries is empty.'
     }
+    $requiredEntryGroups = @(Get-RequiredEntryGroups -RequiredEntries $requiredEntries -RequiredEntryAlternates $requiredEntryAlternates)
+    if (-not $requiredEntryGroups -or $requiredEntryGroups.Count -eq 0) {
+        throw 'Manifest required entry groups are empty.'
+    }
     if ([string]::IsNullOrWhiteSpace($installedManifestFileName)) {
         $installedManifestFileName = 'installed_content_manifest.json'
     }
@@ -269,14 +307,14 @@ try {
     Set-Phase -Phase 'Checking existing content' -Percent 10
     Write-InstallLog 'Checking existing installed content state.'
 
-    $canReuseCurrentRoot = Test-RequiredEntries -Root $ContentRoot -RequiredEntries $requiredEntries
+    $canReuseCurrentRoot = Test-RequiredEntries -Root $ContentRoot -RequiredEntryGroups $requiredEntryGroups
     $wrapperPath = $null
     if (-not [string]::IsNullOrWhiteSpace($wrapperFolderName)) {
         $wrapperPath = Join-Path -Path $ContentRoot -ChildPath $wrapperFolderName
     }
     $canMigrateWrapper = $false
     if ($wrapperPath -and (Test-Path -LiteralPath $wrapperPath)) {
-        $canMigrateWrapper = Test-RequiredEntries -Root $wrapperPath -RequiredEntries $requiredEntries
+        $canMigrateWrapper = Test-RequiredEntries -Root $wrapperPath -RequiredEntryGroups $requiredEntryGroups
     }
 
     $installedManifestMatches = $false
@@ -323,8 +361,8 @@ try {
         $migrationRoot = Join-Path -Path $env:TEMP -ChildPath "OpeningTrainerMigrate_$([guid]::NewGuid().ToString('N'))"
         New-Item -ItemType Directory -Path $migrationRoot -Force | Out-Null
         try {
-            Copy-NormalizedContent -SourceRoot $wrapperPath -DestinationRoot $migrationRoot -RequiredEntries $requiredEntries
-            Copy-NormalizedContent -SourceRoot $migrationRoot -DestinationRoot $ContentRoot -RequiredEntries $requiredEntries
+            Copy-NormalizedContent -SourceRoot $wrapperPath -DestinationRoot $migrationRoot -RequiredEntryGroups $requiredEntryGroups
+            Copy-NormalizedContent -SourceRoot $migrationRoot -DestinationRoot $ContentRoot -RequiredEntryGroups $requiredEntryGroups
         }
         finally {
             if (Test-Path -LiteralPath $migrationRoot) {
@@ -341,7 +379,7 @@ try {
     }
 
     if (Test-Path -LiteralPath $ContentRoot) {
-        $missing = Get-MissingRequiredEntries -Root $ContentRoot -RequiredEntries $requiredEntries
+        $missing = Get-MissingRequiredEntries -Root $ContentRoot -RequiredEntryGroups $requiredEntryGroups
         if ($missing.Count -gt 0 -and $missing.Count -lt $requiredEntries.Count) {
             Write-InstallLog "Existing content was detected but incomplete. Missing entries: $($missing -join ', ')"
             Write-Host "Existing content detected but incomplete; missing: $($missing -join ', ')"
@@ -394,21 +432,21 @@ try {
     Expand-Archive -LiteralPath $downloadTarget -DestinationPath $extractStagingRoot -Force
 
     $sourceRoot = $extractStagingRoot
-    if (-not (Test-RequiredEntries -Root $sourceRoot -RequiredEntries $requiredEntries)) {
+    if (-not (Test-RequiredEntries -Root $sourceRoot -RequiredEntryGroups $requiredEntryGroups)) {
         if ($wrapperPath -and (Test-Path -LiteralPath (Join-Path -Path $extractStagingRoot -ChildPath $wrapperFolderName))) {
             $sourceRoot = Join-Path -Path $extractStagingRoot -ChildPath $wrapperFolderName
             Write-InstallLog "Detected wrapper folder inside archive: $sourceRoot"
         }
         else {
             $childDirectories = @(Get-ChildItem -LiteralPath $extractStagingRoot -Directory -Force)
-            if ($childDirectories.Count -eq 1 -and (Test-RequiredEntries -Root $childDirectories[0].FullName -RequiredEntries $requiredEntries)) {
+            if ($childDirectories.Count -eq 1 -and (Test-RequiredEntries -Root $childDirectories[0].FullName -RequiredEntryGroups $requiredEntryGroups)) {
                 $sourceRoot = $childDirectories[0].FullName
                 Write-InstallLog "Detected single wrapper content directory in archive: $sourceRoot"
             }
         }
     }
 
-    Copy-NormalizedContent -SourceRoot $sourceRoot -DestinationRoot $ContentRoot -RequiredEntries $requiredEntries
+    Copy-NormalizedContent -SourceRoot $sourceRoot -DestinationRoot $ContentRoot -RequiredEntryGroups $requiredEntryGroups
     Write-InstallLog 'Extraction end.'
 
     Set-Phase -Phase 'Writing runtime configuration' -Percent 90

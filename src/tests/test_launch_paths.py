@@ -255,12 +255,13 @@ def test_powershell_runner_validation_commands_resolve_pytest_entrypoint_with_mo
 def test_powershell_runner_bundle_validation_recognizes_sqlite_and_legacy_fallback_order():
     script = Path('run.ps1').read_text(encoding='utf-8')
 
-    assert 'manifest payload_format=sqlite but sqlite payload is missing' in script
+    assert 'manifest payload_format=sqlite but sqlite payload is missing (.sqlite or .sqlite.zst)' in script
     assert "if ($payloadFormat -eq \"sqlite\")" in script
     assert "if ($payloadFormat -eq \"jsonl\")" in script
-    assert "if (Test-Path $sqlitePath -PathType Leaf)" in script
+    assert '$sqliteZstPath = "$sqlitePath.zst"' in script
+    assert "if ((Test-Path $sqlitePath -PathType Leaf) -or (Test-Path $sqliteZstPath -PathType Leaf))" in script
     assert "if (Test-Path $aggregatePath -PathType Leaf)" in script
-    assert "manifest payload_format -> data/corpus.sqlite -> data/aggregated_position_move_counts.jsonl (legacy)" in script
+    assert "manifest payload_format -> data/corpus.sqlite(.zst) -> data/aggregated_position_move_counts.jsonl (legacy)" in script
 
 
 def test_ordinary_and_developer_launchers_are_split():

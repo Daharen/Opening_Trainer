@@ -26,6 +26,9 @@ def test_consumer_content_manifest_has_required_fields() -> None:
     assert isinstance(payload["wrapper_folder_name"], str) and payload["wrapper_folder_name"]
     assert isinstance(payload["installed_manifest_filename"], str) and payload["installed_manifest_filename"]
     assert isinstance(payload["required_entries"], list) and payload["required_entries"]
+    assert isinstance(payload.get("required_entry_alternates"), dict)
+    assert "canonical_predecessor_master.sqlite" in payload["required_entry_alternates"]
+    assert "canonical_predecessor_master.sqlite.zst" in payload["required_entry_alternates"]["canonical_predecessor_master.sqlite"]
 
 
 def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
@@ -84,6 +87,9 @@ def test_content_bootstrap_writes_consumer_runtime_config_and_logging() -> None:
     assert "LocalArchivePath" in script
     assert "wrapper_folder_name" in script
     assert "required_entries" in script
+    assert "required_entry_alternates" in script
+    assert "Get-RequiredEntryGroups" in script
+    assert "RequiredEntryGroups" in script
     assert "Write-JsonFileNoBom" in script
     assert "WriteAllText" in script
     assert "utf8-no-bom" in script
