@@ -4,7 +4,7 @@
   "archive_filename": "opening_trainer_content_seed_rapid600_v1.zip",
   "download_url": "https://opening-trainer-content.s3.us-west-2.amazonaws.com/opening_trainer_content_seed_rapid600_v1.zip",
   "manifest_url": "https://opening-trainer-content.s3.us-west-2.amazonaws.com/opening_trainer_content_manifest.json",
-  "archive_sha256": "02d0e18c84ccae745000c473823eff2506d00e544a1056a757f335c10528bcc0"
+  "archive_sha256": "02d0e18c84ccae745000c473823eff2506d00e544a1056a757f335c10528bcc0",
   "update_channel": "stable",
   "install_root_mode": "single_wrapper_folder",
   "wrapper_folder_name": "opening_trainer_content_seed_rapid600_v1",
