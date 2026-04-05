@@ -265,13 +265,16 @@ def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
     assert gui.move_list_panel.moves == move_history
 
 
-def test_gui_has_visible_update_button_and_menu_entry():
+def test_gui_has_visible_update_button_and_profile_menu_entry():
     source = inspect.getsource(OpeningTrainerGUI)
     assert "text='Report'" in source
     assert "_show_report_placeholder" in source
     assert "text='Update'" in source
     assert "Check for Updates" in source
     assert "_check_for_updates_from_gui" in source
+    assert "text='Profiles'" in source
+    assert "Manage Profiles…" in source
+    assert "_open_profiles" in source
 
 
 def test_report_button_placeholder_shows_message(monkeypatch):

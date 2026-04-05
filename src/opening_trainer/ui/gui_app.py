@@ -172,6 +172,7 @@ class OpeningTrainerGUI:
         )
         self.start_button.pack(side='left')
         tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
+        tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
         tk.Button(toolbar, text='Corpus Selection', command=self._open_bundle_picker).pack(side='left', padx=6)
         tk.Button(toolbar, text='Report', command=self._show_report_placeholder).pack(side='left', padx=6)
         self.update_button = tk.Button(toolbar, text='Update', command=self._check_for_updates_from_gui)
@@ -2076,6 +2077,9 @@ class OpeningTrainerGUI:
         file_menu.add_command(label='Check for Updates', command=self._check_for_updates_from_gui)
         file_menu.add_command(label='Exit', command=self._request_shutdown)
         menubar.add_cascade(label='File', menu=file_menu)
+        profiles_menu = tk.Menu(menubar, tearoff=0)
+        profiles_menu.add_command(label='Manage Profiles…', command=self._open_profiles)
+        menubar.add_cascade(label='Profiles', menu=profiles_menu)
         dev_menu = tk.Menu(menubar, tearoff=0)
         dev_menu.add_command(label='Open Dev Console', command=self._open_dev_console)
         dev_menu.add_command(label='Timing Override...', command=self._open_timing_override_dialog)
@@ -2785,7 +2789,6 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-
 
 
 
