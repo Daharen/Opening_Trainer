@@ -270,10 +270,11 @@ function Test-CorpusBundleDirectory {
 
     $sqlitePath = Join-Path $candidate $sqliteRelativePath
     $aggregatePath = Join-Path $candidate $aggregateRelativePath
+    $sqliteZstPath = "$sqlitePath.zst"
 
     if ($payloadFormat -eq "sqlite") {
-        if (-not (Test-Path $sqlitePath -PathType Leaf)) {
-            return @{ IsValid = $false; Reason = "manifest payload_format=sqlite but sqlite payload is missing"; ResolvedPath = $candidate }
+        if (-not (Test-Path $sqlitePath -PathType Leaf) -and -not (Test-Path $sqliteZstPath -PathType Leaf)) {
+            return @{ IsValid = $false; Reason = "manifest payload_format=sqlite but sqlite payload is missing (.sqlite or .sqlite.zst)"; ResolvedPath = $candidate }
         }
         return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
     }
@@ -289,7 +290,7 @@ function Test-CorpusBundleDirectory {
         return @{ IsValid = $false; Reason = "unsupported payload_format '$payloadFormat'"; ResolvedPath = $candidate }
     }
 
-    if (Test-Path $sqlitePath -PathType Leaf) {
+    if ((Test-Path $sqlitePath -PathType Leaf) -or (Test-Path $sqliteZstPath -PathType Leaf)) {
         return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
     }
 
@@ -297,7 +298,7 @@ function Test-CorpusBundleDirectory {
         return @{ IsValid = $true; Reason = $null; ResolvedPath = $candidate }
     }
 
-    return @{ IsValid = $false; Reason = "missing bundle payload; expected data/corpus.sqlite or data/aggregated_position_move_counts.jsonl"; ResolvedPath = $candidate }
+    return @{ IsValid = $false; Reason = "missing bundle payload; expected data/corpus.sqlite(.zst) or data/aggregated_position_move_counts.jsonl"; ResolvedPath = $candidate }
 }
 
 function Get-DiscoveredCorpusBundles {
@@ -358,7 +359,7 @@ function Select-CorpusBundleDirectory {
         Write-Host "Optional corpus bundle selection before trainer launch"
         Write-Host "Choose a numbered bundle from workspace-root artifacts, enter L to reuse the last bundle, enter C to paste a custom path, or press Enter/S to skip."
         Write-Host "A valid bundle directory must contain manifest.json and a supported payload."
-        Write-Host "Selector detection order: manifest payload_format -> data/corpus.sqlite -> data/aggregated_position_move_counts.jsonl (legacy)."
+        Write-Host "Selector detection order: manifest payload_format -> data/corpus.sqlite(.zst) -> data/aggregated_position_move_counts.jsonl (legacy)."
 
         if ($lastSelection) {
             Write-Host "L) Reuse last selected bundle [$lastSelection]"

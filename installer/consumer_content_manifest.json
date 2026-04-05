@@ -9,6 +9,11 @@
   "install_root_mode": "single_wrapper_folder",
   "wrapper_folder_name": "opening_trainer_content_seed_rapid600_v1",
   "installed_manifest_filename": "installed_content_manifest.json",
+  "required_entry_alternates": {
+    "canonical_predecessor_master.sqlite": [
+      "canonical_predecessor_master.sqlite.zst"
+    ]
+  },
   "required_entries": [
     "canonical_predecessor_master.sqlite",
     "opening_book.bin",

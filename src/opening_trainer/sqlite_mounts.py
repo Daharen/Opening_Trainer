@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import shutil
 import sqlite3
@@ -10,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .zstd_compat import open_binary_reader
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -54,8 +57,10 @@ class MountedSQLiteManager:
     def resolve(self, requested_path: str | Path) -> tuple[SQLitePayloadResolution, MountedSQLiteLease | None]:
         requested = Path(requested_path)
         plain, compressed = self._plain_and_compressed_candidates(requested)
+        _LOGGER.info("sqlite payload resolution requested=%s plain_candidate=%s compressed_candidate=%s", requested, plain, compressed)
 
         if plain.exists() and plain.is_file():
+            _LOGGER.info("sqlite payload resolved via plain sqlite path=%s", plain)
             return (
                 SQLitePayloadResolution(
                     requested_path=requested,
@@ -71,6 +76,7 @@ class MountedSQLiteManager:
             mounted = self._mount_compressed(compressed)
             with self._lock:
                 self._ref_counts[mounted] = self._ref_counts.get(mounted, 0) + 1
+            _LOGGER.info("sqlite payload resolved via zst mount source=%s mounted=%s", compressed, mounted)
             return (
                 SQLitePayloadResolution(
                     requested_path=requested,
@@ -135,14 +141,17 @@ class MountedSQLiteManager:
         partial_path = mount_path.with_suffix(".sqlite.partial")
 
         if mount_path.exists():
+            _LOGGER.info("sqlite mount candidate already exists; validating mounted=%s source=%s", mount_path, compressed_path)
             self._validate_sqlite(mount_path)
             return mount_path
 
         try:
+            _LOGGER.info("mounting sqlite zst source=%s partial=%s target=%s", compressed_path, partial_path, mount_path)
             with compressed_path.open("rb") as source, open_binary_reader(source) as reader, partial_path.open("wb") as output:
                 shutil.copyfileobj(reader, output, length=1024 * 1024)
             self._validate_sqlite(partial_path)
             partial_path.replace(mount_path)
+            _LOGGER.info("sqlite zst mount ready mounted=%s source=%s", mount_path, compressed_path)
             return mount_path
         except Exception as exc:
             partial_path.unlink(missing_ok=True)
@@ -150,6 +159,7 @@ class MountedSQLiteManager:
             code = "sqlite_decompression_failed"
             if isinstance(exc, SQLitePayloadResolutionError):
                 code = exc.code
+            _LOGGER.warning("sqlite zst mount failed source=%s code=%s detail=%s", compressed_path, code, exc)
             raise SQLitePayloadResolutionError(code=code, detail=str(exc), requested_path=compressed_path) from exc
 
     def _validate_sqlite(self, path: Path) -> None:
@@ -178,8 +188,10 @@ class MountedSQLiteManager:
             if current <= 1:
                 self._ref_counts.pop(mount_path, None)
                 mount_path.unlink(missing_ok=True)
+                _LOGGER.info("sqlite mount released and removed mounted=%s", mount_path)
                 return
             self._ref_counts[mount_path] = current - 1
+            _LOGGER.info("sqlite mount lease released mounted=%s remaining_refs=%d", mount_path, self._ref_counts[mount_path])
 
 
 _DEFAULT_MANAGER = MountedSQLiteManager()
