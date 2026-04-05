@@ -11,6 +11,7 @@ from opening_trainer.corpus.catalog import (
 )
 from opening_trainer.settings import TrainerSettings
 from opening_trainer.ui.gui_app import OpeningTrainerGUI
+from opening_trainer.zstd_compat import compress as zstd_compress
 
 
 def _write_timing_bundle(
@@ -24,11 +25,26 @@ def _write_timing_bundle(
     maximum: int,
     retained: int,
     rating_policy: str = "both_players_in_band",
+    zst_only_exact_payload: bool = False,
 ) -> Path:
     bundle_dir = root / name
     data_dir = bundle_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "exact_corpus.sqlite").write_bytes(b"sqlite")
+    exact_payload = data_dir / "exact_corpus.sqlite"
+    if zst_only_exact_payload:
+        import sqlite3
+
+        connection = sqlite3.connect(exact_payload)
+        connection.execute(
+            "CREATE TABLE positions (position_key TEXT PRIMARY KEY, total_observed_count INTEGER, candidate_moves_json TEXT)"
+        )
+        connection.commit()
+        connection.close()
+    else:
+        exact_payload.write_bytes(b"sqlite")
+    if zst_only_exact_payload:
+        (data_dir / "exact_corpus.sqlite.zst").write_bytes(zstd_compress(exact_payload.read_bytes()))
+        exact_payload.unlink()
     (data_dir / "behavioral_profile_set.sqlite").write_bytes(b"overlay")
     manifest = {
         "build_status": "finalized",
@@ -110,6 +126,25 @@ def test_catalog_invalid_bundle_is_isolated_without_breaking_catalog(tmp_path):
     assert len(catalog.entries) == 1
     assert len(catalog.invalid_entries) == 1
     assert catalog.invalid_entries[0].bundle_dir == broken
+
+
+def test_catalog_marks_canonical_exact_payload_present_for_zst_only_bundle(tmp_path):
+    _write_timing_bundle(
+        tmp_path,
+        "zst_only_exact",
+        time_control_id="600+0",
+        initial=600,
+        increment=0,
+        minimum=1000,
+        maximum=1200,
+        retained=30,
+        zst_only_exact_payload=True,
+    )
+
+    catalog = discover_corpus_catalog(tmp_path)
+
+    assert len(catalog.entries) == 1
+    assert catalog.entries[0].canonical_exact_payload_exists is True
 
 
 def test_structured_and_legacy_paths_converge_to_same_authoritative_bundle_state(tmp_path):

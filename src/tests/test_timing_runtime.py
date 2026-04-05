@@ -24,6 +24,7 @@ from opening_trainer.timing import (
     bucket_prev_opp_think,
     sample_think_time_seconds,
 )
+from opening_trainer.zstd_compat import compress as zstd_compress
 
 
 def _write_exact_sqlite(db_path: Path) -> None:
@@ -123,6 +124,13 @@ def _write_behavioral_profile_set(db_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _compress_sqlite_to_zst(sqlite_path: Path) -> Path:
+    compressed = sqlite_path.with_name(sqlite_path.name + ".zst")
+    compressed.write_bytes(zstd_compress(sqlite_path.read_bytes()))
+    sqlite_path.unlink()
+    return compressed
 
 
 def _write_timing_bundle(
@@ -335,6 +343,40 @@ def test_timing_bundle_loader_prefers_canonical_exact_payload_path_over_compatib
     handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
     assert handle.exact_payload_path is not None
     assert handle.exact_payload_path.name == "exact_corpus.sqlite"
+
+
+def test_timing_bundle_loader_supports_zst_only_canonical_exact_payload(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        canonical_exact_payload_file="data/exact_corpus.sqlite",
+    )
+    _compress_sqlite_to_zst(bundle_dir / "data" / "exact_corpus.sqlite")
+
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+
+    assert handle.exact_payload_path is not None
+    assert handle.exact_payload_path.name.endswith(".sqlite")
+
+
+def test_timing_bundle_loader_accepts_zst_only_compatibility_alias_when_canonical_absent(tmp_path):
+    bundle_dir = _write_timing_bundle(
+        tmp_path / "bundle",
+        native=True,
+        use_json_overlay=True,
+        exact_name="exact_corpus.sqlite",
+        canonical_exact_payload_file="data/missing_exact.sqlite",
+        compatibility_exact_payload_file="data/corpus.sqlite",
+    )
+    _write_exact_sqlite(bundle_dir / "data" / "corpus.sqlite")
+    _compress_sqlite_to_zst(bundle_dir / "data" / "corpus.sqlite")
+
+    handle = TimingConditionedCorpusBundleLoader().load(bundle_dir)
+
+    assert handle.exact_payload_path is not None
+    assert handle.exact_payload_path.name.endswith(".sqlite")
 
 
 def test_timing_bundle_loader_supports_compact_exact_payload_v2_sqlite(tmp_path):

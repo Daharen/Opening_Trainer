@@ -18,6 +18,7 @@ from .bundle_contract import (
     manifest_declared_canonical_exact_payload_path,
     manifest_declared_compatibility_exact_payload_path,
     manifest_payload_version,
+    sqlite_payload_path_exists,
     is_supported_builder_aggregate_bundle,
     is_supported_timing_conditioned_bundle,
     resolve_bundle_payload,
@@ -482,12 +483,11 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
         )
 
     payload_path = declared_payload_path or payload_path
-    payload_format = manifest.get("payload_format")
+    payload_format = payload_resolution.payload_format if payload_resolution is not None else manifest.get("payload_format")
     if not isinstance(payload_format, str) or not payload_format.strip():
-        if payload_path.resolve() == (resolved_dir / BUNDLE_SQLITE_RELATIVE_PATH).resolve():
-            payload_format = "sqlite"
-        else:
-            payload_format = "jsonl"
+        payload_format = "jsonl"
+    canonical_exact_payload_available = bool(canonical_exact_payload and sqlite_payload_path_exists(canonical_exact_payload))
+    compatibility_exact_payload_available = bool(compatibility_exact_payload and sqlite_payload_path_exists(compatibility_exact_payload))
     position_key_format = manifest.get("position_key_format")
     move_key_format = manifest.get("move_key_format")
     payload_status = manifest.get("payload_status")
@@ -500,7 +500,9 @@ def inspect_corpus_bundle(bundle_dir: Path) -> BundleCompatibility:
             f"loaded corpus bundle {resolved_dir.resolve()} (manifest ok, payload ok, "
             f"bundle_kind={bundle_kind}, build_status={manifest.get('build_status')}, payload_format={payload_format!r}, payload_path={str(payload_path)!r}, "
             f"canonical_exact_payload={str(canonical_exact_payload) if canonical_exact_payload else None!r}, "
+            f"canonical_exact_payload_available={canonical_exact_payload_available!r}, "
             f"compatibility_exact_payload={str(compatibility_exact_payload) if compatibility_exact_payload else None!r}, "
+            f"compatibility_exact_payload_available={compatibility_exact_payload_available!r}, "
             f"payload_version={payload_version!r}, "
             f"position_key_format={position_key_format}, move_key_format={move_key_format}, builder_payload_status={payload_status!r}, "
             f"retained_ply_depth={retained_ply_depth!r}, retained_ply_source={retained_source!r})"
