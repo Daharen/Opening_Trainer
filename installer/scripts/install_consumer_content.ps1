@@ -85,12 +85,24 @@ function Get-RequiredEntryGroups {
         if ([string]::IsNullOrWhiteSpace([string]$entry)) {
             continue
         }
+
         $normalizedEntry = [string]$entry
         $alternates = @()
-        if ($RequiredEntryAlternates -and $RequiredEntryAlternates.PSObject -and $RequiredEntryAlternates.PSObject.Properties.Name -contains $normalizedEntry) {
-            $alternates = @($RequiredEntryAlternates.$normalizedEntry | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+
+        if (
+            $RequiredEntryAlternates -and
+            $RequiredEntryAlternates.PSObject -and
+            $RequiredEntryAlternates.PSObject.Properties.Name -contains $normalizedEntry
+        ) {
+            $alternates = @(
+                $RequiredEntryAlternates.$normalizedEntry |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                ForEach-Object { [string]$_ }
+            )
         }
-        $groups += ,@($normalizedEntry) + $alternates
+
+        $group = @($normalizedEntry) + $alternates
+        $groups += ,$group
     }
 
     return $groups
