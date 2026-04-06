@@ -109,6 +109,7 @@ class TrainingSession:
         self.profile_service = ProfileService(self.review_storage)
         self.router = ReviewRouter()
         self.active_profile_id = self.profile_service.get_active_profile_id()
+        self.router.import_profile_state(self.active_profile_id, self.review_storage.load_router_state(self.active_profile_id))
         self.settings_store = TrainerSettingsStore(self.review_storage.root)
         self.developer_timing_store = DeveloperTimingOverrideStore(self.review_storage.root)
         self.smart_profile = SmartProfileService(self.review_storage, self.active_profile_id)
@@ -381,6 +382,7 @@ class TrainingSession:
         if transition_changed:
             self._save_items(items)
         self.current_routing = self.router.select(self.active_profile_id, items)
+        self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))
         self.current_review_item_id = self.current_routing.selected_review_item_id
         self.active_review_plan = self.current_routing.review_plan
         if self.active_review_plan and self.active_review_plan.root_fen != 'startpos':
@@ -485,9 +487,12 @@ class TrainingSession:
         self.profile_service.switch_profile(profile_id)
         self.active_profile_id = profile_id
         self.smart_profile.switch_profile(profile_id)
+        self.router.import_profile_state(profile_id, self.review_storage.load_router_state(profile_id))
 
     def reset_profile(self, profile_id: str) -> bool:
         self.profile_service.reset_profile(profile_id)
+        self.router.clear_profile_state(profile_id)
+        self.review_storage.save_router_state(profile_id, {})
         is_active_profile = self.active_profile_id == profile_id
         if is_active_profile:
             self.smart_profile.reset_all()
@@ -974,8 +979,10 @@ class TrainingSession:
                 item.manual_forced_player_color = inherited_manual_metadata['manual_forced_player_color']
             impact_summary = f'Updated review item; urgency is now {item.urgency_tier}.'
         decision = self.router.stubborn_extreme_repeat(self.active_profile_id, item) if item.pending_forced_stubborn_repeat else self.router.immediate_retry(self.active_profile_id, item)
+        self.router.record_review_result(self.active_profile_id, self.current_routing.routing_source if self.current_routing else '', was_miss=True)
         item.pending_forced_stubborn_repeat = False
         self._save_items(items)
+        self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))
         self.review_storage.append_history(
             self.active_profile_id,
             event_to_dict(
@@ -1019,8 +1026,10 @@ class TrainingSession:
         if item is None:
             return 'No review item changed; routed item no longer exists.', 'ordinary_corpus_play'
         apply_success(item, self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')
+        self.router.record_review_result(self.active_profile_id, self.current_routing.routing_source if self.current_routing else '', was_miss=False)
         self._save_items(items)
         next_decision = self.router.select(self.active_profile_id, items)
+        self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))
         routed_by = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
         self.review_storage.append_history(
             self.active_profile_id,

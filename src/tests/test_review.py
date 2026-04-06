@@ -398,6 +398,21 @@ def test_persistence_upgrade_defaults_new_frequency_and_srs_fields(tmp_path):
     assert item.srs_last_result == 'none'
 
 
+def test_router_state_migrates_from_flat_tier_membership_without_flush(tmp_path):
+    storage = ReviewStorage(tmp_path / 'runtime' / 'profiles')
+    session = TrainingSession(review_storage=storage)
+    items = [_due_item(f'legacy-{idx}', 'ordinary_review') for idx in range(8)]
+    storage.save_items(session.active_profile_id, items)
+
+    session.start_new_game()
+
+    controller = storage.load_router_state(session.active_profile_id)
+    due = controller['D']
+    assert due['capacity'] == 5
+    assert len(due['active_deck']) == 5
+    assert len(due['waiting_queue']) == 3
+
+
 def test_frequency_threshold_contract_exact_transitions():
     item = ReviewItem.create('default', 'freq', 'fen', 'white', 'fail', 'e2e4', [], [ReviewPathMove(0, 'white', 'e2e4', 'e4', 'fen')])
     assert item.urgency_tier == 'ordinary_review'
