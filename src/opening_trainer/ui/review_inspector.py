@@ -16,6 +16,13 @@ class ReviewInspector(ttk.Frame):
         'manual_color',
         'manual_reach',
         'urgency',
+        'tier_membership',
+        'tier_queue_position',
+        'tier_capacity',
+        'tier_active_size',
+        'tier_waiting_size',
+        'tier_round_seen',
+        'tier_round_miss',
         'frequency_state',
         'due',
         'srs_stage',
@@ -164,8 +171,29 @@ class ReviewInspector(ttk.Frame):
         elif tier != 'all':
             items = [item for item in items if item.urgency_tier == tier]
         tier_rank = {'extreme_urgency': 0, 'boosted_review': 1, 'ordinary_review': 2}
+        controller_state = self.session.review_storage.load_router_state(self.session.active_profile_id) if hasattr(self.session.review_storage, 'load_router_state') else {}
+
+        def _controller_for_item(item):
+            category = 'D' if item.urgency_tier == 'ordinary_review' and item.hijack_stage == 'none' else ('B' if item.urgency_tier == 'boosted_review' else ('E' if item.urgency_tier == 'extreme_urgency' else None))
+            if category is None:
+                return None, None
+            state = controller_state.get(category, {})
+            active = list(state.get('active_deck', []))
+            waiting = list(state.get('waiting_queue', []))
+            if item.review_item_id in active:
+                return category, ('active', active.index(item.review_item_id), state, active, waiting)
+            if item.review_item_id in waiting:
+                return category, ('waiting', waiting.index(item.review_item_id), state, active, waiting)
+            return category, ('inactive', None, state, active, waiting)
+
         items.sort(key=lambda item: (tier_rank.get(item.urgency_tier, 3), item.due_at_utc, -item.consecutive_failures, item.last_seen_at_utc, item.review_item_id))
         for item in items:
+            tier_category, controller = _controller_for_item(item)
+            membership = controller[0] if controller else 'n/a'
+            queue_position = controller[1] if controller else '—'
+            state = controller[2] if controller else {}
+            active = controller[3] if controller else []
+            waiting = controller[4] if controller else []
             self.tree.insert(
                 '',
                 'end',
@@ -178,6 +206,13 @@ class ReviewInspector(ttk.Frame):
                     item.manual_forced_player_color if item.origin_kind == 'manual_target' else '—',
                     item.allow_below_threshold_reach if item.origin_kind == 'manual_target' else '—',
                     item.urgency_tier,
+                    membership,
+                    queue_position,
+                    state.get('capacity', '—'),
+                    len(active),
+                    len(waiting),
+                    state.get('round_seen_count', '—'),
+                    state.get('round_miss_count', '—'),
                     item.frequency_state,
                     'due' if item.due_at_utc <= item.updated_at_utc else 'scheduled',
                     item.srs_stage_index,

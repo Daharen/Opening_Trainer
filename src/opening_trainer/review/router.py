@@ -34,6 +34,13 @@ HIJACK_PASS_RULES = {
     HijackStage.H20.value: {1, 3, 4, 5},
 }
 ORDINARY_DUE_STARVATION_THRESHOLD = 8
+PRESSURE_TIER_DEFAULT_CAPACITY = {'D': 5, 'B': 3, 'E': 2}
+PRESSURE_TIERS = ('D', 'B', 'E')
+PRESSURE_ROUTING_TO_CATEGORY = {
+    RoutingSource.SCHEDULED_REVIEW.value: 'D',
+    RoutingSource.BOOSTED_REVIEW.value: 'B',
+    RoutingSource.EXTREME.value: 'E',
+}
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,18 @@ class DeckState:
         return token
 
 
+@dataclass
+class PressureTierControllerState:
+    capacity: int
+    active_deck: list[str] = field(default_factory=list)
+    waiting_queue: list[str] = field(default_factory=list)
+    round_seen_count: int = 0
+    round_miss_count: int = 0
+    round_target_size: int = 0
+    active_insert_serials: dict[str, int] = field(default_factory=dict)
+    next_insert_serial: int = 1
+
+
 class ReviewRouter:
     def __init__(self, config: RoutingConfig | None = None):
         self.config = config or RoutingConfig()
@@ -72,6 +91,7 @@ class ReviewRouter:
         self.srs_due_queue: deque[str] = deque()
         self.deck_counts: dict[str, int] = {category: 0 for category in CATEGORY_PRIORITY[::-1]}
         self.last_shares: tuple[float, float] = (1.0, 0.0)
+        self.profile_pressure_state: dict[str, dict[str, PressureTierControllerState]] = {}
 
     @staticmethod
     def _queue_sort_key(item) -> tuple[str, str, str]:
@@ -206,6 +226,8 @@ class ReviewRouter:
 
     def _sync_queues(self, tier_items: dict[str, list], ids_by_tier: dict[str, set[str]]) -> None:
         for category in REVIEW_CATEGORIES:
+            if category in PRESSURE_TIERS:
+                continue
             queue = self.tier_queues[category]
             allowed = ids_by_tier[category]
             retained = [item_id for item_id in queue if item_id in allowed]
@@ -416,6 +438,117 @@ class ReviewRouter:
         self.tier_queues['H80'].append(item.review_item_id)
         self.pending_rebuild_trigger = 'HIJACK_REVIVED'
 
+    def export_profile_state(self, profile_id: str) -> dict[str, dict]:
+        profile_state = self.profile_pressure_state.get(profile_id, {})
+        return {
+            category: {
+                'capacity': state.capacity,
+                'active_deck': list(state.active_deck),
+                'waiting_queue': list(state.waiting_queue),
+                'round_seen_count': state.round_seen_count,
+                'round_miss_count': state.round_miss_count,
+                'round_target_size': state.round_target_size,
+                'active_insert_serials': dict(state.active_insert_serials),
+                'next_insert_serial': state.next_insert_serial,
+            }
+            for category, state in profile_state.items()
+        }
+
+    def import_profile_state(self, profile_id: str, payload: dict[str, dict] | None) -> None:
+        state: dict[str, PressureTierControllerState] = {}
+        for category in PRESSURE_TIERS:
+            row = (payload or {}).get(category, {})
+            capacity = max(2, int(row.get('capacity', PRESSURE_TIER_DEFAULT_CAPACITY[category])))
+            controller = PressureTierControllerState(
+                capacity=capacity,
+                active_deck=list(row.get('active_deck', [])),
+                waiting_queue=list(row.get('waiting_queue', [])),
+                round_seen_count=max(0, int(row.get('round_seen_count', 0))),
+                round_miss_count=max(0, int(row.get('round_miss_count', 0))),
+                round_target_size=max(0, int(row.get('round_target_size', 0))),
+                active_insert_serials={str(k): int(v) for k, v in dict(row.get('active_insert_serials', {})).items()},
+                next_insert_serial=max(1, int(row.get('next_insert_serial', 1))),
+            )
+            state[category] = controller
+        self.profile_pressure_state[profile_id] = state
+
+    def clear_profile_state(self, profile_id: str) -> None:
+        self.profile_pressure_state.pop(profile_id, None)
+
+    def _ensure_pressure_state(self, profile_id: str) -> dict[str, PressureTierControllerState]:
+        if profile_id not in self.profile_pressure_state:
+            self.profile_pressure_state[profile_id] = {
+                category: PressureTierControllerState(capacity=PRESSURE_TIER_DEFAULT_CAPACITY[category])
+                for category in PRESSURE_TIERS
+            }
+        return self.profile_pressure_state[profile_id]
+
+    def _sync_pressure_tier(self, state: PressureTierControllerState, tier_items: list) -> None:
+        allowed_ids = {item.review_item_id for item in tier_items}
+        retained_active = [item_id for item_id in state.active_deck if item_id in allowed_ids]
+        retained_waiting = [item_id for item_id in state.waiting_queue if item_id in allowed_ids and item_id not in retained_active]
+        state.active_deck = retained_active
+        state.waiting_queue = retained_waiting
+        state.active_insert_serials = {item_id: serial for item_id, serial in state.active_insert_serials.items() if item_id in state.active_deck}
+        existing = set(state.active_deck) | set(state.waiting_queue)
+        for item in tier_items:
+            item_id = item.review_item_id
+            if item_id in existing:
+                continue
+            if len(state.active_deck) < state.capacity:
+                state.active_deck.append(item_id)
+                state.active_insert_serials[item_id] = state.next_insert_serial
+                state.next_insert_serial += 1
+            else:
+                state.waiting_queue.append(item_id)
+            existing.add(item_id)
+        if state.round_target_size > len(state.active_deck):
+            state.round_target_size = len(state.active_deck)
+        if state.round_seen_count > state.round_target_size:
+            state.round_seen_count = state.round_target_size
+
+    def _finalize_round_if_complete(self, state: PressureTierControllerState) -> None:
+        if state.round_target_size <= 0 or state.round_seen_count < state.round_target_size:
+            return
+        if state.round_miss_count == 0:
+            state.capacity += 1
+        elif state.round_miss_count >= 2:
+            state.capacity = max(2, state.capacity - 1)
+        while len(state.active_deck) < state.capacity and state.waiting_queue:
+            promoted = state.waiting_queue.pop(0)
+            state.active_deck.append(promoted)
+            state.active_insert_serials[promoted] = state.next_insert_serial
+            state.next_insert_serial += 1
+        while len(state.active_deck) > state.capacity:
+            newest = max(state.active_deck, key=lambda item_id: state.active_insert_serials.get(item_id, 0))
+            state.active_deck.remove(newest)
+            state.active_insert_serials.pop(newest, None)
+            state.waiting_queue.insert(0, newest)
+        state.round_seen_count = 0
+        state.round_miss_count = 0
+        state.round_target_size = 0
+
+    def record_presented_review(self, profile_id: str, category: str, review_item_id: str) -> None:
+        if category not in PRESSURE_TIERS:
+            return
+        state = self._ensure_pressure_state(profile_id)[category]
+        if review_item_id not in state.active_deck:
+            return
+        if state.round_target_size == 0:
+            state.round_target_size = len(state.active_deck)
+        state.round_seen_count += 1
+
+    def record_review_result(self, profile_id: str, routing_source: str, was_miss: bool) -> None:
+        category = PRESSURE_ROUTING_TO_CATEGORY.get(routing_source)
+        if category is None:
+            return
+        state = self._ensure_pressure_state(profile_id)[category]
+        if state.round_target_size == 0:
+            return
+        if was_miss:
+            state.round_miss_count += 1
+        self._finalize_round_if_complete(state)
+
     def select(self, profile_id: str, items: list) -> RoutingDecision:
         manual_targets = [
             item for item in items
@@ -510,10 +643,17 @@ class ReviewRouter:
             'B': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.BOOSTED.value and due_state(i.due_at_utc) == 'due'], key=self._queue_sort_key),
             'E': sorted([i for i in pressure_items if i.urgency_tier == UrgencyTier.EXTREME.value and due_state(i.due_at_utc) == 'due'], key=self._queue_sort_key),
         }
+        pressure_state = self._ensure_pressure_state(profile_id)
+        for category in PRESSURE_TIERS:
+            self._sync_pressure_tier(pressure_state[category], tier_items[category])
+            self.tier_queues[category] = deque(pressure_state[category].active_deck)
         ids_by_tier = {category: {item.review_item_id for item in bucket} for category, bucket in tier_items.items()}
         self._sync_queues(tier_items, ids_by_tier)
         self._track_state_changes(ids_by_tier)
         counts_by_category = {category: len(tier_items[category]) for category in REVIEW_CATEGORIES}
+        counts_by_category['D'] = len(pressure_state['D'].active_deck)
+        counts_by_category['B'] = len(pressure_state['B'].active_deck)
+        counts_by_category['E'] = len(pressure_state['E'].active_deck)
         due_count = counts_by_category['D']
         boosted_count, extreme_count = counts_by_category['B'], counts_by_category['E']
         total_due = due_count + boosted_count + extreme_count
@@ -540,7 +680,10 @@ class ReviewRouter:
                     break
 
         if selected_category in REVIEW_CATEGORIES:
-            queue = self.tier_queues[selected_category]
+            if selected_category in PRESSURE_TIERS:
+                queue = deque(pressure_state[selected_category].active_deck)
+            else:
+                queue = self.tier_queues[selected_category]
             queue_before = 0
             if selected_category == 'D':
                 starved = self._ordinary_due_starved_items(tier_items['D'])
@@ -560,11 +703,17 @@ class ReviewRouter:
                 queue.append(item_id)
 
             queue_after = len(queue) - 1
+            if selected_category in PRESSURE_TIERS:
+                pressure_state[selected_category].active_deck = list(queue)
+                self.tier_queues[selected_category] = deque(queue)
             selected_item = next(item for item in tier_items[selected_category] if item.review_item_id == item_id)
             if selected_category == 'D':
                 selected_item.skipped_review_slots = 0
             if token in REVIEW_CATEGORIES:
                 self._increment_due_skipped_slots(tier_items['D'], selected_item.review_item_id if selected_category == 'D' else None)
+            if selected_category in PRESSURE_TIERS:
+                self.record_presented_review(profile_id, selected_category, selected_item.review_item_id)
+                self.tier_queues[selected_category] = deque(pressure_state[selected_category].active_deck)
 
             if selected_category in H_CATEGORIES:
                 ticker = self._advance_hijack_ticker(selected_item)

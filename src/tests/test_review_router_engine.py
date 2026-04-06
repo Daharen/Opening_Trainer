@@ -236,3 +236,35 @@ def test_dormant_items_are_excluded_and_can_revive():
     router.revive_dormant(item)
     assert item.hijack_stage == 'h80'
     assert item.dormant is False
+
+
+def test_pressure_tiers_start_with_capacity_limited_active_decks_and_waiting_fifo():
+    router = ReviewRouter()
+    due_items = [_item(f'd{i}', 'ordinary_review') for i in range(7)]
+    router.select('default', due_items)
+    state = router.export_profile_state('default')['D']
+    assert state['capacity'] == 5
+    assert len(state['active_deck']) == 5
+    assert len(state['waiting_queue']) == 2
+    assert set(state['active_deck']).isdisjoint(set(state['waiting_queue']))
+
+
+def test_round_end_capacity_tuning_and_backfill_is_deterministic():
+    router = ReviewRouter()
+    items = [_item(f'd{i}', 'ordinary_review') for i in range(8)]
+    router.select('default', items)
+    state = router.export_profile_state('default')['D']
+    active = list(state['active_deck'])
+    for review_item_id in active:
+        router.record_presented_review('default', 'D', review_item_id)
+        router.record_review_result('default', 'scheduled_review', was_miss=False)
+    after_growth = router.export_profile_state('default')['D']
+    assert after_growth['capacity'] == 6
+    assert len(after_growth['active_deck']) == 6
+    for index, review_item_id in enumerate(after_growth['active_deck']):
+        router.record_presented_review('default', 'D', review_item_id)
+        router.record_review_result('default', 'scheduled_review', was_miss=index < 2)
+    after_shrink = router.export_profile_state('default')['D']
+    assert after_shrink['capacity'] == 5
+    assert len(after_shrink['active_deck']) == 5
+    assert len(after_shrink['waiting_queue']) >= 1
