@@ -64,6 +64,7 @@ ANIMATION_LOG_PREFIX = 'GUI_ANIM'
 PLAYER_COMMITTED_MOVE_DURATION_MS = 240
 OPPONENT_COMMITTED_MOVE_DURATION_MS = 220
 LIVE_CLOCK_REFRESH_INTERVAL_MS = 150
+SHUTDOWN_PHASE_TIMEOUT_SECONDS = 3.0
 PAUSE_OVERLAY_BG = '#111111'
 PAUSE_OVERLAY_FG = '#f5f5f5'
 
@@ -134,6 +135,9 @@ class OpeningTrainerGUI:
         self.timing_override_dialog = TimingOverrideDialog(self.root, self.session)
         self._shutdown_started = False
         self._is_shutting_down = False
+        self._shutdown_finished = False
+        self._shutdown_tk_thread_ident = threading.get_ident()
+        self._shutdown_phase_complete: set[str] = set()
         self._after_handles: set[str] = set()
         self._pending_opponent_after_handle = None
         self._board_animation_after_handle = None
@@ -2552,41 +2556,182 @@ class OpeningTrainerGUI:
 
     def _shutdown_coordinator(self, reason: str) -> None:
         if getattr(self, '_shutdown_started', False):
+            log_line(f'APP_SHUTDOWN_REENTRY_IGNORED: reason={reason}', tag='startup')
             return
         self._shutdown_started = True
         self._is_shutting_down = True
         if reason == "apply_update":
             log_line("GUI_UPDATE_AUTHORITATIVE_SHUTDOWN_REQUESTED", tag="startup")
         log_line(f'APP_SHUTDOWN_BEGIN: reason={reason}', tag='startup')
+        self._run_shutdown_phase(
+            'cancel_timers',
+            begin_marker='APP_SHUTDOWN_CANCEL_TIMERS_BEGIN',
+            done_marker='APP_SHUTDOWN_CANCEL_TIMERS_DONE',
+            action=self._shutdown_cancel_timers_phase,
+        )
+        self._run_shutdown_phase(
+            'close_dialogs',
+            begin_marker='APP_SHUTDOWN_DIALOGS_BEGIN',
+            done_marker='APP_SHUTDOWN_DIALOGS_DONE',
+            action=self._shutdown_dialogs_phase,
+        )
+        self._run_shutdown_phase(
+            'engine',
+            begin_marker='ENGINE_SHUTDOWN_BEGIN',
+            done_marker='ENGINE_SHUTDOWN_COMPLETE',
+            action=self._shutdown_engine_phase,
+        )
+        self._run_shutdown_phase(
+            'session',
+            begin_marker='APP_SHUTDOWN_SESSION_BEGIN',
+            done_marker='APP_SHUTDOWN_SESSION_DONE',
+            action=self._shutdown_session_phase,
+        )
+        self._run_shutdown_phase(
+            'guard_release',
+            begin_marker='APP_SHUTDOWN_GUARD_RELEASE_BEGIN',
+            done_marker='APP_SHUTDOWN_GUARD_RELEASED',
+            action=self._shutdown_guard_release_phase,
+        )
+        self._run_shutdown_phase(
+            'root_destroy',
+            begin_marker='APP_SHUTDOWN_ROOT_DESTROY_BEGIN',
+            done_marker='APP_SHUTDOWN_ROOT_DESTROYED',
+            action=self._shutdown_root_destroy_phase,
+        )
+        self._run_shutdown_phase(
+            'finalize',
+            begin_marker='APP_SHUTDOWN_FINALIZE_BEGIN',
+            done_marker='APP_SHUTDOWN_COMPLETE',
+            action=self._shutdown_finalize_phase,
+        )
+
+    def _run_shutdown_phase(
+        self,
+        phase: str,
+        *,
+        begin_marker: str,
+        done_marker: str,
+        action,
+    ) -> None:
+        completed = getattr(self, '_shutdown_phase_complete', None)
+        if completed is None:
+            completed = set()
+            self._shutdown_phase_complete = completed
+        if phase in completed:
+            return
+        log_line(begin_marker, tag='startup')
+        try:
+            action()
+        except Exception as exc:  # noqa: BLE001
+            log_line(
+                f'APP_SHUTDOWN_PHASE_FAILED: phase={phase}; exception_class={exc.__class__.__name__}; '
+                f'error={exc}; continuing=yes',
+                tag='error',
+            )
+        finally:
+            completed.add(phase)
+            log_line(done_marker, tag='startup')
+
+    def _shutdown_cancel_timers_phase(self) -> None:
         self._stop_live_clock_refresh()
         self._destroy_pause_surface()
         self._cancel_pending_opponent_callback()
         self._clear_board_transients(reason='shutdown')
         self._cancel_after_handles()
-        log_line('APP_SHUTDOWN_CANCEL_TIMERS_DONE', tag='startup')
+
+    def _shutdown_dialogs_phase(self) -> None:
         self._close_optional_component('dev_console')
         self._close_optional_component('timing_override_dialog')
         self._close_child_windows()
-        log_line('APP_SHUTDOWN_DIALOGS_DONE', tag='startup')
-        log_line('ENGINE_SHUTDOWN_BEGIN', tag='startup')
-        try:
-            session = getattr(self, 'session', None)
-            if session is not None:
-                session.close()
-        finally:
-            log_line('ENGINE_SHUTDOWN_COMPLETE', tag='startup')
-        log_line('APP_SHUTDOWN_SESSION_DONE', tag='startup')
+
+    def _shutdown_engine_phase(self) -> None:
+        session = getattr(self, 'session', None)
+        if session is None:
+            return
+        close = getattr(session, 'close', None)
+        if not callable(close):
+            return
+        self._run_bounded_shutdown_call(
+            phase='engine',
+            operation='session.close',
+            action=close,
+            timeout_seconds=SHUTDOWN_PHASE_TIMEOUT_SECONDS,
+        )
+
+    def _shutdown_session_phase(self) -> None:
+        session = getattr(self, 'session', None)
+        flush = getattr(session, 'flush_shutdown_state', None) if session is not None else None
+        if callable(flush):
+            self._run_bounded_shutdown_call(
+                phase='session',
+                operation='session.flush_shutdown_state',
+                action=flush,
+                timeout_seconds=SHUTDOWN_PHASE_TIMEOUT_SECONDS,
+            )
+
+    def _shutdown_guard_release_phase(self) -> None:
         remove_instance_diagnostics()
         release_single_instance_guard()
-        log_line('APP_SHUTDOWN_GUARD_RELEASED', tag='startup')
+
+    def _shutdown_root_destroy_phase(self) -> None:
         root = getattr(self, 'root', None)
-        if root is not None:
+        if root is None:
+            return
+        tk_thread_ident = getattr(self, '_shutdown_tk_thread_ident', None)
+        if tk_thread_ident is None:
+            tk_thread_ident = threading.get_ident()
+            self._shutdown_tk_thread_ident = tk_thread_ident
+        if threading.get_ident() != tk_thread_ident:
+            after = getattr(root, 'after', None)
+            if callable(after):
+                after(0, self._shutdown_root_destroy_phase)
+            else:
+                log_line('APP_SHUTDOWN_ROOT_DESTROY_DEFERRED_UNAVAILABLE: continuing=yes', tag='error')
+            return
+        try:
+            root.destroy()
+        except Exception as exc:  # noqa: BLE001
+            log_line(f'APP_SHUTDOWN_ROOT_DESTROY_FAILED: {exc}', tag='error')
+
+    def _shutdown_finalize_phase(self) -> None:
+        self._shutdown_finished = True
+
+    def _run_bounded_shutdown_call(
+        self,
+        *,
+        phase: str,
+        operation: str,
+        action,
+        timeout_seconds: float,
+    ) -> None:
+        done = threading.Event()
+        failure: list[BaseException] = []
+
+        def invoke() -> None:
             try:
-                root.destroy()
-                log_line('APP_SHUTDOWN_ROOT_DESTROYED', tag='startup')
-            except Exception as exc:  # noqa: BLE001
-                log_line(f'APP_SHUTDOWN_ROOT_DESTROY_FAILED: {exc}', tag='error')
-        log_line('APP_SHUTDOWN_COMPLETE', tag='startup')
+                action()
+            except BaseException as exc:  # noqa: BLE001
+                failure.append(exc)
+            finally:
+                done.set()
+
+        worker = threading.Thread(
+            target=invoke,
+            name=f'ot_shutdown_{phase}',
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=timeout_seconds)
+        if not done.is_set():
+            log_line(
+                f'APP_SHUTDOWN_PHASE_TIMEOUT: phase={phase}; operation={operation}; '
+                f'timeout_seconds={timeout_seconds}; continuing=yes',
+                tag='error',
+            )
+            return
+        if failure:
+            raise RuntimeError(f'{operation} failed') from failure[0]
 
     def _set_updater_status_text(self, message: str) -> None:
         status_window = getattr(self, "_updater_status_window", None)
@@ -2789,7 +2934,6 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-
 
 
 
