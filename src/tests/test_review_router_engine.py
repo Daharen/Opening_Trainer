@@ -70,6 +70,55 @@ def test_outer_share_training_hard_cap_is_90_percent():
     assert _shares(router, 30, 3, 4) == pytest.approx((0.10, 0.90))
 
 
+def test_outer_share_uses_boosted_waiting_items_in_live_obligation_counts():
+    router = ReviewRouter()
+    boosted_items = [_item(f'b{i}', 'boosted_review') for i in range(4)]
+    router.import_profile_state(
+        'default',
+        {
+            'B': {
+                'capacity': 2,
+                'active_deck': [boosted_items[0].review_item_id, boosted_items[1].review_item_id],
+                'waiting_queue': [boosted_items[2].review_item_id, boosted_items[3].review_item_id],
+            },
+            'D': {'capacity': 5, 'active_deck': [], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    router.select('default', boosted_items)
+
+    breakdown = router.last_share_breakdown
+    assert breakdown['boosted_active'] == 2
+    assert breakdown['boosted_total'] == 4
+    assert router.last_shares[1] == pytest.approx(0.56)
+    assert router.last_shares[0] == pytest.approx(0.44)
+
+
+def test_outer_share_uses_due_waiting_items_in_live_obligation_counts():
+    router = ReviewRouter()
+    due_items = [_item(f'd{i}', 'ordinary_review') for i in range(8)]
+    router.import_profile_state(
+        'default',
+        {
+            'D': {
+                'capacity': 4,
+                'active_deck': [item.review_item_id for item in due_items[:4]],
+                'waiting_queue': [item.review_item_id for item in due_items[4:]],
+            },
+            'B': {'capacity': 3, 'active_deck': [], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    router.select('default', due_items)
+
+    breakdown = router.last_share_breakdown
+    assert breakdown['due_active'] == 4
+    assert breakdown['due_total'] == 8
+    assert breakdown['training_pct'] == 70
+    assert router.last_shares[1] == pytest.approx(0.70)
+    assert router.last_shares[0] == pytest.approx(0.30)
+
+
 def test_tier_weighting_changes_review_distribution():
     router = ReviewRouter()
     shares = router._compute_shares(1, 0, 0, 0, 0, 1, 1)
