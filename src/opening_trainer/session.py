@@ -190,6 +190,12 @@ class TrainingSession:
         boosted_active = list(pressure_state.get('B', {}).get('active_deck', []))
         urgent_active = list(pressure_state.get('E', {}).get('active_deck', []))
         ordered_active = due_active + boosted_active + urgent_active
+        stable_deck = pressure_state.get('stable_review_deck', {})
+        live_card_counts: dict[str, int] = {}
+        for card in stable_deck.get('cards', []):
+            item_id = str(card.get('review_item_id', ''))
+            if item_id:
+                live_card_counts[item_id] = live_card_counts.get(item_id, 0) + 1
         deck_card_multiplicity = {'ordinary_review': 1, 'boosted_review': 2, 'extreme_urgency': 4}
         active_rows: list[dict[str, object]] = []
         for item_id in ordered_active:
@@ -201,9 +207,7 @@ class TrainingSession:
                     'review_item_id': item.review_item_id,
                     'position': item.position_key,
                     'frequency_state': item.frequency_state,
-                    # NOTE: Per-item live deck ownership is not exposed by the runtime deck model yet.
-                    # Inspector falls back to authoritative current frequency-tier multiplicity.
-                    'deck_cards': deck_card_multiplicity.get(item.urgency_tier, 1),
+                    'deck_cards': live_card_counts.get(item.review_item_id, deck_card_multiplicity.get(item.urgency_tier, 1)),
                     'fails': item.consecutive_failures,
                     'success_streak': item.success_streak,
                     'tier': item.urgency_tier,
@@ -229,11 +233,11 @@ class TrainingSession:
                 'due_capacity': pressure_state.get('D', {}).get('capacity', 0),
                 'boosted_capacity': pressure_state.get('B', {}).get('capacity', 0),
                 'urgent_capacity': pressure_state.get('E', {}).get('capacity', 0),
-                'deck_cursor': getattr(getattr(self.router, 'deck', None), 'index', None),
+                'deck_cursor': stable_deck.get('cursor', getattr(getattr(self.router, 'deck', None), 'index', None)),
                 'last_mutation_reason': self._inspector_last_mutation_reason,
                 'last_routing_action': self._inspector_last_routing_action,
             },
-            'card_count_source': 'tier_multiplicity_fallback',
+            'card_count_source': 'live_deck_cards' if live_card_counts else 'tier_multiplicity_fallback',
         }
 
     def _emit_pressure_state_changes(self) -> None:

@@ -31,6 +31,16 @@ def test_snapshot_uses_urgent_multiplicity_fallback() -> None:
             'D': {'active_deck': ['d1'], 'waiting_queue': [], 'round_seen_count': 2, 'round_miss_count': 0, 'capacity': 5},
             'B': {'active_deck': [], 'waiting_queue': [], 'round_seen_count': 0, 'round_miss_count': 0, 'capacity': 3},
             'E': {'active_deck': ['u1'], 'waiting_queue': ['u2'], 'round_seen_count': 1, 'round_miss_count': 1, 'capacity': 2},
+            'stable_review_deck': {
+                'cards': [
+                    {'layer': 0, 'review_item_id': 'd1'},
+                    {'layer': 0, 'review_item_id': 'u1'},
+                    {'layer': 1, 'review_item_id': 'u1'},
+                    {'layer': 2, 'review_item_id': 'u1'},
+                    {'layer': 3, 'review_item_id': 'u1'},
+                ],
+                'cursor': 3,
+            },
         },
         deck=SimpleNamespace(index=7),
     )
@@ -42,7 +52,7 @@ def test_snapshot_uses_urgent_multiplicity_fallback() -> None:
     rows = {row['review_item_id']: row for row in snapshot['active_rows']}
     assert rows['u1']['deck_cards'] == 4
     assert rows['d1']['deck_cards'] == 1
-    assert snapshot['card_count_source'] == 'tier_multiplicity_fallback'
+    assert snapshot['card_count_source'] == 'live_deck_cards'
 
 
 def test_palette_assignment_is_stable_for_existing_rows() -> None:

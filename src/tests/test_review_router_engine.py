@@ -268,3 +268,37 @@ def test_round_end_capacity_tuning_and_backfill_is_deterministic():
     assert after_shrink['capacity'] == 5
     assert len(after_shrink['active_deck']) == 5
     assert len(after_shrink['waiting_queue']) >= 1
+
+
+def test_new_failure_enters_waiting_when_tier_full_without_displacing_active():
+    router = ReviewRouter()
+    items = [_item(f'b{i}', 'boosted_review') for i in range(5)]
+    router.select('default', items[:3])
+    before = router.export_profile_state('default')['B']
+    router.select('default', items)
+    after = router.export_profile_state('default')['B']
+    assert after['active_deck'] == before['active_deck']
+    assert items[3].review_item_id in after['waiting_queue']
+    assert items[4].review_item_id in after['waiting_queue']
+
+
+def test_cross_tier_active_mover_displaces_newest_destination_active_to_waiting_front():
+    router = ReviewRouter()
+    due_items = [_item(f'd{i}', 'ordinary_review') for i in range(5)]
+    boosted = [_item(f'b{i}', 'boosted_review') for i in range(3)]
+    router.select('default', due_items + boosted)
+    moved = due_items[0]
+    moved.urgency_tier = 'boosted_review'
+    router.select('default', due_items + boosted)
+    state = router.export_profile_state('default')['B']
+    assert moved.review_item_id in state['active_deck']
+    assert state['waiting_queue'][0] in {item.review_item_id for item in boosted}
+
+
+def test_urgent_items_have_four_live_cards_in_stable_deck():
+    router = ReviewRouter()
+    urgent = _item('u', 'extreme_urgency')
+    router.select('default', [urgent])
+    state = router.export_profile_state('default')
+    cards = [row for row in state['stable_review_deck']['cards'] if row['review_item_id'] == urgent.review_item_id]
+    assert len(cards) == 4
