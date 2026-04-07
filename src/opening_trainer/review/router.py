@@ -110,6 +110,19 @@ class ReviewRouter:
         self.srs_due_queue: deque[str] = deque()
         self.deck_counts: dict[str, int] = {category: 0 for category in CATEGORY_PRIORITY[::-1]}
         self.last_shares: tuple[float, float] = (1.0, 0.0)
+        self.last_share_breakdown: dict[str, int] = {
+            'due_active': 0,
+            'boosted_active': 0,
+            'urgent_active': 0,
+            'due_equivalent': 0,
+            'boosted_equivalent': 0,
+            'urgent_equivalent': 0,
+            'due_pct': 0,
+            'boosted_pct': 0,
+            'urgent_pct': 0,
+            'training_pct': 0,
+            'corpus_pct': 100,
+        }
         self.profile_pressure_state: dict[str, dict[str, PressureTierControllerState]] = {}
         self.profile_review_decks: dict[str, StableReviewDeckState] = {}
 
@@ -151,7 +164,15 @@ class ReviewRouter:
         due_count: int,
         boosted_count: int,
         urgent_count: int,
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, dict[str, int]]:
+        breakdown = self._compute_share_breakdown(
+            due_count=due_count,
+            boosted_count=boosted_count,
+            urgent_count=urgent_count,
+        )
+        return (breakdown['corpus_pct'] / 100.0, breakdown['training_pct'] / 100.0, breakdown)
+
+    def _compute_share_breakdown(self, *, due_count: int, boosted_count: int, urgent_count: int) -> dict[str, int]:
         due_equivalent = due_count + boosted_count + urgent_count
         boosted_equivalent = boosted_count + urgent_count
         urgent_equivalent = urgent_count
@@ -162,16 +183,32 @@ class ReviewRouter:
         training_pct = due_pct + boosted_pct + urgent_pct
         training_pct = min(90, training_pct)
         corpus_pct = 100 - training_pct
-        return (corpus_pct / 100.0, training_pct / 100.0)
+        return {
+            'due_active': due_count,
+            'boosted_active': boosted_count,
+            'urgent_active': urgent_count,
+            'due_equivalent': due_equivalent,
+            'boosted_equivalent': boosted_equivalent,
+            'urgent_equivalent': urgent_equivalent,
+            'due_pct': due_pct,
+            'boosted_pct': boosted_pct,
+            'urgent_pct': urgent_pct,
+            'training_pct': training_pct,
+            'corpus_pct': corpus_pct,
+        }
 
-    def _compute_shares(self, d: int, h80: int, h60: int, h40: int, h20: int, b: int, e: int) -> dict[str, float]:
+    def _compute_shares(self, d: int, h80: int, h60: int, h40: int, h20: int, b: int, e: int) -> dict[str, object]:
         due_count = d + h80 + h60 + h40 + h20
         boosted_count = b
         urgent_count = e
         total_due = due_count + boosted_count + urgent_count
         if total_due == 0:
-            return {category: (1.0 if category == 'C' else 0.0) for category in ('C', *REVIEW_CATEGORIES)} | {'corpus': 1.0, 'review': 0.0}
-        corpus_share, review_share = self._compute_training_and_corpus_share_from_pressure_counts(
+            return {category: (1.0 if category == 'C' else 0.0) for category in ('C', *REVIEW_CATEGORIES)} | {
+                'corpus': 1.0,
+                'review': 0.0,
+                'share_breakdown': self._compute_share_breakdown(due_count=0, boosted_count=0, urgent_count=0),
+            }
+        corpus_share, review_share, breakdown = self._compute_training_and_corpus_share_from_pressure_counts(
             due_count=due_count,
             boosted_count=boosted_count,
             urgent_count=urgent_count,
@@ -187,8 +224,16 @@ class ReviewRouter:
         }
         mass_total = sum(masses.values())
         if mass_total == 0:
-            return {category: (1.0 if category == 'C' else 0.0) for category in ('C', *REVIEW_CATEGORIES)} | {'corpus': 1.0, 'review': 0.0}
-        out = {'C': corpus_share, 'corpus': corpus_share, 'review': review_share}
+            return {category: (1.0 if category == 'C' else 0.0) for category in ('C', *REVIEW_CATEGORIES)} | {
+                'corpus': 1.0,
+                'review': 0.0,
+                'share_breakdown': self._compute_share_breakdown(
+                    due_count=due_count,
+                    boosted_count=boosted_count,
+                    urgent_count=urgent_count,
+                ),
+            }
+        out = {'C': corpus_share, 'corpus': corpus_share, 'review': review_share, 'share_breakdown': breakdown}
         for category, mass in masses.items():
             out[category] = review_share * mass / mass_total
         return out
@@ -349,6 +394,7 @@ class ReviewRouter:
         self.deck = DeckState(tokens=deck, index=0)
         self.deck_counts = counts
         self.last_shares = (shares['corpus'], shares['review'])
+        self.last_share_breakdown = dict(shares.get('share_breakdown', self.last_share_breakdown))
         self.addition_counters = {'D': 0, 'B': 0}
         self.removal_counters = {'D': 0, 'B': 0}
 
