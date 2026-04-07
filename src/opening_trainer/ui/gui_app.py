@@ -55,6 +55,7 @@ from .move_list_panel import MoveListPanel
 from .outcome_modal import OutcomeModal
 from .profile_dialog import ProfileDialog
 from .review_inspector import ReviewInspector
+from .review_deck_inspector_window import ReviewDeckInspectorWindow
 from .timing_override_dialog import TimingOverrideDialog
 
 PROMOTION_CHOICES = {'q': chess.QUEEN, 'r': chess.ROOK, 'b': chess.BISHOP, 'n': chess.KNIGHT}
@@ -133,6 +134,7 @@ class OpeningTrainerGUI:
         self.session_logger = get_session_logger()
         self.dev_console = DevConsoleWindow(self.root, self.session_logger)
         self.timing_override_dialog = TimingOverrideDialog(self.root, self.session)
+        self.review_deck_inspector_window: ReviewDeckInspectorWindow | None = None
         self._shutdown_started = False
         self._is_shutting_down = False
         self._shutdown_finished = False
@@ -2086,6 +2088,7 @@ class OpeningTrainerGUI:
         menubar.add_cascade(label='Profiles', menu=profiles_menu)
         dev_menu = tk.Menu(menubar, tearoff=0)
         dev_menu.add_command(label='Open Dev Console', command=self._open_dev_console)
+        dev_menu.add_command(label='Review Deck Inspector', command=self._open_review_deck_inspector)
         dev_menu.add_command(label='Timing Override...', command=self._open_timing_override_dialog)
         dev_menu.add_command(label='Open Logs Folder', command=self._open_logs_folder)
         dev_menu.add_command(label='Copy Current Session Log Path', command=self._copy_session_log_path)
@@ -2096,6 +2099,15 @@ class OpeningTrainerGUI:
         dev_menu.add_command(label='Set Smart Profile Level…', command=self._set_smart_profile_level)
         menubar.add_cascade(label='Developer', menu=dev_menu)
         self.root.config(menu=menubar)
+
+    def _open_review_deck_inspector(self) -> None:
+        if self.review_deck_inspector_window is not None:
+            if self.review_deck_inspector_window.window.winfo_exists():
+                self.review_deck_inspector_window.focus()
+                return
+            self.review_deck_inspector_window = None
+        self.review_deck_inspector_window = ReviewDeckInspectorWindow(self.root, self.session, on_close=lambda: setattr(self, 'review_deck_inspector_window', None))
+        self._child_windows.append(self.review_deck_inspector_window.window)
 
     def _app_state_root(self) -> Path:
         runtime_paths = getattr(getattr(self.session, "runtime_context", None), "runtime_paths", None)
@@ -2934,8 +2946,6 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-
-
 
 
 
