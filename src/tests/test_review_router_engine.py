@@ -302,3 +302,73 @@ def test_urgent_items_have_four_live_cards_in_stable_deck():
     state = router.export_profile_state('default')
     cards = [row for row in state['stable_review_deck']['cards'] if row['review_item_id'] == urgent.review_item_id]
     assert len(cards) == 4
+
+
+def test_import_repairs_underfilled_tier_from_waiting_queue_on_load():
+    router = ReviewRouter()
+    payload = {
+        'B': {
+            'capacity': 3,
+            'active_deck': ['b0', 'b1'],
+            'waiting_queue': ['b2', 'b3'],
+        },
+        'D': {'capacity': 5, 'active_deck': [], 'waiting_queue': []},
+        'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        'stable_review_deck': {'cards': []},
+    }
+    router.import_profile_state('default', payload)
+    state = router.export_profile_state('default')
+    assert len(state['B']['active_deck']) == 3
+    assert state['B']['active_deck'] == ['b0', 'b1', 'b2']
+    assert state['B']['waiting_queue'] == ['b3']
+    assert len([row for row in state['stable_review_deck']['cards'] if row['review_item_id'] == 'b2']) == 2
+
+
+def test_boosted_vacancy_fills_exactly_one_item_with_exactly_two_cards():
+    router = ReviewRouter()
+    items = [_item(f'b{i}', 'boosted_review') for i in range(4)]
+    router.select('default', items)
+    state = router._ensure_pressure_state('default')['B']
+    removed = state.active_deck.pop()
+    state.active_insert_serials.pop(removed, None)
+    router._set_active_membership(router._ensure_review_deck('default'), removed, 'B', None)
+    before = router.export_profile_state('default')
+    router.select('default', items[:-1])
+    after = router.export_profile_state('default')
+    assert len(before['B']['active_deck']) == 2
+    assert len(after['B']['active_deck']) == 3
+    promoted = after['B']['active_deck'][-1]
+    assert promoted == before['B']['waiting_queue'][0]
+    assert len([row for row in after['stable_review_deck']['cards'] if row['review_item_id'] == promoted]) == 2
+
+
+def test_due_to_boosted_adds_one_card_and_boosted_to_due_removes_one():
+    router = ReviewRouter()
+    item = _item('x', 'ordinary_review')
+    router.select('default', [item])
+    state_due = router.export_profile_state('default')
+    assert len([row for row in state_due['stable_review_deck']['cards'] if row['review_item_id'] == item.review_item_id]) == 1
+    item.urgency_tier = 'boosted_review'
+    router.select('default', [item])
+    state_boosted = router.export_profile_state('default')
+    assert len([row for row in state_boosted['stable_review_deck']['cards'] if row['review_item_id'] == item.review_item_id]) == 2
+    item.urgency_tier = 'ordinary_review'
+    router.select('default', [item])
+    state_back_to_due = router.export_profile_state('default')
+    assert len([row for row in state_back_to_due['stable_review_deck']['cards'] if row['review_item_id'] == item.review_item_id]) == 1
+
+
+def test_boosted_to_urgent_adds_two_cards_and_deescalation_removes_two_only():
+    router = ReviewRouter()
+    item = _item('x', 'boosted_review')
+    router.select('default', [item])
+    boosted_state = router.export_profile_state('default')
+    assert len([row for row in boosted_state['stable_review_deck']['cards'] if row['review_item_id'] == item.review_item_id]) == 2
+    item.urgency_tier = 'extreme_urgency'
+    router.select('default', [item])
+    urgent_state = router.export_profile_state('default')
+    assert len([row for row in urgent_state['stable_review_deck']['cards'] if row['review_item_id'] == item.review_item_id]) == 4
+    item.urgency_tier = 'boosted_review'
+    router.select('default', [item])
+    deescalated = router.export_profile_state('default')
+    assert len([row for row in deescalated['stable_review_deck']['cards'] if row['review_item_id'] == item.review_item_id]) == 2

@@ -4,6 +4,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from math import floor
 
+from opening_trainer.session_logging import log_line
+
 from .models import (
     HijackStage,
     ManualPresentationMode,
@@ -87,6 +89,10 @@ class StableReviewDeckState:
     cursor: int = 0
     anchor_serials: dict[str, int] = field(default_factory=dict)
     next_anchor_serial: int = 1
+    last_mutation_reason: str = 'startup'
+    last_routing_action: str = 'not_started'
+    last_card_consumed_item_id: str | None = None
+    last_corpus_step: str | None = None
 
 
 class ReviewRouter:
@@ -481,7 +487,7 @@ class ReviewRouter:
                 insert_at = idx
                 break
         deck.cards.insert(insert_at, (layer, review_item_id))
-        if insert_at <= deck.cursor:
+        if insert_at < deck.cursor:
             deck.cursor += 1
 
     def _remove_card(self, deck: StableReviewDeckState, layer: int, review_item_id: str) -> None:
@@ -493,6 +499,11 @@ class ReviewRouter:
                 elif idx == deck.cursor and deck.cursor >= len(deck.cards):
                     deck.cursor = 0 if deck.cards else 0
                 return
+
+    def _record_deck_mutation(self, profile_id: str, reason: str) -> None:
+        deck = self._ensure_review_deck(profile_id)
+        deck.last_mutation_reason = reason
+        log_line(f'REVIEW_DECK_MUTATION profile={profile_id} reason={reason}', tag='review')
 
     def _set_active_membership(self, deck: StableReviewDeckState, review_item_id: str, old_category: str | None, new_category: str | None) -> None:
         old_layers = set(self._tier_layers(old_category or ''))
@@ -536,6 +547,10 @@ class ReviewRouter:
                 'cursor': stable_deck.cursor,
                 'anchor_serials': dict(stable_deck.anchor_serials),
                 'next_anchor_serial': stable_deck.next_anchor_serial,
+                'last_mutation_reason': stable_deck.last_mutation_reason,
+                'last_routing_action': stable_deck.last_routing_action,
+                'last_card_consumed_item_id': stable_deck.last_card_consumed_item_id,
+                'last_corpus_step': stable_deck.last_corpus_step,
             }
         return exported
 
@@ -568,6 +583,10 @@ class ReviewRouter:
             cursor=max(0, int(deck_payload.get('cursor', 0))),
             anchor_serials={str(k): int(v) for k, v in dict(deck_payload.get('anchor_serials', {})).items()},
             next_anchor_serial=max(1, int(deck_payload.get('next_anchor_serial', 1))),
+            last_mutation_reason=str(deck_payload.get('last_mutation_reason', 'migration_or_load')),
+            last_routing_action=str(deck_payload.get('last_routing_action', 'not_started')),
+            last_card_consumed_item_id=deck_payload.get('last_card_consumed_item_id'),
+            last_corpus_step=deck_payload.get('last_corpus_step'),
         )
         if not stable_deck.cards:
             for category in ('D', 'B', 'E'):
@@ -576,6 +595,8 @@ class ReviewRouter:
         if stable_deck.cursor >= len(stable_deck.cards):
             stable_deck.cursor = 0 if stable_deck.cards else 0
         self.profile_review_decks[profile_id] = stable_deck
+        for category in PRESSURE_TIERS:
+            self._ensure_tier_fill_invariant(profile_id, category, state[category], mutation_reason='fill_vacancy_from_waiting_on_load')
 
     def clear_profile_state(self, profile_id: str) -> None:
         self.profile_pressure_state.pop(profile_id, None)
@@ -609,7 +630,10 @@ class ReviewRouter:
                 if item_id not in allowed_ids:
                     state.active_deck.remove(item_id)
                     state.active_insert_serials.pop(item_id, None)
-                    self._set_active_membership(stable_deck, item_id, category, None)
+                    destination = target_membership.get(item_id)
+                    if destination not in PRESSURE_TIERS:
+                        self._set_active_membership(stable_deck, item_id, category, None)
+                    self._record_deck_mutation(profile_id, 'remove_ineligible_active_item')
             state.waiting_queue = [item_id for item_id in state.waiting_queue if item_id in allowed_ids and item_id not in state.active_deck]
             if state.round_target_size > len(state.active_deck):
                 state.round_target_size = len(state.active_deck)
@@ -633,11 +657,13 @@ class ReviewRouter:
                     dest_state.active_insert_serials.pop(newest, None)
                     dest_state.waiting_queue.insert(0, newest)
                     self._set_active_membership(stable_deck, newest, destination, None)
+                    self._record_deck_mutation(profile_id, 'privileged_cross_tier_displace_newest')
             if len(dest_state.active_deck) < dest_state.capacity:
                 dest_state.active_deck.append(item_id)
                 dest_state.active_insert_serials[item_id] = dest_state.next_insert_serial
                 dest_state.next_insert_serial += 1
                 self._set_active_membership(stable_deck, item_id, old_active_membership[item_id], destination)
+                self._record_deck_mutation(profile_id, 'privileged_cross_tier_insert')
 
         for category in PRESSURE_TIERS:
             state = pressure_state[category]
@@ -651,30 +677,47 @@ class ReviewRouter:
                     state.active_insert_serials[item_id] = state.next_insert_serial
                     state.next_insert_serial += 1
                     self._set_active_membership(stable_deck, item_id, None, category)
+                    self._record_deck_mutation(profile_id, 'admit_new_item_into_active')
                 else:
                     state.waiting_queue.append(item_id)
                 existing.add(item_id)
+            self._ensure_tier_fill_invariant(profile_id, category, state, mutation_reason='fill_vacancy_from_waiting')
 
-    def _finalize_round_if_complete(self, profile_id: str, category: str, state: PressureTierControllerState) -> None:
-        if state.round_target_size <= 0 or state.round_seen_count < state.round_target_size:
-            return
+    def _ensure_tier_fill_invariant(
+        self,
+        profile_id: str,
+        category: str,
+        state: PressureTierControllerState,
+        *,
+        mutation_reason: str,
+    ) -> None:
         stable_deck = self._ensure_review_deck(profile_id)
-        if state.round_miss_count == 0:
-            state.capacity += 1
-        elif state.round_miss_count >= 2:
-            state.capacity = max(2, state.capacity - 1)
         while len(state.active_deck) < state.capacity and state.waiting_queue:
             promoted = state.waiting_queue.pop(0)
             state.active_deck.append(promoted)
             state.active_insert_serials[promoted] = state.next_insert_serial
             state.next_insert_serial += 1
             self._set_active_membership(stable_deck, promoted, None, category)
+            self._record_deck_mutation(profile_id, mutation_reason)
+
+    def _finalize_round_if_complete(self, profile_id: str, category: str, state: PressureTierControllerState) -> None:
+        if state.round_target_size <= 0 or state.round_seen_count < state.round_target_size:
+            return
+        if state.round_miss_count == 0:
+            state.capacity += 1
+            self._record_deck_mutation(profile_id, 'capacity_growth')
+        elif state.round_miss_count >= 2:
+            state.capacity = max(2, state.capacity - 1)
+            self._record_deck_mutation(profile_id, 'capacity_shrink')
+        stable_deck = self._ensure_review_deck(profile_id)
         while len(state.active_deck) > state.capacity:
             newest = max(state.active_deck, key=lambda item_id: state.active_insert_serials.get(item_id, 0))
             state.active_deck.remove(newest)
             state.active_insert_serials.pop(newest, None)
             state.waiting_queue.insert(0, newest)
             self._set_active_membership(stable_deck, newest, category, None)
+            self._record_deck_mutation(profile_id, 'capacity_shrink_evict_newest')
+        self._ensure_tier_fill_invariant(profile_id, category, state, mutation_reason='fill_vacancy_from_waiting')
         state.round_seen_count = 0
         state.round_miss_count = 0
         state.round_target_size = 0
@@ -701,6 +744,7 @@ class ReviewRouter:
         self._finalize_round_if_complete(profile_id, category, state)
 
     def select(self, profile_id: str, items: list) -> RoutingDecision:
+        stable_deck = self._ensure_review_deck(profile_id)
         manual_targets = [
             item for item in items
             if item.origin_kind == 'manual_target'
@@ -722,6 +766,9 @@ class ReviewRouter:
                 predecessor_path=tuple(selected_item.predecessor_path),
                 routing_reason=RoutingSource.MANUAL_TARGET.value,
             )
+            stable_deck.last_routing_action = RoutingSource.MANUAL_TARGET.value
+            stable_deck.last_card_consumed_item_id = selected_item.review_item_id
+            stable_deck.last_corpus_step = None
             return RoutingDecision(
                 RoutingSource.MANUAL_TARGET.value,
                 selected_item.review_item_id,
@@ -761,6 +808,9 @@ class ReviewRouter:
                 predecessor_path=tuple(selected_item.predecessor_path),
                 routing_reason=RoutingSource.SRS_DUE_REVIEW.value,
             )
+            stable_deck.last_routing_action = RoutingSource.SRS_DUE_REVIEW.value
+            stable_deck.last_card_consumed_item_id = selected_item.review_item_id
+            stable_deck.last_corpus_step = None
             return RoutingDecision(
                 RoutingSource.SRS_DUE_REVIEW.value,
                 selected_item.review_item_id,
@@ -832,7 +882,6 @@ class ReviewRouter:
 
         if selected_category in REVIEW_CATEGORIES:
             if selected_category in PRESSURE_TIERS:
-                stable_deck = self._ensure_review_deck(profile_id)
                 item_id = None
                 if stable_deck.cards:
                     attempts = 0
@@ -909,6 +958,9 @@ class ReviewRouter:
                 if self._ticker_is_pass(selected_item.hijack_stage, ticker):
                     selected_item.last_hijack_routing_source = 'HIJACK_DECAY_PASS'
                     self._update_boundary('C', None)
+                    stable_deck.last_routing_action = RoutingSource.HIJACK_DECAY_PASS.value
+                    stable_deck.last_card_consumed_item_id = None
+                    stable_deck.last_corpus_step = 'hijack_decay_pass'
                     return RoutingDecision(
                         RoutingSource.HIJACK_DECAY_PASS.value,
                         None,
@@ -931,6 +983,9 @@ class ReviewRouter:
                     )
 
             routing_source = CATEGORY_TO_ROUTING[selected_category]
+            stable_deck.last_routing_action = routing_source
+            stable_deck.last_card_consumed_item_id = selected_item.review_item_id
+            stable_deck.last_corpus_step = None
             plan = ReviewPlan(
                 root_fen='startpos',
                 target_review_item_id=selected_item.review_item_id,
@@ -963,6 +1018,9 @@ class ReviewRouter:
             )
 
         self._update_boundary('C', None)
+        stable_deck.last_routing_action = RoutingSource.CORPUS.value
+        stable_deck.last_card_consumed_item_id = None
+        stable_deck.last_corpus_step = 'corpus_move_emitted'
         return RoutingDecision(
             RoutingSource.CORPUS.value,
             None,
