@@ -84,10 +84,6 @@ class ReviewInspector(ttk.Frame):
         ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
 
-    def apply_theme(self, palette: dict[str, str]) -> None:
-        self.configure(style='Shell.TFrame')
-        self.tree.configure(style='Review.Treeview')
-
     def _handle_cell_focus(self, event: tk.Event) -> None:
         column_token = self.tree.identify_column(event.x)
         if column_token.startswith('#'):

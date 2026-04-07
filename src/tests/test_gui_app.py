@@ -218,38 +218,6 @@ class FakeBoolVar:
         self._value = bool(value)
 
 
-class _ThemeWidget:
-    def __init__(self):
-        self.calls = []
-
-    def configure(self, **kwargs):
-        self.calls.append(kwargs)
-
-
-class _ThemeRoot(_ThemeWidget):
-    def __init__(self):
-        super().__init__()
-        self.options = []
-
-    def option_add(self, key, value):
-        self.options.append((key, value))
-
-    def winfo_id(self):
-        return 101
-
-
-class _ThemeStyle:
-    def __init__(self, _root):
-        self.configured = []
-        self.mapped = []
-
-    def configure(self, style_name, **kwargs):
-        self.configured.append((style_name, kwargs))
-
-    def map(self, style_name, **kwargs):
-        self.mapped.append((style_name, kwargs))
-
-
 def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
     move_history = (
         MoveHistoryEntry(0, "white", "e2e4", "e4", "player"),
@@ -1312,66 +1280,6 @@ def test_options_dialog_no_longer_owns_smart_contract_controls():
     assert 'Show move list by default' not in source
     assert 'for column in self.inspector.columns' in source
     assert "state = 'normal' if panel_var.get() else 'disabled'" in source
-
-
-def test_apply_theme_uses_central_palette_and_themes_widget_surfaces(monkeypatch):
-    from opening_trainer.ui import gui_app as gui_module
-
-    style = _ThemeStyle(None)
-    monkeypatch.setattr(gui_module.ttk, 'Style', lambda _root: style)
-    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
-    gui.dark_mode_enabled = True
-    gui.root = _ThemeRoot()
-    gui.summary_strip = _ThemeWidget()
-    gui.control_strip = _ThemeWidget()
-    gui.action_bar = _ThemeWidget()
-    gui.main_region = _ThemeWidget()
-    gui.side_panel = _ThemeWidget()
-    gui.root_pane = _ThemeWidget()
-    gui.side_content = _ThemeWidget()
-    gui.loading_frame = _ThemeWidget()
-    gui._child_windows = []
-    move_list_calls = []
-    inspector_calls = []
-    board_calls = []
-    captured_calls = []
-    gui.move_list_panel = type('MoveList', (), {'apply_theme': lambda self, palette, dark_mode: move_list_calls.append((palette['field_bg'], dark_mode))})()
-    gui.inspector = type('Inspector', (), {'apply_theme': lambda self, palette: inspector_calls.append(palette['header_bg'])})()
-    gui.board_view = type('Board', (), {'apply_theme': lambda self, palette: board_calls.append(palette['text_fg'])})()
-    gui.top_captured_panel = type('Captured', (), {'apply_theme': lambda self: captured_calls.append('top')})()
-    gui.bottom_captured_panel = type('Captured', (), {'apply_theme': lambda self: captured_calls.append('bottom')})()
-    gui._apply_windows_title_bar_theme = lambda _dark_mode: None
-    gui._apply_theme_to_child_windows = lambda _palette: None
-
-    gui._apply_theme()
-
-    assert move_list_calls and move_list_calls[0][1] is True
-    assert gui._theme_palette().app_bg != '#000000'
-    assert inspector_calls
-    assert board_calls
-    assert captured_calls == ['top', 'bottom']
-    assert any(name == 'Review.Treeview' for name, _cfg in style.configured)
-    assert any(name == 'Treeview.Heading' for name, _cfg in style.configured)
-    assert any(name == 'TCombobox' for name, _cfg in style.configured)
-
-
-def test_options_save_path_persists_dark_mode_and_reapplies_theme():
-    source = inspect.getsource(OpeningTrainerGUI._open_options)
-    assert 'self.dark_mode_enabled = dark_mode_var.get()' in source
-    assert 'dark_mode_enabled=getattr(self, "dark_mode_enabled", False)' in source
-    assert 'self._apply_theme()' in source
-
-
-def test_windows_title_bar_theme_best_effort_fails_safely(monkeypatch):
-    from opening_trainer.ui import gui_app as gui_module
-
-    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
-    gui.root = _ThemeRoot()
-    monkeypatch.setattr(gui_module.os, 'name', 'nt', raising=False)
-    failing_dwm = type('DwmApi', (), {'DwmSetWindowAttribute': lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('unsupported'))})()
-    monkeypatch.setattr(gui_module.ctypes, 'windll', type('WinDll', (), {'dwmapi': failing_dwm})(), raising=False)
-
-    gui._apply_windows_title_bar_theme(True)
 
 
 def test_pause_button_reuses_escape_pause_surface():

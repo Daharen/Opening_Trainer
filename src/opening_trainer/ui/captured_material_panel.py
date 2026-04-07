@@ -60,18 +60,9 @@ class CapturedMaterialPanel(ttk.Frame):
         self.pieces_var = tk.StringVar(value='—')
         self.clock_var = tk.StringVar(value='--:--')
         self.delta_var = tk.StringVar(value='')
-        self.pieces_label = ttk.Label(self, textvariable=self.pieces_var, anchor='w')
-        self.pieces_label.pack(side='left', fill='x', expand=True)
-        self.delta_label = ttk.Label(self, textvariable=self.delta_var, anchor='e', width=4)
-        self.delta_label.pack(side='right', padx=(6, 0))
-        self.clock_label = ttk.Label(self, textvariable=self.clock_var, anchor='e', width=8)
-        self.clock_label.pack(side='right')
-
-    def apply_theme(self) -> None:
-        self.configure(style='Captured.TFrame')
-        self.pieces_label.configure(style='Captured.TLabel')
-        self.delta_label.configure(style='CapturedDelta.TLabel')
-        self.clock_label.configure(style='CapturedClock.TLabel')
+        ttk.Label(self, textvariable=self.pieces_var, anchor='w').pack(side='left', fill='x', expand=True)
+        ttk.Label(self, textvariable=self.delta_var, anchor='e', width=4).pack(side='right', padx=(6, 0))
+        ttk.Label(self, textvariable=self.clock_var, anchor='e', width=8).pack(side='right')
 
     def update_board(self, board: chess.Board, *, player_color: chess.Color, near_side: bool, clock_seconds: float | None = None) -> None:
         white_captured, black_captured, delta = captured_pieces_and_material(board)

@@ -81,24 +81,6 @@ class PremoveIntent:
         return chess.Move(self.from_square, self.to_square, promotion=self.promotion).uci()
 
 
-@dataclass(frozen=True)
-class ThemePalette:
-    dark_mode: bool
-    app_bg: str
-    panel_bg: str
-    surface_bg: str
-    header_bg: str
-    field_bg: str
-    text_fg: str
-    muted_fg: str
-    border_color: str
-    menu_bg: str
-    menu_fg: str
-    menu_active_bg: str
-    select_bg: str
-    select_fg: str
-
-
 class OpeningTrainerGUI:
     def __init__(self, session: TrainingSession | None = None, runtime_context: RuntimeContext | None = None):
         self.session = session or TrainingSession(runtime_context=runtime_context, mode='gui')
@@ -1347,7 +1329,6 @@ class OpeningTrainerGUI:
         self._child_windows.append(window)
         window.title('Trainer Options')
         window.transient(self.root)
-        window.configure(bg=self._theme_palette().panel_bg)
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill='both', expand=True)
         dark_mode_var = tk.BooleanVar(value=self.dark_mode_enabled)
@@ -1434,124 +1415,29 @@ class OpeningTrainerGUI:
         self.pause_button.configure(state='normal' if enabled else 'disabled')
 
     def _apply_theme(self) -> None:
-        palette = self._theme_palette()
-        pal = palette.__dict__
-        self.root.configure(bg=palette.app_bg)
-        style = ttk.Style(self.root)
-        style.configure('.', background=palette.panel_bg, foreground=palette.text_fg)
-        style.configure('Shell.TFrame', background=palette.panel_bg)
-        style.configure('ShellSurface.TFrame', background=palette.surface_bg)
-        style.configure('TFrame', background=palette.panel_bg)
-        style.configure('TLabelframe', background=palette.surface_bg, foreground=palette.text_fg, bordercolor=palette.border_color)
-        style.configure('TLabelframe.Label', background=palette.surface_bg, foreground=palette.text_fg)
-        style.configure('MoveList.TLabelframe', background=palette.surface_bg, foreground=palette.text_fg, bordercolor=palette.border_color)
-        style.configure('TLabel', background=palette.panel_bg, foreground=palette.text_fg)
-        style.configure('MoveListHeading.TLabel', background=palette.surface_bg, foreground=palette.muted_fg)
-        style.configure('TCheckbutton', background=palette.panel_bg, foreground=palette.text_fg)
-        style.configure('TButton', background=palette.surface_bg, foreground=palette.text_fg)
-        style.configure('TEntry', fieldbackground=palette.field_bg, foreground=palette.text_fg)
-        style.configure('TCombobox', fieldbackground=palette.field_bg, background=palette.field_bg, foreground=palette.text_fg, arrowsize=14)
-        style.map('TCombobox', fieldbackground=[('readonly', palette.field_bg)], foreground=[('readonly', palette.text_fg)])
-        style.configure('Treeview', background=palette.field_bg, fieldbackground=palette.field_bg, foreground=palette.text_fg, bordercolor=palette.border_color)
-        style.configure('Review.Treeview', background=palette.field_bg, fieldbackground=palette.field_bg, foreground=palette.text_fg)
-        style.configure('Treeview.Heading', background=palette.header_bg, foreground=palette.text_fg)
-        style.map('Treeview', background=[('selected', palette.select_bg)], foreground=[('selected', palette.select_fg)])
-        style.configure('Vertical.TScrollbar', background=palette.surface_bg, troughcolor=palette.panel_bg)
-        style.configure('Captured.TFrame', background=palette.surface_bg)
-        style.configure('Captured.TLabel', background=palette.surface_bg, foreground=palette.text_fg)
-        style.configure('CapturedClock.TLabel', background=palette.surface_bg, foreground=palette.text_fg)
-        style.configure('CapturedDelta.TLabel', background=palette.surface_bg, foreground=palette.muted_fg)
-        for widget in (
-            getattr(self, 'summary_strip', None),
-            getattr(self, 'control_strip', None),
-            getattr(self, 'action_bar', None),
-            getattr(self, 'main_region', None),
-            getattr(self, 'side_panel', None),
-            getattr(self, 'root_pane', None),
-        ):
-            if widget is not None:
-                target_bg = palette.app_bg if widget is self.action_bar else palette.panel_bg
-                widget.configure(bg=target_bg)
-        for frame in (getattr(self, 'side_content', None), getattr(self, 'loading_frame', None)):
-            if frame is not None:
-                frame.configure(style='ShellSurface.TFrame')
-        if getattr(self, 'move_list_panel', None) is not None:
-            self.move_list_panel.apply_theme(pal, dark_mode=palette.dark_mode)
-        if getattr(self, 'inspector', None) is not None:
-            self.inspector.apply_theme(pal)
-        if getattr(self, 'board_view', None) is not None:
-            self.board_view.apply_theme(pal)
-        for panel in (getattr(self, 'top_captured_panel', None), getattr(self, 'bottom_captured_panel', None)):
-            if panel is not None:
-                panel.apply_theme()
-        self.root.option_add('*Menu.background', palette.menu_bg)
-        self.root.option_add('*Menu.foreground', palette.menu_fg)
-        self.root.option_add('*Menu.activeBackground', palette.menu_active_bg)
-        self.root.option_add('*Menu.activeForeground', palette.menu_fg)
-        self._apply_windows_title_bar_theme(palette.dark_mode)
-        self._apply_theme_to_child_windows(palette)
-
-    def _theme_palette(self) -> ThemePalette:
         dark = bool(self.dark_mode_enabled)
-        if dark:
-            return ThemePalette(
-                dark_mode=True,
-                app_bg='#171a1f',
-                panel_bg='#20252b',
-                surface_bg='#262c33',
-                header_bg='#2c343d',
-                field_bg='#2b323a',
-                text_fg='#e6e9ed',
-                muted_fg='#b9c0c8',
-                border_color='#3a4450',
-                menu_bg='#1f252c',
-                menu_fg='#edf0f3',
-                menu_active_bg='#313a44',
-                select_bg='#41566d',
-                select_fg='#f5f8fa',
-            )
-        return ThemePalette(
-            dark_mode=False,
-            app_bg='#f0f0f0',
-            panel_bg='#f0f0f0',
-            surface_bg='#f6f6f6',
-            header_bg='#e8e8e8',
-            field_bg='#ffffff',
-            text_fg='#111111',
-            muted_fg='#4f4f4f',
-            border_color='#cccccc',
-            menu_bg='#f0f0f0',
-            menu_fg='#111111',
-            menu_active_bg='#d9d9d9',
-            select_bg='#cde4ff',
-            select_fg='#111111',
-        )
-
-    def _apply_theme_to_child_windows(self, palette: ThemePalette) -> None:
-        for window in list(getattr(self, '_child_windows', [])):
-            if window is None or not window.winfo_exists():
-                continue
-            try:
-                window.configure(bg=palette.panel_bg)
-            except Exception:
-                continue
-
-    def _apply_windows_title_bar_theme(self, dark_mode: bool) -> None:
-        if os.name != 'nt':
-            return
-        hwnd = self.root.winfo_id()
-        enable_value = ctypes.c_int(1 if dark_mode else 0)
-        for attribute in (20, 19):
-            try:
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    ctypes.c_void_p(hwnd),
-                    ctypes.c_uint(attribute),
-                    ctypes.byref(enable_value),
-                    ctypes.sizeof(enable_value),
-                )
-                return
-            except Exception:
-                continue
+        bg = '#101214' if dark else '#f0f0f0'
+        fg = '#ececec' if dark else '#111111'
+        panel_bg = '#1b1f23' if dark else '#f0f0f0'
+        menu_bg = '#17191c' if dark else '#f0f0f0'
+        menu_fg = '#f5f5f5' if dark else '#111111'
+        self.root.configure(bg=bg)
+        style = ttk.Style(self.root)
+        style.configure('.', background=panel_bg, foreground=fg)
+        style.configure('TFrame', background=panel_bg)
+        style.configure('TLabelframe', background=panel_bg, foreground=fg)
+        style.configure('TLabelframe.Label', background=panel_bg, foreground=fg)
+        style.configure('TLabel', background=panel_bg, foreground=fg)
+        style.configure('TCheckbutton', background=panel_bg, foreground=fg)
+        style.configure('TButton', background=panel_bg, foreground=fg)
+        style.configure('TCombobox', fieldbackground='#23272b' if dark else '#ffffff', foreground=fg)
+        for widget in (getattr(self, 'action_bar', None), getattr(self, 'main_region', None), getattr(self, 'side_panel', None)):
+            if widget is not None:
+                widget.configure(bg=bg if widget is self.action_bar else panel_bg)
+        self.root.option_add('*Menu.background', menu_bg)
+        self.root.option_add('*Menu.foreground', menu_fg)
+        self.root.option_add('*Menu.activeBackground', '#2b3036' if dark else '#d9d9d9')
+        self.root.option_add('*Menu.activeForeground', menu_fg if dark else '#111111')
 
     def _ensure_live_flow_state(self) -> None:
         if not hasattr(self, 'paused'):
@@ -3125,3 +3011,4 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
+
