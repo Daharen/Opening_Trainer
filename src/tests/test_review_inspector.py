@@ -7,6 +7,29 @@ from opening_trainer.ui.board_view import square_is_light
 from opening_trainer.ui.review_inspector import ReviewInspector
 
 
+class _FakeStyle:
+    instances = []
+
+    def __init__(self, _widget):
+        self.configured = []
+        self.mapped = []
+        _FakeStyle.instances.append(self)
+
+    def configure(self, name, **kwargs):
+        self.configured.append((name, kwargs))
+
+    def map(self, name, **kwargs):
+        self.mapped.append((name, kwargs))
+
+
+class _Configurable:
+    def __init__(self):
+        self.last_config = {}
+
+    def configure(self, **kwargs):
+        self.last_config.update(kwargs)
+
+
 class _FakeTree:
     def __init__(self, focused_id: str):
         self._focused_id = focused_id
@@ -114,3 +137,37 @@ def test_board_edit_opens_board_setup_for_any_item(monkeypatch) -> None:
     assert calls['board']['title'] == 'Edit in Board Setup'
     assert calls['board']['initial']['target_fen'] == chess.STARTING_FEN
     assert calls['board']['initial']['predecessor_line_uci'] == 'e2e4 e7e5'
+
+
+def test_apply_theme_sets_explicit_review_styles(monkeypatch) -> None:
+    _FakeStyle.instances = []
+    inspector = ReviewInspector.__new__(ReviewInspector)
+    inspector.tree = _Configurable()
+    inspector.filter_combo = _Configurable()
+    inspector.tree_frame = _Configurable()
+    inspector.button_row = _Configurable()
+    inspector.action_buttons = [_Configurable(), _Configurable()]
+    inspector.configure = lambda **kwargs: setattr(inspector, "_last_config", kwargs)
+    monkeypatch.setattr("opening_trainer.ui.review_inspector.ttk.Style", _FakeStyle)
+
+    palette = {
+        "panel_bg": "#1f252c",
+        "surface_bg": "#262d36",
+        "text_fg": "#e6e9ee",
+        "border_color": "#3a4654",
+        "header_bg": "#2d3641",
+        "select_bg": "#3d4f64",
+        "button_active_bg": "#3b4653",
+        "button_bg": "#2d3742",
+        "muted_fg": "#aeb7c2",
+        "field_bg": "#2a323c",
+    }
+    inspector.apply_theme(palette=palette)
+
+    style_names = {name for name, _kwargs in _FakeStyle.instances[0].configured}
+    assert "Review.Treeview" in style_names
+    assert "Review.Treeview.Heading" in style_names
+    assert "InspectorFilter.TCombobox" in style_names
+    assert "ReviewPanel.TButton" in style_names
+    assert inspector.tree.last_config["style"] == "Review.Treeview"
+    assert inspector.filter_combo.last_config["style"] == "InspectorFilter.TCombobox"

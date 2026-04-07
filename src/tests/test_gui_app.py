@@ -231,15 +231,33 @@ class FakeThemeRoot:
 
 
 class FakeStyle:
+    instances = []
+
     def __init__(self, _root):
         self.configured = []
         self.mapped = []
+        self.theme = None
+        FakeStyle.instances.append(self)
 
     def configure(self, name, **kwargs):
         self.configured.append((name, kwargs))
 
     def map(self, name, **kwargs):
         self.mapped.append((name, kwargs))
+
+    def theme_use(self, theme=None):
+        if theme is None:
+            return self.theme
+        self.theme = theme
+        return theme
+
+
+class FakeConfiguredWidget:
+    def __init__(self):
+        self.last_config = {}
+
+    def configure(self, **kwargs):
+        self.last_config.update(kwargs)
 
 
 def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
@@ -305,6 +323,7 @@ def test_theme_palette_provides_layered_dark_gray_surfaces():
 
 
 def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
+    FakeStyle.instances = []
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.dark_mode_enabled = True
     gui.root = FakeThemeRoot()
@@ -318,6 +337,11 @@ def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
     gui.bundle_picker = type("W", (), {"configure": lambda self, **kwargs: None})()
     gui.pause_button = type("B", (), {"configure": lambda self, **kwargs: None})()
     gui.start_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    gui.top_time_control_combo = FakeConfiguredWidget()
+    gui.top_elo_combo = FakeConfiguredWidget()
+    gui.top_depth_combo = FakeConfiguredWidget()
+    gui.top_good_combo = FakeConfiguredWidget()
+    gui.fallback_mode_combo = FakeConfiguredWidget()
     calls = {"move_list": 0, "inspector": 0, "board": 0}
     gui.move_list_panel = type("MoveList", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("move_list", calls["move_list"] + 1)})()
     gui.inspector = type("Inspector", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("inspector", calls["inspector"] + 1)})()
@@ -332,6 +356,9 @@ def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
 
     assert calls == {"move_list": 1, "inspector": 1, "board": 1}
     assert gui.root.configured["bg"] == gui._theme_palette()["app_bg"]
+    assert FakeStyle.instances[0].theme == "clam"
+    assert gui.top_time_control_combo.last_config["style"] == "TopStrip.TCombobox"
+    assert gui.fallback_mode_combo.last_config["style"] == "TopStrip.TCombobox"
 
 
 def test_windows_titlebar_preference_fails_safely_on_unsupported_calls(monkeypatch):
