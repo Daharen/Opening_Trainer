@@ -82,8 +82,15 @@ class BoardView(tk.Canvas):
         self._last_board_fen: str | None = None
         self._last_player_color: chess.Color | None = None
         self._resize_refresh_after_handle: str | None = None
+        self._coordinate_fg = '#333333'
+        self._gutter_bg = '#f0f0f0'
         self.bind('<Configure>', self._on_resize)
         self.configure(width=board_size, height=board_size)
+
+    def apply_theme(self, palette: dict[str, str], *, dark: bool) -> None:
+        self._coordinate_fg = palette['text_fg'] if dark else '#333333'
+        self._gutter_bg = palette['surface_bg']
+        self.configure(bg=self._gutter_bg)
 
     @property
     def board_pixels(self) -> int:
@@ -280,6 +287,8 @@ class BoardView(tk.Canvas):
         self._last_board_fen = board.fen()
         self._last_player_color = player_color
         self.delete('all')
+        gutter_bg = getattr(self, '_gutter_bg', '#f0f0f0')
+        self.create_rectangle(0, 0, self.board_size, self.board_size, fill=gutter_bg, outline=gutter_bg)
         origin_x, origin_y = self.board_origin
         for square in chess.SQUARES:
             row, col = square_to_display(square, player_color)
@@ -321,12 +330,13 @@ class BoardView(tk.Canvas):
         origin_x, origin_y = self.board_origin
         files, ranks = self.coordinate_labels(player_color)
         font = ('TkDefaultFont', max(8, int(self.square_size * 0.16)), 'bold')
+        coordinate_fg = getattr(self, '_coordinate_fg', '#333333')
         for idx, label in enumerate(files):
             x = origin_x + idx * self.square_size + self.square_size / 2
-            self.create_text(x, origin_y + self.board_pixels + BOARD_PADDING / 2, text=label, font=font, fill='#333333')
+            self.create_text(x, origin_y + self.board_pixels + BOARD_PADDING / 2, text=label, font=font, fill=coordinate_fg)
         for idx, label in enumerate(ranks):
             y = origin_y + idx * self.square_size + self.square_size / 2
-            self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill='#333333')
+            self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill=coordinate_fg)
 
     def _draw_drag_piece(self) -> None:
         if not self.drag_state or not self.drag_state.moved:

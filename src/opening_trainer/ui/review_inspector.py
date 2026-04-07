@@ -53,36 +53,53 @@ class ReviewInspector(ttk.Frame):
         self.visible_columns = tuple(column for column in (visible_columns or self.columns) if column in self.columns) or self.columns
         self._focused_column_id: str | None = None
 
-        ttk.Combobox(
+        self.filter_combo = ttk.Combobox(
             self,
             textvariable=self.filter_var,
             values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency', 'manual_target'],
             state='readonly',
-        ).pack(anchor='e')
+            style='ReviewInspector.TCombobox',
+        )
+        self.filter_combo.pack(anchor='e')
         self.filter_var.trace_add('write', lambda *_: self.refresh())
 
-        tree_frame = ttk.Frame(self)
-        tree_frame.pack(fill='both', expand=True)
-        self.tree = ttk.Treeview(tree_frame, columns=self.columns, show='headings', height=8, displaycolumns=self.visible_columns)
-        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree_frame = ttk.Frame(self, style='ReviewInspector.TFrame')
+        self.tree_frame.pack(fill='both', expand=True)
+        self.tree = ttk.Treeview(
+            self.tree_frame,
+            columns=self.columns,
+            show='headings',
+            height=8,
+            displaycolumns=self.visible_columns,
+            style='ReviewInspector.Treeview',
+        )
+        self.tree_scrollbar = ttk.Scrollbar(self.tree_frame, orient='vertical', command=self.tree.yview, style='ReviewInspector.Vertical.TScrollbar')
+        self.tree.configure(yscrollcommand=self.tree_scrollbar.set)
         for column in self.columns:
             self.tree.heading(column, text=self.column_labels[column])
             self.tree.column(column, width=110, anchor='w')
         self.tree.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
+        self.tree_scrollbar.pack(side='right', fill='y')
 
         self.tree.bind('<ButtonRelease-1>', self._handle_cell_focus)
         self.tree.bind('<Button-3>', self._open_context_menu)
         self.tree.bind('<Control-c>', self._copy_with_shortcut)
 
-        button_row = ttk.Frame(self)
-        button_row.pack(fill='x', pady=4)
-        ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Edit Item', command=self._edit_item).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Board Edit', command=self._edit_item_in_board_setup).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
+        self.button_row = ttk.Frame(self, style='ReviewInspector.TFrame')
+        self.button_row.pack(fill='x', pady=4)
+        self.action_buttons = [
+            ttk.Button(self.button_row, text='Add Manual Target', command=self._open_manual_target_dialog, style='ReviewInspector.TButton'),
+            ttk.Button(self.button_row, text='Edit Item', command=self._edit_item, style='ReviewInspector.TButton'),
+            ttk.Button(self.button_row, text='Board Edit', command=self._edit_item_in_board_setup, style='ReviewInspector.TButton'),
+            ttk.Button(self.button_row, text='Delete item', command=self._delete_item, style='ReviewInspector.TButton'),
+            ttk.Button(self.button_row, text='Reset item', command=self._reset_item, style='ReviewInspector.TButton'),
+        ]
+        for button in self.action_buttons:
+            button.pack(side='left', padx=4)
+
+    def apply_theme(self, palette: dict[str, str], *, dark: bool) -> None:
+        self.configure(style='ReviewInspector.TFrame')
+        self.tree.tag_configure('default', background=palette['field_bg'], foreground=palette['text_fg'])
 
     def _handle_cell_focus(self, event: tk.Event) -> None:
         column_token = self.tree.identify_column(event.x)

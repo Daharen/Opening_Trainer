@@ -1282,6 +1282,50 @@ def test_options_dialog_no_longer_owns_smart_contract_controls():
     assert "state = 'normal' if panel_var.get() else 'disabled'" in source
 
 
+def test_theme_palette_helper_exists_and_apply_theme_uses_it():
+    palette_source = inspect.getsource(OpeningTrainerGUI._theme_palette)
+    apply_source = inspect.getsource(OpeningTrainerGUI._apply_theme)
+
+    assert "'app_bg'" in palette_source
+    assert "'panel_bg'" in palette_source
+    assert "'field_bg'" in palette_source
+    assert "palette = self._theme_palette()" in apply_source
+
+
+def test_surface_theme_invokes_move_list_inspector_and_board_theme_hooks():
+    source = inspect.getsource(OpeningTrainerGUI._apply_surface_theme)
+
+    assert "self.board_view.apply_theme" in source
+    assert "self.move_list_panel.apply_theme" in source
+    assert "self.inspector.apply_theme" in source
+    assert "panel.apply_theme" in source
+
+
+def test_options_save_still_persists_dark_mode_and_reapplies_theme():
+    source = inspect.getsource(OpeningTrainerGUI._open_options)
+
+    assert "dark_mode_enabled=getattr(self, \"dark_mode_enabled\", False)" in source
+    assert "self._apply_theme()" in source
+
+
+def test_windows_title_bar_theme_helper_fails_safely(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    window = type("WindowStub", (), {"winfo_id": lambda self: 1234})()
+
+    class _FailingDwmApi:
+        @staticmethod
+        def DwmSetWindowAttribute(*_args, **_kwargs):
+            raise OSError("unsupported")
+
+    class _FailingWindll:
+        dwmapi = _FailingDwmApi()
+
+    monkeypatch.setattr("opening_trainer.ui.gui_app.sys.platform", "win32")
+    monkeypatch.setattr("opening_trainer.ui.gui_app.ctypes.windll", _FailingWindll(), raising=False)
+
+    OpeningTrainerGUI._apply_windows_title_bar_theme(gui, window=window, dark=True)
+
+
 def test_pause_button_reuses_escape_pause_surface():
     source = inspect.getsource(OpeningTrainerGUI._pause_from_button)
 
