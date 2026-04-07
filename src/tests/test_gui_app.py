@@ -902,6 +902,20 @@ def test_board_coordinate_labels_invert_by_perspective():
     assert black_ranks == ['1', '2', '3', '4', '5', '6', '7', '8']
 
 
+def test_board_coordinate_labels_use_theme_color():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view._coordinate_fg = '#d5dbe2'
+    colors = []
+    board_view.create_text = lambda _x, _y, **kwargs: colors.append(kwargs['fill'])
+
+    BoardView._draw_coordinates(board_view, chess.WHITE)
+
+    assert colors
+    assert set(colors) == {'#d5dbe2'}
+
+
 def test_drag_release_reports_drop_square_and_active_state():
     board_view = BoardView.__new__(BoardView)
     board_view.drag_state = DragState(chess.E2, chess.E4, 'P', 120, 100, True)
@@ -1280,12 +1294,104 @@ def test_options_dialog_no_longer_owns_smart_contract_controls():
     assert 'Show move list by default' not in source
     assert 'for column in self.inspector.columns' in source
     assert "state = 'normal' if panel_var.get() else 'disabled'" in source
+    assert 'self._apply_theme()' in source
 
 
 def test_pause_button_reuses_escape_pause_surface():
     source = inspect.getsource(OpeningTrainerGUI._pause_from_button)
 
     assert "_open_pause_surface(source='bottom_bar')" in source
+
+
+def test_apply_theme_uses_palette_and_surface_theme_hooks(monkeypatch):
+    import opening_trainer.ui.gui_app as gui_app_mod
+
+    class _Style:
+        def __init__(self, _root):
+            pass
+
+        def configure(self, *_args, **_kwargs):
+            pass
+
+        def map(self, *_args, **_kwargs):
+            pass
+
+    class _Root:
+        def configure(self, **_kwargs):
+            pass
+
+        def option_add(self, *_args, **_kwargs):
+            pass
+
+    class _Widget:
+        def configure(self, **_kwargs):
+            pass
+
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.dark_mode_enabled = True
+    gui.root = _Root()
+    gui.summary_strip = _Widget()
+    gui.control_strip = _Widget()
+    gui.action_bar = _Widget()
+    gui.main_region = _Widget()
+    gui.side_panel = _Widget()
+    gui.root_pane = _Widget()
+
+    palette = OpeningTrainerGUI._theme_palette(gui)
+    gui._theme_palette = lambda: palette
+    calls = {'move': 0, 'inspector': 0, 'board': 0, 'captured': 0, 'dialogs': 0, 'title': None}
+    gui._theme_move_list_panel = lambda _palette: calls.__setitem__('move', calls['move'] + 1)
+    gui._theme_inspector_panel = lambda _palette: calls.__setitem__('inspector', calls['inspector'] + 1)
+    gui._theme_board_surfaces = lambda _palette: calls.__setitem__('board', calls['board'] + 1)
+    gui._theme_captured_panels = lambda _palette: calls.__setitem__('captured', calls['captured'] + 1)
+    gui._theme_dialog_windows = lambda _palette: calls.__setitem__('dialogs', calls['dialogs'] + 1)
+    gui._apply_windows_title_bar_theme = lambda *, enabled: calls.__setitem__('title', enabled)
+    monkeypatch.setattr(gui_app_mod.ttk, 'Style', _Style)
+
+    OpeningTrainerGUI._apply_theme(gui)
+
+    assert calls == {'move': 1, 'inspector': 1, 'board': 1, 'captured': 1, 'dialogs': 1, 'title': True}
+
+
+def test_theme_palette_dark_mode_uses_layered_dark_grays():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.dark_mode_enabled = True
+
+    palette = OpeningTrainerGUI._theme_palette(gui)
+
+    assert palette.app_bg != '#000000'
+    assert palette.panel_bg != '#000000'
+    assert palette.field_bg != '#000000'
+
+
+def test_windows_title_bar_theme_helper_fails_safely(monkeypatch):
+    import opening_trainer.ui.gui_app as gui_app_mod
+
+    class _Root:
+        def winfo_id(self):
+            return 123
+
+    class _User32:
+        @staticmethod
+        def GetParent(_hwnd):
+            return 456
+
+    class _DwmApi:
+        @staticmethod
+        def DwmSetWindowAttribute(*_args):
+            raise OSError('unsupported')
+
+    class _Windll:
+        user32 = _User32()
+        dwmapi = _DwmApi()
+
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = _Root()
+
+    monkeypatch.setattr(gui_app_mod.sys, 'platform', 'win32')
+    monkeypatch.setattr(gui_app_mod.ctypes, 'windll', _Windll(), raising=False)
+
+    OpeningTrainerGUI._apply_windows_title_bar_theme(gui, enabled=True)
 
 
 class _FakeComboStrip(FakeGridWidget):

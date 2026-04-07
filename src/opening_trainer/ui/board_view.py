@@ -82,8 +82,16 @@ class BoardView(tk.Canvas):
         self._last_board_fen: str | None = None
         self._last_player_color: chess.Color | None = None
         self._resize_refresh_after_handle: str | None = None
+        self._shell_bg = '#ededed'
+        self._coordinate_fg = '#333333'
         self.bind('<Configure>', self._on_resize)
-        self.configure(width=board_size, height=board_size)
+        self.configure(width=board_size, height=board_size, bg=self._shell_bg)
+
+
+    def set_theme(self, *, shell_bg: str, coordinate_fg: str) -> None:
+        self._shell_bg = shell_bg
+        self._coordinate_fg = coordinate_fg
+        self.configure(bg=shell_bg)
 
     @property
     def board_pixels(self) -> int:
@@ -323,10 +331,10 @@ class BoardView(tk.Canvas):
         font = ('TkDefaultFont', max(8, int(self.square_size * 0.16)), 'bold')
         for idx, label in enumerate(files):
             x = origin_x + idx * self.square_size + self.square_size / 2
-            self.create_text(x, origin_y + self.board_pixels + BOARD_PADDING / 2, text=label, font=font, fill='#333333')
+            self.create_text(x, origin_y + self.board_pixels + BOARD_PADDING / 2, text=label, font=font, fill=self._coordinate_fg)
         for idx, label in enumerate(ranks):
             y = origin_y + idx * self.square_size + self.square_size / 2
-            self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill='#333333')
+            self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill=self._coordinate_fg)
 
     def _draw_drag_piece(self) -> None:
         if not self.drag_state or not self.drag_state.moved:
