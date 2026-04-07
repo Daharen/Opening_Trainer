@@ -1489,6 +1489,8 @@ class OpeningTrainerGUI:
         self.root.configure(bg=palette['app_bg'])
         self._apply_windows_titlebar_preference(self.root, dark)
         style = ttk.Style(self.root)
+        if dark:
+            style.theme_use('clam')
         style.configure('.', background=palette['panel_bg'], foreground=palette['text_fg'])
         style.configure('TFrame', background=palette['panel_bg'])
         style.configure('TLabelframe', background=palette['panel_bg'], foreground=palette['text_fg'], bordercolor=palette['border_color'])
@@ -1510,15 +1512,62 @@ class OpeningTrainerGUI:
             foreground=palette['text_fg'],
             arrowcolor=palette['text_fg'],
         )
-        style.map('TCombobox', fieldbackground=[('readonly', palette['field_bg'])], selectbackground=[('readonly', palette['select_bg'])])
+        style.map(
+            'TCombobox',
+            fieldbackground=[('readonly', palette['field_bg'])],
+            background=[('readonly', palette['field_bg'])],
+            foreground=[('readonly', palette['text_fg'])],
+            selectbackground=[('readonly', palette['select_bg'])],
+            selectforeground=[('readonly', palette['text_fg'])],
+            arrowcolor=[('readonly', palette['text_fg'])],
+        )
+        style.configure(
+            'TopStrip.TCombobox',
+            fieldbackground=palette['field_bg'],
+            background=palette['field_bg'],
+            foreground=palette['text_fg'],
+            arrowcolor=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.map(
+            'TopStrip.TCombobox',
+            fieldbackground=[('readonly', palette['field_bg'])],
+            background=[('readonly', palette['field_bg'])],
+            foreground=[('readonly', palette['text_fg'])],
+            selectbackground=[('readonly', palette['select_bg'])],
+            selectforeground=[('readonly', palette['text_fg'])],
+            arrowcolor=[('readonly', palette['text_fg'])],
+            bordercolor=[('readonly', palette['border_color'])],
+        )
         style.configure('Vertical.TScrollbar', background=palette['surface_bg'], troughcolor=palette['panel_bg'])
         style.configure('Horizontal.TScrollbar', background=palette['surface_bg'], troughcolor=palette['panel_bg'])
         style.configure('MoveList.TLabelframe', background=palette['surface_bg'], foreground=palette['text_fg'], bordercolor=palette['border_color'])
         style.configure('MoveList.TLabel', background=palette['surface_bg'], foreground=palette['muted_fg'])
         style.configure('Captured.TFrame', background=palette['surface_bg'])
-        style.configure('Treeview', background=palette['surface_bg'], fieldbackground=palette['surface_bg'], foreground=palette['text_fg'])
-        style.configure('Treeview.Heading', background=palette['header_bg'], foreground=palette['text_fg'])
-        style.map('Treeview', background=[('selected', palette['select_bg'])], foreground=[('selected', palette['text_fg'])])
+        style.configure(
+            'Review.Treeview',
+            background=palette['surface_bg'],
+            fieldbackground=palette['surface_bg'],
+            foreground=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.configure(
+            'Review.Treeview.Heading',
+            background=palette['header_bg'],
+            foreground=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.map('Review.Treeview', background=[('selected', palette['select_bg'])], foreground=[('selected', palette['text_fg'])])
+        style.map('Review.Treeview.Heading', background=[('active', palette['button_active_bg']), ('pressed', palette['button_active_bg'])])
+        for combo in (
+            getattr(self, 'top_time_control_combo', None),
+            getattr(self, 'top_elo_combo', None),
+            getattr(self, 'top_depth_combo', None),
+            getattr(self, 'top_good_combo', None),
+            getattr(self, 'fallback_mode_combo', None),
+        ):
+            if combo is not None:
+                combo.configure(style='TopStrip.TCombobox')
         for widget in (
             getattr(self, 'summary_strip', None),
             getattr(self, 'control_strip', None),

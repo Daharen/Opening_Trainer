@@ -63,6 +63,7 @@ class ReviewInspector(ttk.Frame):
         self.filter_var.trace_add('write', lambda *_: self.refresh())
 
         tree_frame = ttk.Frame(self)
+        self.tree_frame = tree_frame
         tree_frame.pack(fill='both', expand=True)
         self.tree = ttk.Treeview(tree_frame, columns=self.columns, show='headings', height=8, displaycolumns=self.visible_columns)
         scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
@@ -78,12 +79,18 @@ class ReviewInspector(ttk.Frame):
         self.tree.bind('<Control-c>', self._copy_with_shortcut)
 
         button_row = ttk.Frame(self)
+        self.button_row = button_row
         button_row.pack(fill='x', pady=4)
-        ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Edit Item', command=self._edit_item).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Board Edit', command=self._edit_item_in_board_setup).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
+        self.add_button = ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog)
+        self.add_button.pack(side='left', padx=4)
+        self.edit_button = ttk.Button(button_row, text='Edit Item', command=self._edit_item)
+        self.edit_button.pack(side='left', padx=4)
+        self.board_edit_button = ttk.Button(button_row, text='Board Edit', command=self._edit_item_in_board_setup)
+        self.board_edit_button.pack(side='left', padx=4)
+        self.delete_button = ttk.Button(button_row, text='Delete item', command=self._delete_item)
+        self.delete_button.pack(side='left', padx=4)
+        self.reset_button = ttk.Button(button_row, text='Reset item', command=self._reset_item)
+        self.reset_button.pack(side='left', padx=4)
 
     def _handle_cell_focus(self, event: tk.Event) -> None:
         column_token = self.tree.identify_column(event.x)
@@ -372,21 +379,50 @@ class ReviewInspector(ttk.Frame):
 
     def apply_theme(self, *, palette: dict[str, str]) -> None:
         style = ttk.Style(self)
-        style.configure('Inspector.TFrame', background=palette['panel_bg'])
+        style.configure('ReviewPanel.TFrame', background=palette['panel_bg'])
         style.configure(
-            'Inspector.Treeview',
+            'InspectorFilter.TCombobox',
+            fieldbackground=palette['field_bg'],
+            background=palette['field_bg'],
+            foreground=palette['text_fg'],
+            arrowcolor=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.map(
+            'InspectorFilter.TCombobox',
+            fieldbackground=[('readonly', palette['field_bg'])],
+            background=[('readonly', palette['field_bg'])],
+            foreground=[('readonly', palette['text_fg'])],
+            selectbackground=[('readonly', palette['select_bg'])],
+            selectforeground=[('readonly', palette['text_fg'])],
+            arrowcolor=[('readonly', palette['text_fg'])],
+            bordercolor=[('readonly', palette['border_color'])],
+        )
+        style.configure(
+            'Review.Treeview',
             background=palette['surface_bg'],
             fieldbackground=palette['surface_bg'],
             foreground=palette['text_fg'],
             bordercolor=palette['border_color'],
         )
         style.configure(
-            'Inspector.Treeview.Heading',
+            'Review.Treeview.Heading',
             background=palette['header_bg'],
             foreground=palette['text_fg'],
             bordercolor=palette['border_color'],
         )
-        style.map('Inspector.Treeview', background=[('selected', palette['select_bg'])], foreground=[('selected', palette['text_fg'])])
-        self.configure(style='Inspector.TFrame')
-        self.tree.configure(style='Inspector.Treeview')
-        self.filter_combo.configure(style='TCombobox')
+        style.map('Review.Treeview', background=[('selected', palette['select_bg'])], foreground=[('selected', palette['text_fg'])])
+        style.map('Review.Treeview.Heading', background=[('active', palette['button_active_bg']), ('pressed', palette['button_active_bg'])])
+        style.configure('ReviewPanel.TButton', background=palette['button_bg'], foreground=palette['text_fg'], bordercolor=palette['border_color'])
+        style.map(
+            'ReviewPanel.TButton',
+            background=[('active', palette['button_active_bg']), ('pressed', palette['button_active_bg']), ('disabled', palette['panel_bg'])],
+            foreground=[('disabled', palette['muted_fg'])],
+        )
+        self.configure(style='ReviewPanel.TFrame')
+        self.tree_frame.configure(style='ReviewPanel.TFrame')
+        self.button_row.configure(style='ReviewPanel.TFrame')
+        self.tree.configure(style='Review.Treeview')
+        self.filter_combo.configure(style='InspectorFilter.TCombobox')
+        for button in (self.add_button, self.edit_button, self.board_edit_button, self.delete_button, self.reset_button):
+            button.configure(style='ReviewPanel.TButton')

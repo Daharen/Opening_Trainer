@@ -39,6 +39,26 @@ class _FakeSession:
         return next(item for item in self.review_storage.load_items(self.active_profile_id) if item.review_item_id == review_item_id)
 
 
+class _FakeStyle:
+    def __init__(self, _owner):
+        self.configured = []
+        self.mapped = []
+
+    def configure(self, name, **kwargs):
+        self.configured.append((name, kwargs))
+
+    def map(self, name, **kwargs):
+        self.mapped.append((name, kwargs))
+
+
+class _StyleWidget:
+    def __init__(self):
+        self.style = None
+
+    def configure(self, **kwargs):
+        self.style = kwargs.get("style", self.style)
+
+
 def _build_item(origin_kind: str = 'auto_captured_failure', presentation_mode: str = 'play_to_position') -> ReviewItem:
     item = ReviewItem.create(
         'default',
@@ -114,3 +134,42 @@ def test_board_edit_opens_board_setup_for_any_item(monkeypatch) -> None:
     assert calls['board']['title'] == 'Edit in Board Setup'
     assert calls['board']['initial']['target_fen'] == chess.STARTING_FEN
     assert calls['board']['initial']['predecessor_line_uci'] == 'e2e4 e7e5'
+
+
+def test_apply_theme_assigns_explicit_review_styles(monkeypatch) -> None:
+    inspector = ReviewInspector.__new__(ReviewInspector)
+    inspector.tree = _StyleWidget()
+    inspector.filter_combo = _StyleWidget()
+    inspector.tree_frame = _StyleWidget()
+    inspector.button_row = _StyleWidget()
+    inspector.add_button = _StyleWidget()
+    inspector.edit_button = _StyleWidget()
+    inspector.board_edit_button = _StyleWidget()
+    inspector.delete_button = _StyleWidget()
+    inspector.reset_button = _StyleWidget()
+    inspector.configure = lambda **_kwargs: None
+    style = _FakeStyle(inspector)
+    monkeypatch.setattr("opening_trainer.ui.review_inspector.ttk.Style", lambda _owner: style)
+    palette = {
+        "panel_bg": "#111111",
+        "surface_bg": "#222222",
+        "text_fg": "#eeeeee",
+        "border_color": "#444444",
+        "field_bg": "#2a323c",
+        "select_bg": "#3d4f64",
+        "button_bg": "#2d3742",
+        "button_active_bg": "#3b4653",
+        "muted_fg": "#aeb7c2",
+        "header_bg": "#2d3641",
+    }
+
+    ReviewInspector.apply_theme(inspector, palette=palette)
+
+    configured_names = {name for name, _ in style.configured}
+    assert "InspectorFilter.TCombobox" in configured_names
+    assert "Review.Treeview" in configured_names
+    assert "Review.Treeview.Heading" in configured_names
+    assert "ReviewPanel.TButton" in configured_names
+    assert inspector.filter_combo.style == "InspectorFilter.TCombobox"
+    assert inspector.tree.style == "Review.Treeview"
+    assert inspector.add_button.style == "ReviewPanel.TButton"
