@@ -30,9 +30,11 @@ from opening_trainer.ui.gui_app import (
 class FakeButton:
     def __init__(self):
         self.text = None
+        self.state = None
 
     def configure(self, **kwargs):
         self.text = kwargs.get('text', self.text)
+        self.state = kwargs.get('state', self.state)
 
 
 class FakeGridWidget:
@@ -85,6 +87,7 @@ class FakeSession:
         self.config = type('Config', (), {'good_moves_acceptable': True})()
         self.saved_settings = None
         self.settings_store = self
+        self.state = SessionState.IDLE
         self.smart_profile = type('SmartProfile', (), {'reset_all': lambda self: None, 'set_level_for_current_track': lambda self, **kwargs: True, 'resolve_expected_bundle': lambda self, _root: type('R', (), {'resolved_entry': None})()})()
         self._pending_level_change = None
 
@@ -265,14 +268,20 @@ def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
     assert gui.move_list_panel.moves == move_history
 
 
-def test_gui_has_visible_update_button_and_profile_menu_entry():
+def test_gui_has_menu_shell_entries_and_bottom_actions():
     source = inspect.getsource(OpeningTrainerGUI)
-    assert "text='Report'" in source
+    assert "label='File'" in source
+    assert "label='Options'" in source
+    assert "label='Profiles'" in source
+    assert "label='Corpus Selection'" in source
+    assert "label='Update'" in source
+    assert "label='Report'" in source
+    assert "label='Developer'" in source
+    assert "text='Start Drill'" in source
+    assert "text='Pause (P)'" in source
     assert "_show_report_placeholder" in source
-    assert "text='Update'" in source
     assert "Check for Updates" in source
     assert "_check_for_updates_from_gui" in source
-    assert "text='Profiles'" in source
     assert "Manage Profiles…" in source
     assert "_open_profiles" in source
 
@@ -302,14 +311,14 @@ def _build_gui(tmp_path):
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.panel_visible = False
     gui.move_list_visible = True
+    gui.pause_button = FakeButton()
     gui.compact_status_panel = FakeGridWidget()
-    gui.panel_toggle_button = FakeButton()
     gui.root_pane = FakePane()
     gui.move_list_panel = FakeGridWidget()
     gui.inspector = FakeGridWidget()
     gui.session = FakeSession(tmp_path)
     gui._refresh_supporting_surfaces = lambda: None
-    gui._set_panel_toggle_label = OpeningTrainerGUI._set_panel_toggle_label.__get__(gui, OpeningTrainerGUI)
+    gui._update_pause_button_state = OpeningTrainerGUI._update_pause_button_state.__get__(gui, OpeningTrainerGUI)
     return gui
 
 
@@ -466,20 +475,18 @@ def test_default_shell_layout_keeps_move_list_visible_and_training_panel_hidden(
 
     assert gui.move_list_panel.visible is True
     assert gui.inspector.visible is False
-    assert gui.panel_toggle_button.text == 'Show Training Panel'
+    assert gui.pause_button.state == 'disabled'
 
 
-def test_toggle_side_panel_reveals_training_panel_without_hiding_move_list(tmp_path):
+def test_shell_layout_shows_training_panel_when_enabled_without_hiding_move_list(tmp_path):
     gui = _build_gui(tmp_path)
+    gui.panel_visible = True
+    gui.session.state = SessionState.PLAYER_TURN
     gui._apply_shell_layout(initializing=True)
 
-    gui._toggle_side_panel()
-    assert gui.panel_visible is True
     assert gui.move_list_panel.visible is True
     assert gui.inspector.visible is True
-    assert gui.panel_toggle_button.text == 'Hide Training Panel'
-    assert gui.session.saved_settings.side_panel_visible is True
-    assert gui.session.saved_settings.move_list_visible is True
+    assert gui.pause_button.state == 'normal'
 
 
 def test_load_panel_visibility_preference_defaults_false_for_new_settings(tmp_path):
@@ -783,11 +790,11 @@ def test_profile_switch_refresh_runs_smart_reconcile(tmp_path):
 
 
 def test_toolbar_has_single_corpus_selection_entrypoint():
-    source = inspect.getsource(OpeningTrainerGUI.__init__)
+    source = inspect.getsource(OpeningTrainerGUI._build_menubar)
 
-    assert "text='Corpus Selection'" in source
+    assert "label='Corpus Selection'" in source
     assert "Back to Corpus Selection" not in source
-    assert "text='Corpus bundle', command=self._open_bundle_picker" not in source
+    assert "Corpus bundle" not in source
 
 
 def test_smart_mode_prefills_expected_catalog_coordinates_and_variant():
@@ -1265,8 +1272,20 @@ def test_options_dialog_no_longer_owns_smart_contract_controls():
     assert 'Smart track' not in source
     assert 'Training depth (player moves)' not in source
     assert 'Accept Good moves' not in source
-    assert 'Training panel columns' in source
+    assert 'Dark Mode' in source
+    assert 'Show Moves List' in source
+    assert 'Show Training Panel' in source
+    assert 'Training Panel Columns' in source
+    assert 'Show training/review panel by default' not in source
+    assert 'Show move list by default' not in source
     assert 'for column in self.inspector.columns' in source
+    assert "state = 'normal' if panel_var.get() else 'disabled'" in source
+
+
+def test_pause_button_reuses_escape_pause_surface():
+    source = inspect.getsource(OpeningTrainerGUI._pause_from_button)
+
+    assert "_open_pause_surface(source='bottom_bar')" in source
 
 
 class _FakeComboStrip(FakeGridWidget):
@@ -1289,6 +1308,7 @@ def _build_control_strip_gui():
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.panel_visible = False
     gui.move_list_visible = True
+    gui.dark_mode_enabled = False
     gui.catalog = type("Catalog", (), {"entries": ()})()
     gui.catalog_grouped = {"Rapid": {"600+0": {"400-600": ()}}}
     gui.session = type(
