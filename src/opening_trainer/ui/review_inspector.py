@@ -53,12 +53,13 @@ class ReviewInspector(ttk.Frame):
         self.visible_columns = tuple(column for column in (visible_columns or self.columns) if column in self.columns) or self.columns
         self._focused_column_id: str | None = None
 
-        ttk.Combobox(
+        self.filter_combo = ttk.Combobox(
             self,
             textvariable=self.filter_var,
             values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency', 'manual_target'],
             state='readonly',
-        ).pack(anchor='e')
+        )
+        self.filter_combo.pack(anchor='e')
         self.filter_var.trace_add('write', lambda *_: self.refresh())
 
         tree_frame = ttk.Frame(self)
@@ -368,3 +369,24 @@ class ReviewInspector(ttk.Frame):
             'manual_forced_player_color': item.manual_forced_player_color,
             'operator_note': item.operator_note or '',
         }
+
+    def apply_theme(self, *, palette: dict[str, str]) -> None:
+        style = ttk.Style(self)
+        style.configure('Inspector.TFrame', background=palette['panel_bg'])
+        style.configure(
+            'Inspector.Treeview',
+            background=palette['surface_bg'],
+            fieldbackground=palette['surface_bg'],
+            foreground=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.configure(
+            'Inspector.Treeview.Heading',
+            background=palette['header_bg'],
+            foreground=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.map('Inspector.Treeview', background=[('selected', palette['select_bg'])], foreground=[('selected', palette['text_fg'])])
+        self.configure(style='Inspector.TFrame')
+        self.tree.configure(style='Inspector.Treeview')
+        self.filter_combo.configure(style='TCombobox')

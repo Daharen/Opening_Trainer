@@ -64,6 +64,9 @@ class CapturedMaterialPanel(ttk.Frame):
         ttk.Label(self, textvariable=self.delta_var, anchor='e', width=4).pack(side='right', padx=(6, 0))
         ttk.Label(self, textvariable=self.clock_var, anchor='e', width=8).pack(side='right')
 
+    def apply_theme(self, *, palette: dict[str, str]) -> None:
+        self.configure(style='Captured.TFrame')
+
     def update_board(self, board: chess.Board, *, player_color: chess.Color, near_side: bool, clock_seconds: float | None = None) -> None:
         white_captured, black_captured, delta = captured_pieces_and_material(board)
         if near_side:
