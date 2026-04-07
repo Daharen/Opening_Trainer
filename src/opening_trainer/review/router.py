@@ -114,6 +114,9 @@ class ReviewRouter:
             'due_active': 0,
             'boosted_active': 0,
             'urgent_active': 0,
+            'due_total': 0,
+            'boosted_total': 0,
+            'urgent_total': 0,
             'due_equivalent': 0,
             'boosted_equivalent': 0,
             'urgent_equivalent': 0,
@@ -164,15 +167,31 @@ class ReviewRouter:
         due_count: int,
         boosted_count: int,
         urgent_count: int,
+        *,
+        active_due_count: int | None = None,
+        active_boosted_count: int | None = None,
+        active_urgent_count: int | None = None,
     ) -> tuple[float, float, dict[str, int]]:
         breakdown = self._compute_share_breakdown(
             due_count=due_count,
             boosted_count=boosted_count,
             urgent_count=urgent_count,
+            active_due_count=active_due_count,
+            active_boosted_count=active_boosted_count,
+            active_urgent_count=active_urgent_count,
         )
         return (breakdown['corpus_pct'] / 100.0, breakdown['training_pct'] / 100.0, breakdown)
 
-    def _compute_share_breakdown(self, *, due_count: int, boosted_count: int, urgent_count: int) -> dict[str, int]:
+    def _compute_share_breakdown(
+        self,
+        *,
+        due_count: int,
+        boosted_count: int,
+        urgent_count: int,
+        active_due_count: int | None = None,
+        active_boosted_count: int | None = None,
+        active_urgent_count: int | None = None,
+    ) -> dict[str, int]:
         due_equivalent = due_count + boosted_count + urgent_count
         boosted_equivalent = boosted_count + urgent_count
         urgent_equivalent = urgent_count
@@ -183,10 +202,16 @@ class ReviewRouter:
         training_pct = due_pct + boosted_pct + urgent_pct
         training_pct = min(90, training_pct)
         corpus_pct = 100 - training_pct
+        due_active = due_count if active_due_count is None else active_due_count
+        boosted_active = boosted_count if active_boosted_count is None else active_boosted_count
+        urgent_active = urgent_count if active_urgent_count is None else active_urgent_count
         return {
-            'due_active': due_count,
-            'boosted_active': boosted_count,
-            'urgent_active': urgent_count,
+            'due_active': due_active,
+            'boosted_active': boosted_active,
+            'urgent_active': urgent_active,
+            'due_total': due_count,
+            'boosted_total': boosted_count,
+            'urgent_total': urgent_count,
             'due_equivalent': due_equivalent,
             'boosted_equivalent': boosted_equivalent,
             'urgent_equivalent': urgent_equivalent,
@@ -197,7 +222,20 @@ class ReviewRouter:
             'corpus_pct': corpus_pct,
         }
 
-    def _compute_shares(self, d: int, h80: int, h60: int, h40: int, h20: int, b: int, e: int) -> dict[str, object]:
+    def _compute_shares(
+        self,
+        d: int,
+        h80: int,
+        h60: int,
+        h40: int,
+        h20: int,
+        b: int,
+        e: int,
+        *,
+        active_due_count: int | None = None,
+        active_boosted_count: int | None = None,
+        active_urgent_count: int | None = None,
+    ) -> dict[str, object]:
         due_count = d + h80 + h60 + h40 + h20
         boosted_count = b
         urgent_count = e
@@ -206,12 +244,22 @@ class ReviewRouter:
             return {category: (1.0 if category == 'C' else 0.0) for category in ('C', *REVIEW_CATEGORIES)} | {
                 'corpus': 1.0,
                 'review': 0.0,
-                'share_breakdown': self._compute_share_breakdown(due_count=0, boosted_count=0, urgent_count=0),
+                'share_breakdown': self._compute_share_breakdown(
+                    due_count=0,
+                    boosted_count=0,
+                    urgent_count=0,
+                    active_due_count=active_due_count,
+                    active_boosted_count=active_boosted_count,
+                    active_urgent_count=active_urgent_count,
+                ),
             }
         corpus_share, review_share, breakdown = self._compute_training_and_corpus_share_from_pressure_counts(
             due_count=due_count,
             boosted_count=boosted_count,
             urgent_count=urgent_count,
+            active_due_count=active_due_count,
+            active_boosted_count=active_boosted_count,
+            active_urgent_count=active_urgent_count,
         )
         masses = {
             'D': 1 * d,
@@ -231,6 +279,9 @@ class ReviewRouter:
                     due_count=due_count,
                     boosted_count=boosted_count,
                     urgent_count=urgent_count,
+                    active_due_count=active_due_count,
+                    active_boosted_count=active_boosted_count,
+                    active_urgent_count=active_urgent_count,
                 ),
             }
         out = {'C': corpus_share, 'corpus': corpus_share, 'review': review_share, 'share_breakdown': breakdown}
@@ -372,7 +423,13 @@ class ReviewRouter:
                 self.pending_rebuild_trigger = 'due_removals_threshold'
         self.prev_due_ids = {k: set(v) for k, v in ids_by_tier.items()}
 
-    def _rebuild_deck(self, counts_by_category: dict[str, int]) -> None:
+    def _rebuild_deck(
+        self,
+        counts_by_category: dict[str, int],
+        *,
+        active_counts_by_category: dict[str, int] | None = None,
+    ) -> None:
+        active_counts = active_counts_by_category or {}
         shares = self._compute_shares(
             counts_by_category.get('D', 0),
             counts_by_category.get('H80', 0),
@@ -381,6 +438,9 @@ class ReviewRouter:
             counts_by_category.get('H20', 0),
             counts_by_category.get('B', 0),
             counts_by_category.get('E', 0),
+            active_due_count=active_counts.get('D'),
+            active_boosted_count=active_counts.get('B'),
+            active_urgent_count=active_counts.get('E'),
         )
         n = self._deck_size(sum(counts_by_category.get(cat, 0) for cat in REVIEW_CATEGORIES))
         counts = self._allocate_counts(shares, n, counts_by_category)
@@ -937,21 +997,22 @@ class ReviewRouter:
         self._sync_queues(tier_items, ids_by_tier)
         self._track_state_changes(ids_by_tier)
         counts_by_category = {category: len(tier_items[category]) for category in REVIEW_CATEGORIES}
-        counts_by_category['D'] = len(pressure_state['D'].active_deck)
-        counts_by_category['B'] = len(pressure_state['B'].active_deck)
-        counts_by_category['E'] = len(pressure_state['E'].active_deck)
+        active_due_count = len(pressure_state['D'].active_deck)
+        active_boosted_count = len(pressure_state['B'].active_deck)
+        active_urgent_count = len(pressure_state['E'].active_deck)
         due_count = counts_by_category['D']
         boosted_count, extreme_count = counts_by_category['B'], counts_by_category['E']
         total_due = due_count + boosted_count + extreme_count
+        active_counts_by_category = {'D': active_due_count, 'B': active_boosted_count, 'E': active_urgent_count}
 
         rebuild_trigger: str | None = None
         if self.pending_rebuild_trigger is not None:
             rebuild_trigger = self.pending_rebuild_trigger
             self.pending_rebuild_trigger = None
-            self._rebuild_deck(counts_by_category)
+            self._rebuild_deck(counts_by_category, active_counts_by_category=active_counts_by_category)
         elif self.deck.exhausted:
             rebuild_trigger = 'deck_exhausted'
-            self._rebuild_deck(counts_by_category)
+            self._rebuild_deck(counts_by_category, active_counts_by_category=active_counts_by_category)
 
         token = self.deck.next_token() if self.deck.tokens else 'C'
         selected_item = None

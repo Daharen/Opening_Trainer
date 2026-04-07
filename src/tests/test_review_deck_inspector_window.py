@@ -48,6 +48,9 @@ def test_snapshot_uses_urgent_multiplicity_fallback() -> None:
             'due_active': 1,
             'boosted_active': 0,
             'urgent_active': 1,
+            'due_total': 3,
+            'boosted_total': 0,
+            'urgent_total': 2,
             'due_equivalent': 2,
             'boosted_equivalent': 1,
             'urgent_equivalent': 1,
@@ -91,6 +94,9 @@ def test_training_share_tooltip_uses_live_breakdown_values() -> None:
         'due_active': 3,
         'boosted_active': 2,
         'urgent_active': 1,
+        'due_total': 8,
+        'boosted_total': 4,
+        'urgent_total': 2,
         'due_equivalent': 6,
         'boosted_equivalent': 3,
         'urgent_equivalent': 1,
@@ -103,6 +109,7 @@ def test_training_share_tooltip_uses_live_breakdown_values() -> None:
 
     tooltip = ReviewDeckInspectorWindow._training_share_tooltip_text(window)
 
+    assert 'D=8 B=4 E=2' in tooltip
     assert 'D=3 B=2 E=1' in tooltip
     assert 'Total training=42% | corpus remainder=58%' in tooltip
 

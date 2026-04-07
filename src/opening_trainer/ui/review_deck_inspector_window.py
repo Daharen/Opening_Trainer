@@ -455,8 +455,13 @@ class ReviewDeckInspectorWindow:
         data = self._latest_share_breakdown
         if not data:
             return ''
+        due_total = data.get('due_total', data.get('due_active', 0))
+        boosted_total = data.get('boosted_total', data.get('boosted_active', 0))
+        urgent_total = data.get('urgent_total', data.get('urgent_active', 0))
         return (
-            'Active: '
+            'Live obligations: '
+            f"D={due_total} B={boosted_total} E={urgent_total}\n"
+            'Active cards: '
             f"D={data.get('due_active', 0)} B={data.get('boosted_active', 0)} E={data.get('urgent_active', 0)}\n"
             'Equivalent: '
             f"D={data.get('due_equivalent', 0)} B={data.get('boosted_equivalent', 0)} E={data.get('urgent_equivalent', 0)}\n"
