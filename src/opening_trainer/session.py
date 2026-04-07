@@ -222,6 +222,9 @@ class TrainingSession:
                 }
             )
         return {
+            'training_share': float(getattr(self.router, 'last_shares', (1.0, 0.0))[1]),
+            'corpus_share': float(getattr(self.router, 'last_shares', (1.0, 0.0))[0]),
+            'share_breakdown': dict(getattr(self.router, 'last_share_breakdown', {})),
             'active_rows': active_rows,
             'tiers': {
                 tier: {
@@ -1129,6 +1132,12 @@ class TrainingSession:
             impact_summary = f'Updated review item; urgency is now {item.urgency_tier}.'
         decision = self.router.stubborn_extreme_repeat(self.active_profile_id, item) if item.pending_forced_stubborn_repeat else self.router.immediate_retry(self.active_profile_id, item)
         self.router.record_review_result(self.active_profile_id, self.current_routing.routing_source if self.current_routing else '', was_miss=True)
+        if self.current_routing and self.current_routing.selected_review_item_id:
+            self._notify_review_deck_observers(
+                'training_outcome_recorded',
+                review_item_id=self.current_routing.selected_review_item_id,
+                result='FAIL',
+            )
         item.pending_forced_stubborn_repeat = False
         self._save_items(items)
         self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))
@@ -1184,6 +1193,12 @@ class TrainingSession:
         previous_frequency_state = item.frequency_state
         apply_success(item, self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')
         self.router.record_review_result(self.active_profile_id, self.current_routing.routing_source if self.current_routing else '', was_miss=False)
+        if self.current_routing and self.current_routing.selected_review_item_id:
+            self._notify_review_deck_observers(
+                'training_outcome_recorded',
+                review_item_id=self.current_routing.selected_review_item_id,
+                result='PASS',
+            )
         self._save_items(items)
         next_decision = self._select_routing_with_inspector(items, reason="post_success_routing")
         self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))

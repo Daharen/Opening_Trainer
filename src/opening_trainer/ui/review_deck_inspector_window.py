@@ -23,12 +23,49 @@ class _InspectorLiveState:
     active_order: list[str] = field(default_factory=list)
     color_by_item_id: dict[str, tuple[str, str, str]] = field(default_factory=dict)
     position_by_item_id: dict[str, str] = field(default_factory=dict)
-    history_rows: list[tuple[str, str, str]] = field(default_factory=list)
+    history_rows: list[dict[str, str]] = field(default_factory=list)
+    pending_training_history_by_item_id: dict[str, list[str]] = field(default_factory=dict)
+    history_row_serial: int = 0
     runtime_events: list[dict[str, object]] = field(default_factory=list)
     last_processed_event_index: int = 0
     last_seen_deck_cursor: object = None
     latest_summary_snapshot: dict[str, object] = field(default_factory=dict)
     placeholder_visible: bool = False
+
+
+class _HoverTooltip:
+    def __init__(self, widget: tk.Widget, text_provider) -> None:
+        self.widget = widget
+        self.text_provider = text_provider
+        self.tooltip_window: tk.Toplevel | None = None
+        self.widget.bind('<Enter>', self._on_enter, add='+')
+        self.widget.bind('<Leave>', self._on_leave, add='+')
+
+    def _on_enter(self, _event=None) -> None:
+        text = str(self.text_provider() or '').strip()
+        if not text:
+            return
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 2
+        self.tooltip_window = tk.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f'+{x}+{y}')
+        label = tk.Label(
+            self.tooltip_window,
+            text=text,
+            justify='left',
+            background='#ffffe0',
+            relief='solid',
+            borderwidth=1,
+            padx=6,
+            pady=4,
+        )
+        label.pack()
+
+    def _on_leave(self, _event=None) -> None:
+        if self.tooltip_window is not None:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
 
 
 class ReviewDeckInspectorWindow:
@@ -109,17 +146,41 @@ class ReviewDeckInspectorWindow:
         history_frame.rowconfigure(0, weight=1)
         history_frame.columnconfigure(0, weight=1)
 
-        self.history_text = tk.Text(history_frame, wrap='none', height=20)
-        history_scroll = ttk.Scrollbar(history_frame, orient='vertical', command=self.history_text.yview)
-        self.history_text.configure(yscrollcommand=history_scroll.set)
-        self.history_text.grid(row=0, column=0, sticky='nsew')
+        self.history_table = ttk.Treeview(
+            history_frame,
+            show='headings',
+            columns=('source', 'position', 'result'),
+            height=20,
+        )
+        for column, label, width in (
+            ('source', 'Source', 120),
+            ('position', 'Position', 420),
+            ('result', 'Result', 80),
+        ):
+            self.history_table.heading(column, text=label)
+            self.history_table.column(column, width=width, anchor='w')
+        history_scroll = ttk.Scrollbar(history_frame, orient='vertical', command=self.history_table.yview)
+        self.history_table.configure(yscrollcommand=history_scroll.set)
+        self.history_table.grid(row=0, column=0, sticky='nsew')
         history_scroll.grid(row=0, column=1, sticky='ns')
-        self.history_text.configure(state='disabled')
+        self._history_placeholder_iid = 'history_placeholder'
 
         summary_frame = ttk.LabelFrame(lower, text='Live Summary', padding=8)
         summary_frame.grid(row=0, column=1, sticky='nsew')
-        for idx in range(2):
-            summary_frame.columnconfigure(idx, weight=1)
+        summary_frame.rowconfigure(0, weight=1)
+        summary_frame.columnconfigure(0, weight=1)
+        self.summary_canvas = tk.Canvas(summary_frame, highlightthickness=0)
+        summary_scroll = ttk.Scrollbar(summary_frame, orient='vertical', command=self.summary_canvas.yview)
+        self.summary_canvas.configure(yscrollcommand=summary_scroll.set)
+        self.summary_canvas.grid(row=0, column=0, sticky='nsew')
+        summary_scroll.grid(row=0, column=1, sticky='ns')
+        self.summary_content = ttk.Frame(self.summary_canvas)
+        self.summary_canvas_window = self.summary_canvas.create_window((0, 0), window=self.summary_content, anchor='nw')
+        self.summary_content.bind('<Configure>', lambda _event: self.summary_canvas.configure(scrollregion=self.summary_canvas.bbox('all')))
+        self.summary_canvas.bind(
+            '<Configure>',
+            lambda event: self.summary_canvas.itemconfigure(self.summary_canvas_window, width=event.width),
+        )
         self.summary_vars: dict[str, tk.StringVar] = {}
         labels = [
             ('due_streak', 'Due Streak'),
@@ -146,18 +207,28 @@ class ReviewDeckInspectorWindow:
             ('waiting_boosted', 'Boosted Waiting'),
             ('waiting_urgent', 'Urgent Waiting'),
             ('separator_6', '────────'),
+            ('training_share', 'Training %'),
+            ('corpus_share', 'Corpus %'),
+            ('separator_7', '────────'),
             ('deck_cursor', 'Deck Cursor'),
             ('last_mutation_reason', 'Last Mutation Reason'),
             ('last_routing_action', 'Last Routing Action'),
         ]
+        self._training_share_row_widget: ttk.Label | None = None
+        self._latest_share_breakdown: dict[str, object] = {}
         for row, (key, label) in enumerate(labels):
             var = tk.StringVar(value='—')
             self.summary_vars[key] = var
             if key.startswith('separator_'):
-                ttk.Label(summary_frame, text=label).grid(row=row, column=0, columnspan=2, sticky='ew', pady=1)
+                ttk.Label(self.summary_content, text=label).grid(row=row, column=0, columnspan=2, sticky='ew', pady=1)
             else:
-                ttk.Label(summary_frame, text=f'{label}:').grid(row=row, column=0, sticky='w', pady=1)
-                ttk.Label(summary_frame, textvariable=var).grid(row=row, column=1, sticky='w', pady=1)
+                ttk.Label(self.summary_content, text=f'{label}:').grid(row=row, column=0, sticky='w', pady=1)
+                value_label = ttk.Label(self.summary_content, textvariable=var)
+                value_label.grid(row=row, column=1, sticky='w', pady=1)
+                if key == 'training_share':
+                    self._training_share_row_widget = value_label
+        if self._training_share_row_widget is not None:
+            self._training_share_tooltip = _HoverTooltip(self._training_share_row_widget, self._training_share_tooltip_text)
 
     def _schedule_poll(self) -> None:
         self._poll_handle = self.window.after(self.POLL_MS, self._poll_refresh)
@@ -197,11 +268,17 @@ class ReviewDeckInspectorWindow:
             'due_underfill',
             'boosted_underfill',
             'urgent_underfill',
+            'training_share',
+            'corpus_share',
             'deck_cursor',
             'last_mutation_reason',
             'last_routing_action',
         ):
-            self.summary_vars[key].set(str(summary.get(key, '—')))
+            if key in {'training_share', 'corpus_share'}:
+                self.summary_vars[key].set(self._format_pct(current.get(key)))
+            else:
+                self.summary_vars[key].set(str(summary.get(key, '—')))
+        self._latest_share_breakdown = dict(current.get('share_breakdown', {}))
         self.summary_vars['waiting_due'].set(str(waiting.get('due', '—')))
         self.summary_vars['waiting_boosted'].set(str(waiting.get('boosted', '—')))
         self.summary_vars['waiting_urgent'].set(str(waiting.get('urgent', '—')))
@@ -286,46 +363,104 @@ class ReviewDeckInspectorWindow:
                 item_id = str(event.get('review_item_id') or '')
                 label = self._label_for_item_id(item_id, snapshot)
                 bg, fg = self._color_for_item_id(item_id)
-                self._append_history(label, bg, fg)
+                self._append_history_row('Training', label, '—', bg, fg, review_item_id=item_id)
             elif event_type == 'corpus_move_emitted':
-                self._append_history('Corpus', '#000000', 'white')
+                self._append_history_row('Corpus', '—', '—', '#000000', 'white')
+            elif event_type == 'training_outcome_recorded':
+                self._apply_training_outcome(
+                    review_item_id=str(event.get('review_item_id') or ''),
+                    result=str(event.get('result') or ''),
+                )
         self._live_state.last_processed_event_index = max_seen
         self._live_state.runtime_events = [
             event for event in events if int(event.get('event_index', 0) or 0) > self._live_state.last_processed_event_index
         ]
 
-    def _append_history(self, text: str, bg: str, fg: str) -> None:
+    def _append_history_row(
+        self,
+        source: str,
+        position: str,
+        result: str,
+        bg: str,
+        fg: str,
+        *,
+        review_item_id: str | None = None,
+    ) -> None:
         if self._live_state.placeholder_visible:
-            self.history_text.configure(state='normal')
-            self.history_text.delete('1.0', tk.END)
-            self.history_text.configure(state='disabled')
+            if self.history_table.exists(self._history_placeholder_iid):
+                self.history_table.delete(self._history_placeholder_iid)
             self._live_state.placeholder_visible = False
-        self._live_state.history_rows.append((text, bg, fg))
+        row_serial = self._live_state.history_row_serial
+        self._live_state.history_row_serial += 1
+        iid = f'history_{row_serial}'
+        self._live_state.history_rows.append(
+            {'iid': iid, 'source': source, 'position': position, 'result': result, 'bg': bg, 'fg': fg}
+        )
         if len(self._live_state.history_rows) > self.HISTORY_LIMIT:
             self._live_state.history_rows = self._live_state.history_rows[-self.HISTORY_LIMIT :]
             self._rerender_history()
-            return
-        history_idx = len(self._live_state.history_rows) - 1
-        tag = f'history_{history_idx}'
-        self.history_text.configure(state='normal')
-        self.history_text.insert(tk.END, f'{text}\n', tag)
-        self.history_text.tag_configure(tag, background=bg, foreground=fg)
-        self.history_text.configure(state='disabled')
-        self.history_text.see(tk.END)
+        else:
+            self.history_table.insert('', 'end', iid=iid, values=(source, position, result), tags=(iid,))
+            self.history_table.tag_configure(iid, background=bg, foreground=fg)
+            self.history_table.see(iid)
+        if review_item_id:
+            self._live_state.pending_training_history_by_item_id.setdefault(review_item_id, []).append(iid)
 
     def _rerender_history(self) -> None:
-        self.history_text.configure(state='normal')
-        self.history_text.delete('1.0', tk.END)
-        for idx, (entry_text, row_bg, row_fg) in enumerate(self._live_state.history_rows):
-            tag = f'history_{idx}'
-            self.history_text.insert(tk.END, f'{entry_text}\n', tag)
-            self.history_text.tag_configure(tag, background=row_bg, foreground=row_fg)
-        self.history_text.configure(state='disabled')
-        self.history_text.see(tk.END)
+        for row_id in self.history_table.get_children(''):
+            self.history_table.delete(row_id)
+        for row in self._live_state.history_rows:
+            iid = row['iid']
+            self.history_table.insert('', 'end', iid=iid, values=(row['source'], row['position'], row['result']), tags=(iid,))
+            self.history_table.tag_configure(iid, background=row['bg'], foreground=row['fg'])
+        visible = {row['iid'] for row in self._live_state.history_rows}
+        self._live_state.pending_training_history_by_item_id = {
+            item_id: [iid for iid in iids if iid in visible]
+            for item_id, iids in self._live_state.pending_training_history_by_item_id.items()
+            if any(iid in visible for iid in iids)
+        }
+        if self._live_state.history_rows:
+            self.history_table.see(self._live_state.history_rows[-1]['iid'])
 
     def _show_empty_history_placeholder(self) -> None:
-        self.history_text.configure(state='normal')
-        self.history_text.delete('1.0', tk.END)
-        self.history_text.insert(tk.END, 'No history yet. Waiting for corpus/training events.\n')
-        self.history_text.configure(state='disabled')
+        self.history_table.insert(
+            '',
+            'end',
+            iid=self._history_placeholder_iid,
+            values=('—', 'No history yet. Waiting for corpus/training events.', '—'),
+        )
         self._live_state.placeholder_visible = True
+
+    def _apply_training_outcome(self, review_item_id: str, result: str) -> None:
+        rows = self._live_state.pending_training_history_by_item_id.get(review_item_id, [])
+        if not rows:
+            return
+        iid = rows.pop(0)
+        rendered_result = 'PASS' if result.lower() == 'pass' else 'FAIL'
+        if self.history_table.exists(iid):
+            values = self.history_table.item(iid, 'values')
+            self.history_table.item(iid, values=(values[0], values[1], rendered_result))
+        for row in self._live_state.history_rows:
+            if row['iid'] == iid:
+                row['result'] = rendered_result
+                break
+
+    @staticmethod
+    def _format_pct(value: object) -> str:
+        if isinstance(value, (int, float)):
+            return f'{value * 100:.1f}%'
+        return '—'
+
+    def _training_share_tooltip_text(self) -> str:
+        data = self._latest_share_breakdown
+        if not data:
+            return ''
+        return (
+            'Active: '
+            f"D={data.get('due_active', 0)} B={data.get('boosted_active', 0)} E={data.get('urgent_active', 0)}\n"
+            'Equivalent: '
+            f"D={data.get('due_equivalent', 0)} B={data.get('boosted_equivalent', 0)} E={data.get('urgent_equivalent', 0)}\n"
+            'Contribution: '
+            f"D={data.get('due_pct', 0)}% B={data.get('boosted_pct', 0)}% E={data.get('urgent_pct', 0)}%\n"
+            f"Total training={data.get('training_pct', 0)}% | corpus remainder={data.get('corpus_pct', 0)}%"
+        )
