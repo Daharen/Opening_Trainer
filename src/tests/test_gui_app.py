@@ -231,15 +231,25 @@ class FakeThemeRoot:
 
 
 class FakeStyle:
+    last_theme = None
+
     def __init__(self, _root):
         self.configured = []
         self.mapped = []
+        self._theme = 'vista'
 
     def configure(self, name, **kwargs):
         self.configured.append((name, kwargs))
 
     def map(self, name, **kwargs):
         self.mapped.append((name, kwargs))
+
+    def theme_use(self, theme=None):
+        if theme is None:
+            return self._theme
+        self._theme = theme
+        FakeStyle.last_theme = theme
+        return self._theme
 
 
 def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
@@ -305,6 +315,7 @@ def test_theme_palette_provides_layered_dark_gray_surfaces():
 
 
 def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
+    FakeStyle.last_theme = None
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.dark_mode_enabled = True
     gui.root = FakeThemeRoot()
@@ -318,6 +329,20 @@ def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
     gui.bundle_picker = type("W", (), {"configure": lambda self, **kwargs: None})()
     gui.pause_button = type("B", (), {"configure": lambda self, **kwargs: None})()
     gui.start_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    top_combo_styles = {}
+
+    class _Combo:
+        def __init__(self, key):
+            self.key = key
+
+        def configure(self, **kwargs):
+            top_combo_styles[self.key] = kwargs.get('style')
+
+    gui.top_time_control_combo = _Combo('time')
+    gui.top_elo_combo = _Combo('elo')
+    gui.top_depth_combo = _Combo('depth')
+    gui.top_good_combo = _Combo('good')
+    gui.fallback_mode_combo = _Combo('fallback')
     calls = {"move_list": 0, "inspector": 0, "board": 0}
     gui.move_list_panel = type("MoveList", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("move_list", calls["move_list"] + 1)})()
     gui.inspector = type("Inspector", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("inspector", calls["inspector"] + 1)})()
@@ -332,6 +357,15 @@ def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
 
     assert calls == {"move_list": 1, "inspector": 1, "board": 1}
     assert gui.root.configured["bg"] == gui._theme_palette()["app_bg"]
+    assert getattr(gui, '_default_ttk_theme_name', None) == 'vista'
+    assert FakeStyle.last_theme == 'clam'
+    assert top_combo_styles == {
+        'time': 'TopStrip.TCombobox',
+        'elo': 'TopStrip.TCombobox',
+        'depth': 'TopStrip.TCombobox',
+        'good': 'TopStrip.TCombobox',
+        'fallback': 'TopStrip.TCombobox',
+    }
 
 
 def test_windows_titlebar_preference_fails_safely_on_unsupported_calls(monkeypatch):
@@ -346,6 +380,37 @@ def test_windows_titlebar_preference_fails_safely_on_unsupported_calls(monkeypat
     monkeypatch.setattr("opening_trainer.ui.gui_app.ctypes.windll", broken_windll, raising=False)
 
     OpeningTrainerGUI._apply_windows_titlebar_preference(window, True)
+
+
+def test_apply_theme_restores_default_ttk_theme_when_dark_mode_disabled(monkeypatch):
+    FakeStyle.last_theme = None
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.dark_mode_enabled = False
+    gui._default_ttk_theme_name = 'vista'
+    gui.root = FakeThemeRoot()
+    gui.summary_strip = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.control_strip = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.action_bar = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.main_region = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.side_panel = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.side_content = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.root_pane = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.bundle_picker = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.pause_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    gui.start_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    gui.move_list_panel = type("MoveList", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.inspector = type("Inspector", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.top_captured_panel = type("Cap", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.bottom_captured_panel = type("Cap", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.board_view = type("Board", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui._child_windows = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.ttk.Style", FakeStyle)
+    monkeypatch.setattr(gui, "_apply_windows_titlebar_preference", lambda *_args, **_kwargs: None)
+
+    gui._apply_theme()
+
+    assert gui._default_ttk_theme_name == 'vista'
+    assert FakeStyle.last_theme in (None, 'vista')
 
 
 def test_gui_has_menu_shell_entries_and_bottom_actions():
