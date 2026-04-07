@@ -114,3 +114,55 @@ def test_board_edit_opens_board_setup_for_any_item(monkeypatch) -> None:
     assert calls['board']['title'] == 'Edit in Board Setup'
     assert calls['board']['initial']['target_fen'] == chess.STARTING_FEN
     assert calls['board']['initial']['predecessor_line_uci'] == 'e2e4 e7e5'
+
+
+def test_apply_theme_assigns_explicit_review_styles(monkeypatch) -> None:
+    configured = {}
+    style_calls = []
+
+    class _Style:
+        def __init__(self, _owner):
+            return
+
+        def configure(self, name, **kwargs):
+            style_calls.append(("configure", name, kwargs))
+
+        def map(self, name, **kwargs):
+            style_calls.append(("map", name, kwargs))
+
+    class _Widget:
+        def __init__(self, key):
+            self.key = key
+
+        def configure(self, **kwargs):
+            configured[self.key] = kwargs.get('style')
+
+    inspector = ReviewInspector.__new__(ReviewInspector)
+    inspector.tree = _Widget('tree')
+    inspector.tree_frame = _Widget('tree_frame')
+    inspector.button_row = _Widget('button_row')
+    inspector.filter_combo = _Widget('filter')
+    inspector.action_buttons = [_Widget('button_1'), _Widget('button_2')]
+    inspector.configure = lambda **kwargs: configured.__setitem__('frame', kwargs.get('style'))
+    monkeypatch.setattr('opening_trainer.ui.review_inspector.ttk.Style', _Style)
+
+    inspector.apply_theme(
+        palette={
+            'panel_bg': '#1f252c',
+            'surface_bg': '#262d36',
+            'text_fg': '#e6e9ee',
+            'border_color': '#3a4654',
+            'header_bg': '#2d3641',
+            'select_bg': '#3d4f64',
+        }
+    )
+
+    assert configured['frame'] == 'ReviewPanel.TFrame'
+    assert configured['tree_frame'] == 'ReviewPanelSurface.TFrame'
+    assert configured['button_row'] == 'ReviewPanel.TFrame'
+    assert configured['tree'] == 'Review.Treeview'
+    assert configured['filter'] == 'InspectorFilter.TCombobox'
+    assert configured['button_1'] == 'ReviewPanel.TButton'
+    assert configured['button_2'] == 'ReviewPanel.TButton'
+    assert any(call[1] == 'Review.Treeview' for call in style_calls)
+    assert any(call[1] == 'Review.Treeview.Heading' for call in style_calls)
