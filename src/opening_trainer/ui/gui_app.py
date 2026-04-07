@@ -1440,8 +1440,6 @@ class OpeningTrainerGUI:
         style = ttk.Style(self.root)
         style.configure('.', background=palette.panel_bg, foreground=palette.text_fg)
         style.configure('Shell.TFrame', background=palette.panel_bg)
-        style.configure('ShellStrip.TFrame', background=palette.panel_bg)
-        style.configure('ControlStrip.TFrame', background=palette.panel_bg)
         style.configure('ShellSurface.TFrame', background=palette.surface_bg)
         style.configure('TFrame', background=palette.panel_bg)
         style.configure('TLabelframe', background=palette.surface_bg, foreground=palette.text_fg, bordercolor=palette.border_color)
@@ -1463,25 +1461,20 @@ class OpeningTrainerGUI:
         style.configure('Captured.TLabel', background=palette.surface_bg, foreground=palette.text_fg)
         style.configure('CapturedClock.TLabel', background=palette.surface_bg, foreground=palette.text_fg)
         style.configure('CapturedDelta.TLabel', background=palette.surface_bg, foreground=palette.muted_fg)
-        ttk_surfaces = (
-            (getattr(self, 'summary_strip', None), 'ShellStrip.TFrame'),
-            (getattr(self, 'control_strip', None), 'ControlStrip.TFrame'),
-            (getattr(self, 'side_content', None), 'ShellSurface.TFrame'),
-            (getattr(self, 'loading_frame', None), 'ShellSurface.TFrame'),
-        )
-        for widget, widget_style in ttk_surfaces:
-            if widget is not None:
-                widget.configure(style=widget_style)
-        classic_tk_surfaces = (
+        for widget in (
+            getattr(self, 'summary_strip', None),
+            getattr(self, 'control_strip', None),
             getattr(self, 'action_bar', None),
             getattr(self, 'main_region', None),
             getattr(self, 'side_panel', None),
             getattr(self, 'root_pane', None),
-        )
-        for widget in classic_tk_surfaces:
+        ):
             if widget is not None:
                 target_bg = palette.app_bg if widget is self.action_bar else palette.panel_bg
                 widget.configure(bg=target_bg)
+        for frame in (getattr(self, 'side_content', None), getattr(self, 'loading_frame', None)):
+            if frame is not None:
+                frame.configure(style='ShellSurface.TFrame')
         if getattr(self, 'move_list_panel', None) is not None:
             self.move_list_panel.apply_theme(pal, dark_mode=palette.dark_mode)
         if getattr(self, 'inspector', None) is not None:

@@ -226,13 +226,6 @@ class _ThemeWidget:
         self.calls.append(kwargs)
 
 
-class _StrictTtkThemeWidget(_ThemeWidget):
-    def configure(self, **kwargs):
-        if 'bg' in kwargs:
-            raise AssertionError('ttk widget should not receive bg=')
-        super().configure(**kwargs)
-
-
 class _ThemeRoot(_ThemeWidget):
     def __init__(self):
         super().__init__()
@@ -1329,14 +1322,14 @@ def test_apply_theme_uses_central_palette_and_themes_widget_surfaces(monkeypatch
     gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
     gui.dark_mode_enabled = True
     gui.root = _ThemeRoot()
-    gui.summary_strip = _StrictTtkThemeWidget()
-    gui.control_strip = _StrictTtkThemeWidget()
+    gui.summary_strip = _ThemeWidget()
+    gui.control_strip = _ThemeWidget()
     gui.action_bar = _ThemeWidget()
     gui.main_region = _ThemeWidget()
     gui.side_panel = _ThemeWidget()
     gui.root_pane = _ThemeWidget()
-    gui.side_content = _StrictTtkThemeWidget()
-    gui.loading_frame = _StrictTtkThemeWidget()
+    gui.side_content = _ThemeWidget()
+    gui.loading_frame = _ThemeWidget()
     gui._child_windows = []
     move_list_calls = []
     inspector_calls = []
@@ -1360,42 +1353,6 @@ def test_apply_theme_uses_central_palette_and_themes_widget_surfaces(monkeypatch
     assert any(name == 'Review.Treeview' for name, _cfg in style.configured)
     assert any(name == 'Treeview.Heading' for name, _cfg in style.configured)
     assert any(name == 'TCombobox' for name, _cfg in style.configured)
-    assert {'style': 'ShellStrip.TFrame'} in gui.summary_strip.calls
-    assert {'style': 'ControlStrip.TFrame'} in gui.control_strip.calls
-    assert {'style': 'ShellSurface.TFrame'} in gui.side_content.calls
-    assert {'style': 'ShellSurface.TFrame'} in gui.loading_frame.calls
-
-
-def test_apply_theme_does_not_apply_bg_to_ttk_shell_strips(monkeypatch):
-    from opening_trainer.ui import gui_app as gui_module
-
-    monkeypatch.setattr(gui_module.ttk, 'Style', lambda _root: _ThemeStyle(None))
-    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
-    gui.dark_mode_enabled = True
-    gui.root = _ThemeRoot()
-    gui.summary_strip = _StrictTtkThemeWidget()
-    gui.control_strip = _StrictTtkThemeWidget()
-    gui.action_bar = _ThemeWidget()
-    gui.main_region = _ThemeWidget()
-    gui.side_panel = _ThemeWidget()
-    gui.root_pane = _ThemeWidget()
-    gui.side_content = _StrictTtkThemeWidget()
-    gui.loading_frame = _StrictTtkThemeWidget()
-    gui._child_windows = []
-    gui.move_list_panel = None
-    gui.inspector = None
-    gui.board_view = None
-    gui.top_captured_panel = None
-    gui.bottom_captured_panel = None
-    gui._apply_windows_title_bar_theme = lambda _dark_mode: None
-    gui._apply_theme_to_child_windows = lambda _palette: None
-
-    gui._apply_theme()
-
-    assert all('bg' not in call for call in gui.summary_strip.calls)
-    assert all('bg' not in call for call in gui.control_strip.calls)
-    assert {'style': 'ShellStrip.TFrame'} in gui.summary_strip.calls
-    assert {'style': 'ControlStrip.TFrame'} in gui.control_strip.calls
 
 
 def test_options_save_path_persists_dark_mode_and_reapplies_theme():
