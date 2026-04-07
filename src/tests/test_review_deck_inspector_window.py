@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from opening_trainer.session import TrainingSession
-from opening_trainer.ui.review_deck_inspector_window import ReviewDeckInspectorWindow
+from opening_trainer.ui.review_deck_inspector_window import ReviewDeckInspectorWindow, _InspectorLiveState
 
 
 def test_snapshot_uses_urgent_multiplicity_fallback() -> None:
@@ -53,13 +53,16 @@ def test_snapshot_uses_urgent_multiplicity_fallback() -> None:
     assert rows['u1']['deck_cards'] == 4
     assert rows['d1']['deck_cards'] == 1
     assert snapshot['card_count_source'] == 'live_deck_cards'
+    assert snapshot['tiers']['boosted']['capacity'] == 3
+    assert snapshot['stable_review_deck']['cursor'] == 3
+    assert snapshot['summary']['boosted_underfill'] == 3
 
 
 def test_palette_assignment_is_stable_for_existing_rows() -> None:
     window = ReviewDeckInspectorWindow.__new__(ReviewDeckInspectorWindow)
-    window._row_palette = {'existing': ('red', '#d32f2f', 'white')}
+    window._live_state = _InspectorLiveState(color_by_item_id={'existing': ('red', '#d32f2f', 'white')})
 
     ReviewDeckInspectorWindow._reconcile_palette(window, ['existing', 'new'])
 
-    assert window._row_palette['existing'][0] == 'red'
-    assert window._row_palette['new'][0] != 'red'
+    assert window._live_state.color_by_item_id['existing'][0] == 'red'
+    assert window._live_state.color_by_item_id['new'][0] != 'red'

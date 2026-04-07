@@ -154,6 +154,7 @@ class TrainingSession:
         self.opening_name_frozen = False
         self.opening_names = OpeningNameDataset.load()
         self._review_deck_observers: list[Callable[[dict[str, object]], None]] = []
+        self._review_deck_event_serial = 0
         self._inspector_last_mutation_reason = 'startup'
         self._inspector_last_routing_action = 'not_started'
         self._inspector_prev_pressure_state = self.router.export_profile_state(self.active_profile_id)
@@ -175,7 +176,9 @@ class TrainingSession:
     def _notify_review_deck_observers(self, event_type: str, **payload: object) -> None:
         if not self._review_deck_observers:
             return
-        event_payload = {'event_type': event_type, 'snapshot': self.review_deck_inspector_snapshot()} | payload
+        next_serial = int(getattr(self, '_review_deck_event_serial', 0)) + 1
+        self._review_deck_event_serial = next_serial
+        event_payload = {'event_type': event_type, 'event_index': next_serial, 'snapshot': self.review_deck_inspector_snapshot()} | payload
         for callback in list(self._review_deck_observers):
             try:
                 callback(event_payload)
@@ -191,6 +194,11 @@ class TrainingSession:
         urgent_active = list(pressure_state.get('E', {}).get('active_deck', []))
         ordered_active = due_active + boosted_active + urgent_active
         stable_deck = pressure_state.get('stable_review_deck', {})
+        tier_map = {
+            'due': pressure_state.get('D', {}),
+            'boosted': pressure_state.get('B', {}),
+            'urgent': pressure_state.get('E', {}),
+        }
         live_card_counts: dict[str, int] = {}
         for card in stable_deck.get('cards', []):
             item_id = str(card.get('review_item_id', ''))
@@ -215,24 +223,41 @@ class TrainingSession:
             )
         return {
             'active_rows': active_rows,
+            'tiers': {
+                tier: {
+                    'active_members': list(state.get('active_deck', [])),
+                    'waiting_members': list(state.get('waiting_queue', [])),
+                    'capacity': int(state.get('capacity', 0)),
+                    'round_seen_count': int(state.get('round_seen_count', 0)),
+                    'round_miss_count': int(state.get('round_miss_count', 0)),
+                }
+                for tier, state in tier_map.items()
+            },
+            'stable_review_deck': {
+                'cards': list(stable_deck.get('cards', [])),
+                'cursor': stable_deck.get('cursor', getattr(getattr(self.router, 'deck', None), 'index', None)),
+            },
             'waiting_sizes': {
-                'due': len(pressure_state.get('D', {}).get('waiting_queue', [])),
-                'boosted': len(pressure_state.get('B', {}).get('waiting_queue', [])),
-                'urgent': len(pressure_state.get('E', {}).get('waiting_queue', [])),
+                'due': len(tier_map['due'].get('waiting_queue', [])),
+                'boosted': len(tier_map['boosted'].get('waiting_queue', [])),
+                'urgent': len(tier_map['urgent'].get('waiting_queue', [])),
             },
             'summary': {
-                'due_streak': pressure_state.get('D', {}).get('round_seen_count', 0),
-                'boosted_streak': pressure_state.get('B', {}).get('round_seen_count', 0),
-                'urgent_streak': pressure_state.get('E', {}).get('round_seen_count', 0),
-                'due_misses': pressure_state.get('D', {}).get('round_miss_count', 0),
-                'boosted_misses': pressure_state.get('B', {}).get('round_miss_count', 0),
-                'urgent_misses': pressure_state.get('E', {}).get('round_miss_count', 0),
-                'due_active': len(pressure_state.get('D', {}).get('active_deck', [])),
-                'boosted_active': len(pressure_state.get('B', {}).get('active_deck', [])),
-                'urgent_active': len(pressure_state.get('E', {}).get('active_deck', [])),
-                'due_capacity': pressure_state.get('D', {}).get('capacity', 0),
-                'boosted_capacity': pressure_state.get('B', {}).get('capacity', 0),
-                'urgent_capacity': pressure_state.get('E', {}).get('capacity', 0),
+                'due_streak': tier_map['due'].get('round_seen_count', 0),
+                'boosted_streak': tier_map['boosted'].get('round_seen_count', 0),
+                'urgent_streak': tier_map['urgent'].get('round_seen_count', 0),
+                'due_misses': tier_map['due'].get('round_miss_count', 0),
+                'boosted_misses': tier_map['boosted'].get('round_miss_count', 0),
+                'urgent_misses': tier_map['urgent'].get('round_miss_count', 0),
+                'due_active': len(tier_map['due'].get('active_deck', [])),
+                'boosted_active': len(tier_map['boosted'].get('active_deck', [])),
+                'urgent_active': len(tier_map['urgent'].get('active_deck', [])),
+                'due_capacity': tier_map['due'].get('capacity', 0),
+                'boosted_capacity': tier_map['boosted'].get('capacity', 0),
+                'urgent_capacity': tier_map['urgent'].get('capacity', 0),
+                'due_underfill': int(tier_map['due'].get('capacity', 0)) - len(tier_map['due'].get('active_deck', [])),
+                'boosted_underfill': int(tier_map['boosted'].get('capacity', 0)) - len(tier_map['boosted'].get('active_deck', [])),
+                'urgent_underfill': int(tier_map['urgent'].get('capacity', 0)) - len(tier_map['urgent'].get('active_deck', [])),
                 'deck_cursor': stable_deck.get('cursor', getattr(getattr(self.router, 'deck', None), 'index', None)),
                 'last_mutation_reason': self._inspector_last_mutation_reason,
                 'last_routing_action': self._inspector_last_routing_action,
