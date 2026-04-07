@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, replace
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 import chess
 
@@ -152,6 +153,10 @@ class TrainingSession:
         self.opening_name: str | None = None
         self.opening_name_frozen = False
         self.opening_names = OpeningNameDataset.load()
+        self._review_deck_observers: list[Callable[[dict[str, object]], None]] = []
+        self._inspector_last_mutation_reason = 'startup'
+        self._inspector_last_routing_action = 'not_started'
+        self._inspector_prev_pressure_state = self.router.export_profile_state(self.active_profile_id)
         dataset_status = self.opening_names.status()
         log_line(
             "GUI_OPENING_NAME_DATASET_STATUS "
@@ -160,6 +165,120 @@ class TrainingSession:
             f"entries={dataset_status.entry_count}",
             tag='gui',
         )
+
+    def register_review_deck_observer(self, callback: Callable[[dict[str, object]], None]) -> None:
+        self._review_deck_observers.append(callback)
+
+    def unregister_review_deck_observer(self, callback: Callable[[dict[str, object]], None]) -> None:
+        self._review_deck_observers = [existing for existing in self._review_deck_observers if existing is not callback]
+
+    def _notify_review_deck_observers(self, event_type: str, **payload: object) -> None:
+        if not self._review_deck_observers:
+            return
+        event_payload = {'event_type': event_type, 'snapshot': self.review_deck_inspector_snapshot()} | payload
+        for callback in list(self._review_deck_observers):
+            try:
+                callback(event_payload)
+            except Exception:
+                continue
+
+    def review_deck_inspector_snapshot(self) -> dict[str, object]:
+        items = self._items()
+        item_by_id = {item.review_item_id: item for item in items}
+        pressure_state = self.router.export_profile_state(self.active_profile_id)
+        due_active = list(pressure_state.get('D', {}).get('active_deck', []))
+        boosted_active = list(pressure_state.get('B', {}).get('active_deck', []))
+        urgent_active = list(pressure_state.get('E', {}).get('active_deck', []))
+        ordered_active = due_active + boosted_active + urgent_active
+        deck_card_multiplicity = {'ordinary_review': 1, 'boosted_review': 2, 'extreme_urgency': 4}
+        active_rows: list[dict[str, object]] = []
+        for item_id in ordered_active:
+            item = item_by_id.get(item_id)
+            if item is None:
+                continue
+            active_rows.append(
+                {
+                    'review_item_id': item.review_item_id,
+                    'position': item.position_key,
+                    'frequency_state': item.frequency_state,
+                    # NOTE: Per-item live deck ownership is not exposed by the runtime deck model yet.
+                    # Inspector falls back to authoritative current frequency-tier multiplicity.
+                    'deck_cards': deck_card_multiplicity.get(item.urgency_tier, 1),
+                    'fails': item.consecutive_failures,
+                    'success_streak': item.success_streak,
+                    'tier': item.urgency_tier,
+                }
+            )
+        return {
+            'active_rows': active_rows,
+            'waiting_sizes': {
+                'due': len(pressure_state.get('D', {}).get('waiting_queue', [])),
+                'boosted': len(pressure_state.get('B', {}).get('waiting_queue', [])),
+                'urgent': len(pressure_state.get('E', {}).get('waiting_queue', [])),
+            },
+            'summary': {
+                'due_streak': pressure_state.get('D', {}).get('round_seen_count', 0),
+                'boosted_streak': pressure_state.get('B', {}).get('round_seen_count', 0),
+                'urgent_streak': pressure_state.get('E', {}).get('round_seen_count', 0),
+                'due_misses': pressure_state.get('D', {}).get('round_miss_count', 0),
+                'boosted_misses': pressure_state.get('B', {}).get('round_miss_count', 0),
+                'urgent_misses': pressure_state.get('E', {}).get('round_miss_count', 0),
+                'due_active': len(pressure_state.get('D', {}).get('active_deck', [])),
+                'boosted_active': len(pressure_state.get('B', {}).get('active_deck', [])),
+                'urgent_active': len(pressure_state.get('E', {}).get('active_deck', [])),
+                'due_capacity': pressure_state.get('D', {}).get('capacity', 0),
+                'boosted_capacity': pressure_state.get('B', {}).get('capacity', 0),
+                'urgent_capacity': pressure_state.get('E', {}).get('capacity', 0),
+                'deck_cursor': getattr(getattr(self.router, 'deck', None), 'index', None),
+                'last_mutation_reason': self._inspector_last_mutation_reason,
+                'last_routing_action': self._inspector_last_routing_action,
+            },
+            'card_count_source': 'tier_multiplicity_fallback',
+        }
+
+    def _emit_pressure_state_changes(self) -> None:
+        current = self.router.export_profile_state(self.active_profile_id)
+        previous = self._inspector_prev_pressure_state or {}
+        for category in ('D', 'B', 'E'):
+            before = previous.get(category, {})
+            after = current.get(category, {})
+            if list(before.get('active_deck', [])) != list(after.get('active_deck', [])):
+                self._notify_review_deck_observers('active_stack_snapshot_changed', category=category)
+            if list(before.get('waiting_queue', [])) != list(after.get('waiting_queue', [])):
+                self._notify_review_deck_observers('waiting_queue_snapshot_changed', category=category)
+            if int(before.get('capacity', 0)) != int(after.get('capacity', 0)):
+                self._notify_review_deck_observers('capacity_changed', category=category)
+            before_active = set(before.get('active_deck', []))
+            after_active = set(after.get('active_deck', []))
+            for item_id in sorted(after_active - before_active):
+                self._notify_review_deck_observers('item_entered_active', category=category, review_item_id=item_id)
+            for item_id in sorted(before_active - after_active):
+                self._notify_review_deck_observers('item_left_active', category=category, review_item_id=item_id)
+            before_waiting = set(before.get('waiting_queue', []))
+            after_waiting = set(after.get('waiting_queue', []))
+            for item_id in sorted(after_waiting - before_waiting):
+                self._notify_review_deck_observers('item_entered_waiting', category=category, review_item_id=item_id)
+        self._inspector_prev_pressure_state = current
+
+    def _select_routing_with_inspector(self, items: list[ReviewItem], *, reason: str) -> RoutingDecision:
+        decision = self.router.select(self.active_profile_id, items)
+        self._inspector_last_routing_action = decision.routing_source
+        if decision.rebuild_trigger:
+            self._inspector_last_mutation_reason = decision.rebuild_trigger
+            self._notify_review_deck_observers('last_mutation_reason_updated', reason=decision.rebuild_trigger)
+        else:
+            self._inspector_last_mutation_reason = reason
+        self._emit_pressure_state_changes()
+        if decision.selected_review_item_id:
+            self._notify_review_deck_observers(
+                'training_card_consumed',
+                review_item_id=decision.selected_review_item_id,
+                routing_source=decision.routing_source,
+            )
+        else:
+            self._notify_review_deck_observers('corpus_move_emitted', routing_source=decision.routing_source)
+        self._notify_review_deck_observers('last_routing_action_updated', routing_source=decision.routing_source)
+        return decision
 
     @property
     def timing_diagnostics(self) -> LiveTimingDebugState:
@@ -381,7 +500,7 @@ class TrainingSession:
             transition_changed = sync_due_cycle_transition(item) or transition_changed
         if transition_changed:
             self._save_items(items)
-        self.current_routing = self.router.select(self.active_profile_id, items)
+        self.current_routing = self._select_routing_with_inspector(items, reason="start_new_game")
         self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))
         self.current_review_item_id = self.current_routing.selected_review_item_id
         self.active_review_plan = self.current_routing.review_plan
@@ -950,6 +1069,7 @@ class TrainingSession:
         position_key = normalize_builder_position_key(board_before_move)
         side = 'white' if board_before_move.turn == chess.WHITE else 'black'
         existing = next((item for item in items if item.position_key == position_key and item.side_to_move == side), None)
+        previous_frequency_state = existing.frequency_state if existing is not None else None
         accepted = list(evaluation.metadata.get('candidate_moves', [])) if isinstance(evaluation.metadata, dict) else []
         line_preview = ' '.join(move.san for move in self.run_path[-6:])
         inherited_manual_metadata = self._manual_inherited_failure_metadata(board_before_move, items)
@@ -983,6 +1103,13 @@ class TrainingSession:
         item.pending_forced_stubborn_repeat = False
         self._save_items(items)
         self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))
+        if previous_frequency_state is not None and previous_frequency_state != item.frequency_state:
+            self._notify_review_deck_observers(
+                'item_frequency_state_changed',
+                review_item_id=item.review_item_id,
+                previous_frequency_state=previous_frequency_state,
+                new_frequency_state=item.frequency_state,
+            )
         self.review_storage.append_history(
             self.active_profile_id,
             event_to_dict(
@@ -1025,11 +1152,19 @@ class TrainingSession:
         item = next((item for item in items if item.review_item_id == self.current_review_item_id), None)
         if item is None:
             return 'No review item changed; routed item no longer exists.', 'ordinary_corpus_play'
+        previous_frequency_state = item.frequency_state
         apply_success(item, self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')
         self.router.record_review_result(self.active_profile_id, self.current_routing.routing_source if self.current_routing else '', was_miss=False)
         self._save_items(items)
-        next_decision = self.router.select(self.active_profile_id, items)
+        next_decision = self._select_routing_with_inspector(items, reason="post_success_routing")
         self.review_storage.save_router_state(self.active_profile_id, self.router.export_profile_state(self.active_profile_id))
+        if previous_frequency_state != item.frequency_state:
+            self._notify_review_deck_observers(
+                'item_frequency_state_changed',
+                review_item_id=item.review_item_id,
+                previous_frequency_state=previous_frequency_state,
+                new_frequency_state=item.frequency_state,
+            )
         routed_by = self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play'
         self.review_storage.append_history(
             self.active_profile_id,
