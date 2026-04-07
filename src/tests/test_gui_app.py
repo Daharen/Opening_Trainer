@@ -218,6 +218,30 @@ class FakeBoolVar:
         self._value = bool(value)
 
 
+class FakeThemeRoot:
+    def __init__(self):
+        self.configured = {}
+        self.options = []
+
+    def configure(self, **kwargs):
+        self.configured.update(kwargs)
+
+    def option_add(self, key, value):
+        self.options.append((key, value))
+
+
+class FakeStyle:
+    def __init__(self, _root):
+        self.configured = []
+        self.mapped = []
+
+    def configure(self, name, **kwargs):
+        self.configured.append((name, kwargs))
+
+    def map(self, name, **kwargs):
+        self.mapped.append((name, kwargs))
+
+
 def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
     move_history = (
         MoveHistoryEntry(0, "white", "e2e4", "e4", "player"),
@@ -268,6 +292,62 @@ def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
     assert gui.move_list_panel.moves == move_history
 
 
+def test_theme_palette_provides_layered_dark_gray_surfaces():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.dark_mode_enabled = True
+
+    palette = gui._theme_palette()
+
+    assert palette["app_bg"] != "#000000"
+    assert palette["panel_bg"] != palette["app_bg"]
+    assert palette["surface_bg"] != palette["panel_bg"]
+    assert "field_bg" in palette
+
+
+def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.dark_mode_enabled = True
+    gui.root = FakeThemeRoot()
+    gui.summary_strip = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.control_strip = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.action_bar = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.main_region = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.side_panel = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.side_content = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.root_pane = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.bundle_picker = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.pause_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    gui.start_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    calls = {"move_list": 0, "inspector": 0, "board": 0}
+    gui.move_list_panel = type("MoveList", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("move_list", calls["move_list"] + 1)})()
+    gui.inspector = type("Inspector", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("inspector", calls["inspector"] + 1)})()
+    gui.top_captured_panel = type("Cap", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.bottom_captured_panel = type("Cap", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.board_view = type("Board", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("board", calls["board"] + 1)})()
+    gui._child_windows = []
+    monkeypatch.setattr("opening_trainer.ui.gui_app.ttk.Style", FakeStyle)
+    monkeypatch.setattr(gui, "_apply_windows_titlebar_preference", lambda *_args, **_kwargs: None)
+
+    gui._apply_theme()
+
+    assert calls == {"move_list": 1, "inspector": 1, "board": 1}
+    assert gui.root.configured["bg"] == gui._theme_palette()["app_bg"]
+
+
+def test_windows_titlebar_preference_fails_safely_on_unsupported_calls(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    window = type("Win", (), {"winfo_id": lambda self: 42})()
+    monkeypatch.setattr("opening_trainer.ui.gui_app.sys.platform", "win32")
+    broken_windll = type(
+        "BrokenWindll",
+        (),
+        {"user32": type("U", (), {"GetParent": lambda self, _w: (_ for _ in ()).throw(OSError("nope"))})()},
+    )()
+    monkeypatch.setattr("opening_trainer.ui.gui_app.ctypes.windll", broken_windll, raising=False)
+
+    OpeningTrainerGUI._apply_windows_titlebar_preference(window, True)
+
+
 def test_gui_has_menu_shell_entries_and_bottom_actions():
     source = inspect.getsource(OpeningTrainerGUI)
     assert "label='File'" in source
@@ -284,6 +364,12 @@ def test_gui_has_menu_shell_entries_and_bottom_actions():
     assert "_check_for_updates_from_gui" in source
     assert "Manage Profiles…" in source
     assert "_open_profiles" in source
+
+
+def test_open_options_save_persists_dark_mode_and_reapplies_theme():
+    source = inspect.getsource(OpeningTrainerGUI._open_options)
+    assert 'dark_mode_enabled=getattr(self, "dark_mode_enabled", False)' in source
+    assert "self._apply_theme()" in source
 
 
 def test_report_button_placeholder_shows_message(monkeypatch):
