@@ -8,6 +8,13 @@ from .manual_target_dialog import ManualTargetDialog
 
 
 class ReviewInspector(ttk.Frame):
+    FRAME_STYLE = 'ReviewPanel.TFrame'
+    FILTER_COMBO_STYLE = 'InspectorFilter.TCombobox'
+    TREE_STYLE = 'Review.Treeview'
+    TREE_HEADING_STYLE = 'Review.Treeview.Heading'
+    BUTTON_ROW_STYLE = 'ReviewPanel.TFrame'
+    BUTTON_STYLE = 'ReviewPanel.TButton'
+
     columns = (
         'position',
         'side',
@@ -62,10 +69,17 @@ class ReviewInspector(ttk.Frame):
         self.filter_combo.pack(anchor='e')
         self.filter_var.trace_add('write', lambda *_: self.refresh())
 
-        tree_frame = ttk.Frame(self)
-        tree_frame.pack(fill='both', expand=True)
-        self.tree = ttk.Treeview(tree_frame, columns=self.columns, show='headings', height=8, displaycolumns=self.visible_columns)
-        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
+        self.tree_frame = ttk.Frame(self, style=self.FRAME_STYLE)
+        self.tree_frame.pack(fill='both', expand=True)
+        self.tree = ttk.Treeview(
+            self.tree_frame,
+            columns=self.columns,
+            show='headings',
+            height=8,
+            displaycolumns=self.visible_columns,
+            style=self.TREE_STYLE,
+        )
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         for column in self.columns:
             self.tree.heading(column, text=self.column_labels[column])
@@ -77,13 +91,20 @@ class ReviewInspector(ttk.Frame):
         self.tree.bind('<Button-3>', self._open_context_menu)
         self.tree.bind('<Control-c>', self._copy_with_shortcut)
 
-        button_row = ttk.Frame(self)
-        button_row.pack(fill='x', pady=4)
-        ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Edit Item', command=self._edit_item).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Board Edit', command=self._edit_item_in_board_setup).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
-        ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
+        self.button_row = ttk.Frame(self, style=self.BUTTON_ROW_STYLE)
+        self.button_row.pack(fill='x', pady=4)
+        self.add_manual_target_button = ttk.Button(
+            self.button_row, text='Add Manual Target', command=self._open_manual_target_dialog, style=self.BUTTON_STYLE
+        )
+        self.add_manual_target_button.pack(side='left', padx=4)
+        self.edit_item_button = ttk.Button(self.button_row, text='Edit Item', command=self._edit_item, style=self.BUTTON_STYLE)
+        self.edit_item_button.pack(side='left', padx=4)
+        self.board_edit_button = ttk.Button(self.button_row, text='Board Edit', command=self._edit_item_in_board_setup, style=self.BUTTON_STYLE)
+        self.board_edit_button.pack(side='left', padx=4)
+        self.delete_item_button = ttk.Button(self.button_row, text='Delete item', command=self._delete_item, style=self.BUTTON_STYLE)
+        self.delete_item_button.pack(side='left', padx=4)
+        self.reset_item_button = ttk.Button(self.button_row, text='Reset item', command=self._reset_item, style=self.BUTTON_STYLE)
+        self.reset_item_button.pack(side='left', padx=4)
 
     def _handle_cell_focus(self, event: tk.Event) -> None:
         column_token = self.tree.identify_column(event.x)
@@ -372,21 +393,51 @@ class ReviewInspector(ttk.Frame):
 
     def apply_theme(self, *, palette: dict[str, str]) -> None:
         style = ttk.Style(self)
-        style.configure('Inspector.TFrame', background=palette['panel_bg'])
+        style.configure(self.FRAME_STYLE, background=palette['panel_bg'])
         style.configure(
-            'Inspector.Treeview',
+            self.TREE_STYLE,
             background=palette['surface_bg'],
             fieldbackground=palette['surface_bg'],
             foreground=palette['text_fg'],
             bordercolor=palette['border_color'],
         )
         style.configure(
-            'Inspector.Treeview.Heading',
+            self.TREE_HEADING_STYLE,
             background=palette['header_bg'],
             foreground=palette['text_fg'],
             bordercolor=palette['border_color'],
         )
-        style.map('Inspector.Treeview', background=[('selected', palette['select_bg'])], foreground=[('selected', palette['text_fg'])])
-        self.configure(style='Inspector.TFrame')
-        self.tree.configure(style='Inspector.Treeview')
-        self.filter_combo.configure(style='TCombobox')
+        style.map(
+            self.TREE_STYLE,
+            background=[('selected', palette['select_bg'])],
+            foreground=[('selected', palette['text_fg'])],
+        )
+        style.map(
+            self.TREE_HEADING_STYLE,
+            background=[('active', palette['button_active_bg']), ('pressed', palette['button_active_bg'])],
+            foreground=[('active', palette['text_fg']), ('pressed', palette['text_fg'])],
+        )
+        style.configure(
+            self.BUTTON_STYLE,
+            background=palette['button_bg'],
+            foreground=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.map(
+            self.BUTTON_STYLE,
+            background=[('active', palette['button_active_bg']), ('pressed', palette['select_bg']), ('disabled', palette['panel_bg'])],
+            foreground=[('disabled', palette['muted_fg'])],
+        )
+        self.configure(style=self.FRAME_STYLE)
+        self.tree_frame.configure(style=self.FRAME_STYLE)
+        self.button_row.configure(style=self.BUTTON_ROW_STYLE)
+        self.tree.configure(style=self.TREE_STYLE)
+        self.filter_combo.configure(style=self.FILTER_COMBO_STYLE)
+        for button in (
+            self.add_manual_target_button,
+            self.edit_item_button,
+            self.board_edit_button,
+            self.delete_item_button,
+            self.reset_item_button,
+        ):
+            button.configure(style=self.BUTTON_STYLE)

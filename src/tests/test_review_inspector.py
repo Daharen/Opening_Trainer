@@ -114,3 +114,67 @@ def test_board_edit_opens_board_setup_for_any_item(monkeypatch) -> None:
     assert calls['board']['title'] == 'Edit in Board Setup'
     assert calls['board']['initial']['target_fen'] == chess.STARTING_FEN
     assert calls['board']['initial']['predecessor_line_uci'] == 'e2e4 e7e5'
+
+
+class _ThemeStyle:
+    def __init__(self, _owner):
+        self.configured = []
+        self.mapped = []
+
+    def configure(self, name, **kwargs):
+        self.configured.append((name, kwargs))
+
+    def map(self, name, **kwargs):
+        self.mapped.append((name, kwargs))
+
+
+class _CfgWidget:
+    def __init__(self):
+        self.kwargs = {}
+
+    def configure(self, **kwargs):
+        self.kwargs.update(kwargs)
+
+
+def test_apply_theme_assigns_explicit_review_styles(monkeypatch) -> None:
+    inspector = ReviewInspector.__new__(ReviewInspector)
+    inspector.tree = _CfgWidget()
+    inspector.filter_combo = _CfgWidget()
+    inspector.tree_frame = _CfgWidget()
+    inspector.button_row = _CfgWidget()
+    inspector.add_manual_target_button = _CfgWidget()
+    inspector.edit_item_button = _CfgWidget()
+    inspector.board_edit_button = _CfgWidget()
+    inspector.delete_item_button = _CfgWidget()
+    inspector.reset_item_button = _CfgWidget()
+    inspector.configure = lambda **kwargs: None
+    created = []
+
+    def _style_factory(owner):
+        style = _ThemeStyle(owner)
+        created.append(style)
+        return style
+
+    monkeypatch.setattr("opening_trainer.ui.review_inspector.ttk.Style", _style_factory)
+
+    inspector.apply_theme(
+        palette={
+            'panel_bg': '#222222',
+            'surface_bg': '#111111',
+            'text_fg': '#efefef',
+            'border_color': '#666666',
+            'header_bg': '#333333',
+            'select_bg': '#445566',
+            'button_bg': '#2d3742',
+            'button_active_bg': '#3b4653',
+            'muted_fg': '#999999',
+        }
+    )
+
+    configured_names = {name for name, _kwargs in created[0].configured}
+    assert ReviewInspector.TREE_STYLE in configured_names
+    assert ReviewInspector.TREE_HEADING_STYLE in configured_names
+    assert ReviewInspector.BUTTON_STYLE in configured_names
+    assert inspector.tree.kwargs["style"] == ReviewInspector.TREE_STYLE
+    assert inspector.filter_combo.kwargs["style"] == ReviewInspector.FILTER_COMBO_STYLE
+    assert inspector.add_manual_target_button.kwargs["style"] == ReviewInspector.BUTTON_STYLE

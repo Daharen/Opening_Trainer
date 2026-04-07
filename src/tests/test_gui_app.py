@@ -196,10 +196,13 @@ class FakeStringVar:
 class FakeCombo:
     def __init__(self, values=()):
         self._values = tuple(values)
+        self.style = None
 
     def configure(self, **kwargs):
         if "values" in kwargs:
             self._values = tuple(kwargs["values"])
+        if "style" in kwargs:
+            self.style = kwargs["style"]
 
     def cget(self, name):
         if name == "values":
@@ -234,12 +237,19 @@ class FakeStyle:
     def __init__(self, _root):
         self.configured = []
         self.mapped = []
+        self.theme = "vista"
 
     def configure(self, name, **kwargs):
         self.configured.append((name, kwargs))
 
     def map(self, name, **kwargs):
         self.mapped.append((name, kwargs))
+
+    def theme_use(self, theme_name=None):
+        if theme_name is None:
+            return self.theme
+        self.theme = theme_name
+        return self.theme
 
 
 def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
@@ -318,6 +328,11 @@ def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
     gui.bundle_picker = type("W", (), {"configure": lambda self, **kwargs: None})()
     gui.pause_button = type("B", (), {"configure": lambda self, **kwargs: None})()
     gui.start_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    gui.top_time_control_combo = FakeCombo()
+    gui.top_elo_combo = FakeCombo()
+    gui.top_depth_combo = FakeCombo()
+    gui.top_good_combo = FakeCombo()
+    gui.fallback_mode_combo = FakeCombo()
     calls = {"move_list": 0, "inspector": 0, "board": 0}
     gui.move_list_panel = type("MoveList", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("move_list", calls["move_list"] + 1)})()
     gui.inspector = type("Inspector", (), {"apply_theme": lambda self, **kwargs: calls.__setitem__("inspector", calls["inspector"] + 1)})()
@@ -332,6 +347,51 @@ def test_apply_theme_updates_move_list_inspector_and_board_gutters(monkeypatch):
 
     assert calls == {"move_list": 1, "inspector": 1, "board": 1}
     assert gui.root.configured["bg"] == gui._theme_palette()["app_bg"]
+    assert gui.top_time_control_combo.style == "TopStrip.TCombobox"
+    assert gui.fallback_mode_combo.style == "TopStrip.TCombobox"
+
+
+def test_apply_theme_switches_to_clam_and_configures_explicit_dark_styles(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.dark_mode_enabled = True
+    gui.root = FakeThemeRoot()
+    gui.summary_strip = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.control_strip = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.action_bar = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.main_region = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.side_panel = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.side_content = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.root_pane = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.bundle_picker = type("W", (), {"configure": lambda self, **kwargs: None})()
+    gui.pause_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    gui.start_button = type("B", (), {"configure": lambda self, **kwargs: None})()
+    gui.top_time_control_combo = FakeCombo()
+    gui.top_elo_combo = FakeCombo()
+    gui.top_depth_combo = FakeCombo()
+    gui.top_good_combo = FakeCombo()
+    gui.fallback_mode_combo = FakeCombo()
+    gui.move_list_panel = type("MoveList", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.inspector = type("Inspector", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.top_captured_panel = type("Cap", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.bottom_captured_panel = type("Cap", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui.board_view = type("Board", (), {"apply_theme": lambda self, **kwargs: None})()
+    gui._child_windows = []
+    created_styles = []
+
+    def _style_factory(root):
+        style = FakeStyle(root)
+        created_styles.append(style)
+        return style
+
+    monkeypatch.setattr("opening_trainer.ui.gui_app.ttk.Style", _style_factory)
+    monkeypatch.setattr(gui, "_apply_windows_titlebar_preference", lambda *_args, **_kwargs: None)
+
+    gui._apply_theme()
+
+    configured_names = {name for name, _kwargs in created_styles[0].configured}
+    assert created_styles[0].theme == "clam"
+    assert "TopStrip.TCombobox" in configured_names
+    assert "InspectorFilter.TCombobox" in configured_names
 
 
 def test_windows_titlebar_preference_fails_safely_on_unsupported_calls(monkeypatch):
