@@ -79,6 +79,7 @@ class PressureTierControllerState:
     round_seen_count: int = 0
     round_miss_count: int = 0
     round_target_size: int = 0
+    round_started_saturated: bool = False
     active_insert_serials: dict[str, int] = field(default_factory=dict)
     next_insert_serial: int = 1
 
@@ -680,6 +681,7 @@ class ReviewRouter:
                 'round_seen_count': state.round_seen_count,
                 'round_miss_count': state.round_miss_count,
                 'round_target_size': state.round_target_size,
+                'round_started_saturated': state.round_started_saturated,
                 'active_insert_serials': dict(state.active_insert_serials),
                 'next_insert_serial': state.next_insert_serial,
             }
@@ -711,6 +713,7 @@ class ReviewRouter:
                 round_seen_count=max(0, int(row.get('round_seen_count', 0))),
                 round_miss_count=max(0, int(row.get('round_miss_count', 0))),
                 round_target_size=max(0, int(row.get('round_target_size', 0))),
+                round_started_saturated=bool(row.get('round_started_saturated', False)),
                 active_insert_serials={str(k): int(v) for k, v in dict(row.get('active_insert_serials', {})).items()},
                 next_insert_serial=max(1, int(row.get('next_insert_serial', 1))),
             )
@@ -849,8 +852,11 @@ class ReviewRouter:
         if state.round_target_size <= 0 or state.round_seen_count < state.round_target_size:
             return
         if state.round_miss_count == 0:
-            state.capacity += 1
-            self._record_deck_mutation(profile_id, 'capacity_growth')
+            if state.round_started_saturated:
+                state.capacity += 1
+                self._record_deck_mutation(profile_id, 'capacity_growth')
+            else:
+                self._record_deck_mutation(profile_id, 'capacity_growth_blocked_underfilled_round')
         elif state.round_miss_count >= 2:
             state.capacity = max(2, state.capacity - 1)
             self._record_deck_mutation(profile_id, 'capacity_shrink')
@@ -866,6 +872,7 @@ class ReviewRouter:
         state.round_seen_count = 0
         state.round_miss_count = 0
         state.round_target_size = 0
+        state.round_started_saturated = False
 
     def record_presented_review(self, profile_id: str, category: str, review_item_id: str) -> None:
         if category not in PRESSURE_TIERS:
@@ -875,6 +882,7 @@ class ReviewRouter:
             return
         if state.round_target_size == 0:
             state.round_target_size = len(state.active_deck)
+            state.round_started_saturated = len(state.active_deck) >= state.capacity
         state.round_seen_count += 1
 
     def record_review_result(self, profile_id: str, routing_source: str, was_miss: bool) -> None:
