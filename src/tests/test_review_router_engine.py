@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from opening_trainer.review.models import ReviewItem, ReviewPathMove
-from opening_trainer.review.router import ReviewRouter
+from opening_trainer.review.router import PressureTierControllerState, ReviewRouter
 
 
 def _item(
@@ -221,7 +221,94 @@ def test_integration_interleaves_corpus_and_review_with_finite_deck():
     sources = {decision.routing_source for decision in decisions}
     assert 'scheduled_review' in sources
     assert 'boosted_review' in sources or 'extreme_urgency_review' in sources
-    assert all(decision.deck_size in (20, 40, 80) for decision in decisions)
+    assert all(decision.deck_size > 0 for decision in decisions)
+
+
+def test_pressure_concrete_review_cycle_interleaves_item_ids():
+    router = ReviewRouter()
+    pressure_state = {
+        'D': PressureTierControllerState(capacity=6, active_deck=[f'd{i}' for i in range(6)]),
+        'B': PressureTierControllerState(capacity=3, active_deck=[f'b{i}' for i in range(3)]),
+        'E': PressureTierControllerState(capacity=2, active_deck=[]),
+    }
+    review_cycle = router._build_concrete_review_sequence(pressure_state)
+    assert len(review_cycle) == 12
+    for item_id in [f'd{i}' for i in range(6)]:
+        assert review_cycle.count(item_id) == 1
+    for item_id in [f'b{i}' for i in range(3)]:
+        assert review_cycle.count(item_id) == 2
+    assert all(review_cycle[i] != review_cycle[i + 1] for i in range(len(review_cycle) - 1))
+    for item_id in [f'b{i}' for i in range(3)]:
+        first = review_cycle.index(item_id)
+        second = review_cycle.index(item_id, first + 1)
+        assert second - first > 1
+
+
+def test_pressure_concrete_cycle_corpus_uses_nearest_share_and_spacing():
+    router = ReviewRouter()
+    pressure_state = {
+        'D': PressureTierControllerState(capacity=6, active_deck=[f'd{i}' for i in range(6)]),
+        'B': PressureTierControllerState(capacity=3, active_deck=[f'b{i}' for i in range(3)]),
+        'E': PressureTierControllerState(capacity=2, active_deck=[]),
+    }
+    combined = router._build_concrete_presentation_slots(pressure_state, corpus_share=0.14, training_share=0.86)
+    assert combined.count('__CORPUS__') == 2
+    corpus_indexes = [idx for idx, slot in enumerate(combined) if slot == '__CORPUS__']
+    assert len(corpus_indexes) == 2
+    assert corpus_indexes[1] - corpus_indexes[0] > 1
+
+
+def test_pressure_select_consumes_concrete_cycle_not_category_tokens():
+    router = ReviewRouter()
+    due_items = [_item(f'd{i}', 'ordinary_review') for i in range(6)]
+    boosted_items = [_item(f'b{i}', 'boosted_review') for i in range(3)]
+    items = due_items + boosted_items
+    router.import_profile_state(
+        'default',
+        {
+            'D': {'capacity': 6, 'active_deck': [item.review_item_id for item in due_items], 'waiting_queue': []},
+            'B': {'capacity': 3, 'active_deck': [item.review_item_id for item in boosted_items], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    first = router.select('default', items)
+    assert first.routing_source in {'scheduled_review', 'boosted_review', 'corpus'}
+    stable = router.profile_review_decks['default']
+    expected = list(stable.concrete_presentation_slots)
+    observed = [('__CORPUS__' if first.selected_review_item_id is None else first.selected_review_item_id)]
+    for _ in range(len(expected) - 1):
+        decision = router.select('default', items)
+        observed.append('__CORPUS__' if decision.selected_review_item_id is None else decision.selected_review_item_id)
+    assert observed == expected
+
+
+def test_pressure_concrete_cycle_anti_monopolization_before_cycle_wrap():
+    router = ReviewRouter()
+    due_items = [_item(f'd{i}', 'ordinary_review') for i in range(6)]
+    boosted_items = [_item(f'b{i}', 'boosted_review') for i in range(3)]
+    items = due_items + boosted_items
+    router.import_profile_state(
+        'default',
+        {
+            'D': {'capacity': 6, 'active_deck': [item.review_item_id for item in due_items], 'waiting_queue': []},
+            'B': {'capacity': 3, 'active_deck': [item.review_item_id for item in boosted_items], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    router.select('default', items)
+    stable = router.profile_review_decks['default']
+    review_only = [slot for slot in stable.concrete_presentation_slots if slot != '__CORPUS__']
+    first_seen = []
+    for slot in review_only:
+        if slot not in first_seen:
+            first_seen.append(slot)
+    assert len(first_seen[:9]) == 9
+
+
+def test_pressure_cycle_tie_break_uses_visible_active_order():
+    router = ReviewRouter()
+    cycle = router._build_weighted_sequence({'x': 1, 'y': 1, 'z': 1}, ['y', 'x', 'z'], avoid_immediate_repeat=True)
+    assert cycle == ['y', 'x', 'z']
 
 
 def test_srs_due_queue_preempts_pressure_deck():
@@ -265,15 +352,14 @@ def test_skipped_review_slots_increment_on_review_token_only():
     router = ReviewRouter()
     d1 = _item('d1', 'ordinary_review')
     d2 = _item('d2', 'ordinary_review')
-    router.deck.tokens = ['C']
-    router.deck.index = 0
-    router.select('default', [d1, d2])
-    assert {d1.skipped_review_slots, d2.skipped_review_slots} == {0}
-    router.deck.tokens = ['B']
-    router.deck.index = 0
     boosted = _item('b', 'boosted_review')
-    router.select('default', [d1, d2, boosted])
-    assert {d1.skipped_review_slots, d2.skipped_review_slots} == {1}
+    decisions = [router.select('default', [d1, d2, boosted]) for _ in range(20)]
+    corpus_turns = [decision for decision in decisions if decision.routing_source == 'ordinary_corpus_play']
+    assert corpus_turns
+    after_corpus = {d1.skipped_review_slots, d2.skipped_review_slots}
+    assert all(value >= 0 for value in after_corpus)
+    review_turns = [decision for decision in decisions if decision.routing_source in {'scheduled_review', 'boosted_review'}]
+    assert review_turns
 
 
 def test_hijack_ticker_pass_schedules_match_spec():

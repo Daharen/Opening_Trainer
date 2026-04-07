@@ -94,6 +94,9 @@ class StableReviewDeckState:
     last_routing_action: str = 'not_started'
     last_card_consumed_item_id: str | None = None
     last_corpus_step: str | None = None
+    concrete_presentation_slots: list[str] = field(default_factory=list)
+    concrete_cursor: int = 0
+    last_concrete_rebuild_reason: str = 'startup'
 
 
 class ReviewRouter:
@@ -651,6 +654,117 @@ class ReviewRouter:
         deck.last_mutation_reason = reason
         log_line(f'REVIEW_DECK_MUTATION profile={profile_id} reason={reason}', tag='review')
 
+    @staticmethod
+    def _build_weighted_sequence(
+        counts_by_label: dict[str, int],
+        tie_order: list[str],
+        *,
+        avoid_immediate_repeat: bool,
+        prioritize_unseen_first: bool = False,
+    ) -> list[str]:
+        total = sum(max(0, count) for count in counts_by_label.values())
+        if total <= 0:
+            return []
+        placed = {label: 0 for label in counts_by_label}
+        remaining = {label: max(0, count) for label, count in counts_by_label.items()}
+        order_index = {label: idx for idx, label in enumerate(tie_order)}
+        result: list[str] = []
+        for slot in range(total):
+            deficits: dict[str, float] = {}
+            for label, remaining_count in remaining.items():
+                if remaining_count <= 0:
+                    continue
+                target_prefix = ((slot + 1) * counts_by_label[label]) / total
+                deficits[label] = target_prefix - placed[label]
+            if prioritize_unseen_first:
+                unseen = [label for label in deficits if placed[label] == 0]
+                if unseen:
+                    deficits = {label: deficits[label] for label in unseen}
+            max_deficit = max(deficits.values())
+            tied = [label for label, deficit in deficits.items() if abs(deficit - max_deficit) < 1e-12]
+            if avoid_immediate_repeat and result and len(tied) > 1:
+                non_repeat = [label for label in tied if label != result[-1]]
+                if non_repeat:
+                    tied = non_repeat
+            chosen = min(tied, key=lambda label: order_index.get(label, len(order_index)))
+            result.append(chosen)
+            placed[chosen] += 1
+            remaining[chosen] -= 1
+        return result
+
+    def _build_concrete_review_sequence(self, pressure_state: dict[str, PressureTierControllerState]) -> list[str]:
+        visible_active = list(pressure_state['D'].active_deck) + list(pressure_state['B'].active_deck) + list(pressure_state['E'].active_deck)
+        if not visible_active:
+            return []
+        target_counts: dict[str, int] = {}
+        for item_id in visible_active:
+            if item_id in pressure_state['E'].active_deck:
+                target_counts[item_id] = 4
+            elif item_id in pressure_state['B'].active_deck:
+                target_counts[item_id] = 2
+            else:
+                target_counts[item_id] = 1
+        return self._build_weighted_sequence(
+            target_counts,
+            visible_active,
+            avoid_immediate_repeat=True,
+            prioritize_unseen_first=True,
+        )
+
+    def _compute_nearest_corpus_slots(self, review_cards: int, corpus_share: float, training_share: float) -> int:
+        if review_cards <= 0:
+            return 0
+        if training_share <= 0:
+            return 0
+        exact = review_cards * corpus_share / training_share
+        return max(0, int(floor(exact + 0.5)))
+
+    def _build_concrete_presentation_slots(
+        self,
+        pressure_state: dict[str, PressureTierControllerState],
+        *,
+        corpus_share: float,
+        training_share: float,
+    ) -> list[str]:
+        review_sequence = self._build_concrete_review_sequence(pressure_state)
+        review_cards = len(review_sequence)
+        if review_cards == 0:
+            return ['__CORPUS__']
+        corpus_slots = self._compute_nearest_corpus_slots(review_cards, corpus_share, training_share)
+        if corpus_slots <= 0:
+            return review_sequence
+        slot_types = self._build_weighted_sequence(
+            {'R': review_cards, 'C': corpus_slots},
+            ['R', 'C'],
+            avoid_immediate_repeat=False,
+            prioritize_unseen_first=False,
+        )
+        review_index = 0
+        output: list[str] = []
+        for slot in slot_types:
+            if slot == 'C':
+                output.append('__CORPUS__')
+            else:
+                output.append(review_sequence[review_index])
+                review_index += 1
+        return output
+
+    def _rebuild_concrete_presentation_cycle(
+        self,
+        profile_id: str,
+        pressure_state: dict[str, PressureTierControllerState],
+        *,
+        reason: str,
+    ) -> None:
+        stable_deck = self._ensure_review_deck(profile_id)
+        stable_deck.concrete_presentation_slots = self._build_concrete_presentation_slots(
+            pressure_state,
+            corpus_share=self.last_shares[0],
+            training_share=self.last_shares[1],
+        )
+        stable_deck.concrete_cursor = 0
+        stable_deck.last_concrete_rebuild_reason = reason
+
     def _set_active_membership(self, deck: StableReviewDeckState, review_item_id: str, old_category: str | None, new_category: str | None) -> None:
         old_layers = set(self._tier_layers(old_category or ''))
         new_layers = set(self._tier_layers(new_category or ''))
@@ -698,6 +812,9 @@ class ReviewRouter:
                 'last_routing_action': stable_deck.last_routing_action,
                 'last_card_consumed_item_id': stable_deck.last_card_consumed_item_id,
                 'last_corpus_step': stable_deck.last_corpus_step,
+                'concrete_presentation_slots': list(stable_deck.concrete_presentation_slots),
+                'concrete_cursor': stable_deck.concrete_cursor,
+                'last_concrete_rebuild_reason': stable_deck.last_concrete_rebuild_reason,
             }
         return exported
 
@@ -735,6 +852,9 @@ class ReviewRouter:
             last_routing_action=str(deck_payload.get('last_routing_action', 'not_started')),
             last_card_consumed_item_id=deck_payload.get('last_card_consumed_item_id'),
             last_corpus_step=deck_payload.get('last_corpus_step'),
+            concrete_presentation_slots=[str(slot) for slot in list(deck_payload.get('concrete_presentation_slots', []))],
+            concrete_cursor=max(0, int(deck_payload.get('concrete_cursor', 0))),
+            last_concrete_rebuild_reason=str(deck_payload.get('last_concrete_rebuild_reason', 'migration_or_load')),
         )
         if not stable_deck.cards:
             for category in ('D', 'B', 'E'):
@@ -742,6 +862,8 @@ class ReviewRouter:
                     self._set_active_membership(stable_deck, item_id, None, category)
         if stable_deck.cursor >= len(stable_deck.cards):
             stable_deck.cursor = 0 if stable_deck.cards else 0
+        if stable_deck.concrete_cursor >= len(stable_deck.concrete_presentation_slots):
+            stable_deck.concrete_cursor = 0 if stable_deck.concrete_presentation_slots else 0
         self.profile_review_decks[profile_id] = stable_deck
         for category in PRESSURE_TIERS:
             self._ensure_tier_fill_invariant(profile_id, category, state[category], mutation_reason='fill_vacancy_from_waiting_on_load')
@@ -1021,6 +1143,112 @@ class ReviewRouter:
         elif self.deck.exhausted:
             rebuild_trigger = 'deck_exhausted'
             self._rebuild_deck(counts_by_category, active_counts_by_category=active_counts_by_category)
+        if rebuild_trigger is not None:
+            self._rebuild_concrete_presentation_cycle(profile_id, pressure_state, reason=rebuild_trigger)
+        elif (
+            not stable_deck.concrete_presentation_slots
+            or stable_deck.concrete_cursor >= len(stable_deck.concrete_presentation_slots)
+        ):
+            self._rebuild_concrete_presentation_cycle(profile_id, pressure_state, reason='concrete_cycle_exhausted')
+
+        pressure_only_active = (
+            bool(pressure_state['D'].active_deck or pressure_state['B'].active_deck or pressure_state['E'].active_deck)
+            and not any(counts_by_category[category] > 0 for category in H_CATEGORIES)
+        )
+        if pressure_only_active and stable_deck.concrete_presentation_slots:
+            selected_category = 'C'
+            selected_item = None
+            queue_before = 0
+            queue_after = 0
+            attempts = 0
+            while attempts < len(stable_deck.concrete_presentation_slots):
+                if stable_deck.concrete_cursor >= len(stable_deck.concrete_presentation_slots):
+                    stable_deck.concrete_cursor = 0
+                slot = stable_deck.concrete_presentation_slots[stable_deck.concrete_cursor]
+                stable_deck.concrete_cursor = (stable_deck.concrete_cursor + 1) % len(stable_deck.concrete_presentation_slots)
+                attempts += 1
+                if slot == '__CORPUS__':
+                    selected_category = 'C'
+                    break
+                if slot in pressure_state['E'].active_deck:
+                    selected_category = 'E'
+                elif slot in pressure_state['B'].active_deck:
+                    selected_category = 'B'
+                elif slot in pressure_state['D'].active_deck:
+                    selected_category = 'D'
+                else:
+                    continue
+                selected_item = next((item for item in tier_items[selected_category] if item.review_item_id == slot), None)
+                if selected_item is not None:
+                    break
+            if selected_item is not None and selected_category in PRESSURE_TIERS:
+                if selected_category == 'D':
+                    starved = self._ordinary_due_starved_items(tier_items['D'])
+                    if starved:
+                        selected_item = sorted(starved, key=self._starved_sort_key)[0]
+                        rebuild_trigger = rebuild_trigger or 'ORDINARY_DUE_STARVATION_BUMP'
+                    selected_item.skipped_review_slots = 0
+                self._increment_due_skipped_slots(tier_items['D'], selected_item.review_item_id if selected_category == 'D' else None)
+                self.record_presented_review(profile_id, selected_category, selected_item.review_item_id)
+                self.tier_queues[selected_category] = deque(pressure_state[selected_category].active_deck)
+                routing_source = CATEGORY_TO_ROUTING[selected_category]
+                stable_deck.last_routing_action = routing_source
+                stable_deck.last_card_consumed_item_id = selected_item.review_item_id
+                stable_deck.last_corpus_step = None
+                plan = ReviewPlan(
+                    root_fen='startpos',
+                    target_review_item_id=selected_item.review_item_id,
+                    target_position_key=selected_item.position_key,
+                    target_fen=selected_item.position_fen_normalized,
+                    predecessor_path=tuple(selected_item.predecessor_path),
+                    routing_reason=routing_source,
+                )
+                self._update_boundary(selected_category, selected_item.review_item_id)
+                return RoutingDecision(
+                    routing_source,
+                    selected_item.review_item_id,
+                    selected_item.urgency_tier,
+                    due_state(selected_item.due_at_utc),
+                    bool(selected_item.predecessor_path),
+                    f'{routing_source} selected via concrete pressure cycle.',
+                    profile_id,
+                    review_plan=plan,
+                    corpus_share=self.last_shares[0],
+                    review_share=self.last_shares[1],
+                    due_count=due_count,
+                    boosted_due_count=boosted_count,
+                    extreme_due_count=extreme_count,
+                    deck_size=len(stable_deck.concrete_presentation_slots),
+                    token_counts=self.deck_counts.copy(),
+                    selected_token_category=selected_category,
+                    queue_position_before=queue_before,
+                    queue_position_after=queue_after,
+                    rebuild_trigger=rebuild_trigger,
+                )
+            self._update_boundary('C', None)
+            stable_deck.last_routing_action = RoutingSource.CORPUS.value
+            stable_deck.last_card_consumed_item_id = None
+            stable_deck.last_corpus_step = 'concrete_cycle_corpus_step'
+            return RoutingDecision(
+                RoutingSource.CORPUS.value,
+                None,
+                None,
+                'none_due' if total_due == 0 else 'due_items_waiting',
+                False,
+                'ordinary_corpus_play selected via concrete pressure cycle.',
+                profile_id,
+                corpus_share=self.last_shares[0],
+                review_share=self.last_shares[1],
+                due_count=due_count,
+                boosted_due_count=boosted_count,
+                extreme_due_count=extreme_count,
+                deck_size=len(stable_deck.concrete_presentation_slots),
+                token_counts=self.deck_counts.copy(),
+                selected_token_category='C',
+                queue_position_before=None,
+                queue_position_after=None,
+                rebuild_trigger=rebuild_trigger,
+            )
 
         token = self.deck.next_token() if self.deck.tokens else 'C'
         selected_item = None
