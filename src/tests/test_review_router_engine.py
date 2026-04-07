@@ -26,16 +26,48 @@ def _shares(router: ReviewRouter, d: int, b: int, e: int) -> tuple[float, float]
     return out['corpus'], out['review']
 
 
-def test_outer_share_ladder_and_reserve_bands():
+def test_due_training_pct_helper_values():
+    router = ReviewRouter()
+    assert router._due_training_pct(0) == 0
+    assert router._due_training_pct(1) == 20
+    assert router._due_training_pct(2) == 35
+    assert router._due_training_pct(3) == 45
+    assert router._due_training_pct(4) == 50
+    assert router._due_training_pct(5) == 55
+    assert router._due_training_pct(10) == 80
+    assert router._due_training_pct(100) == 80
+
+
+def test_boosted_training_pct_helper_values():
+    router = ReviewRouter()
+    assert router._boosted_training_pct(0) == 0
+    assert router._boosted_training_pct(1) == 2
+    assert router._boosted_training_pct(2) == 4
+    assert router._boosted_training_pct(3) == 6
+    assert router._boosted_training_pct(4) == 6
+
+
+def test_urgent_training_pct_helper_values():
+    router = ReviewRouter()
+    assert router._urgent_training_pct(0) == 0
+    assert router._urgent_training_pct(1) == 1
+    assert router._urgent_training_pct(2) == 2
+    assert router._urgent_training_pct(4) == 4
+    assert router._urgent_training_pct(9) == 4
+
+
+def test_outer_share_canonical_examples():
     router = ReviewRouter()
     assert _shares(router, 0, 0, 0) == pytest.approx((1.0, 0.0))
-    assert _shares(router, 1, 0, 0) == pytest.approx((0.8, 0.2))
-    assert _shares(router, 2, 0, 0) == pytest.approx((0.75, 0.25))
-    assert _shares(router, 3, 0, 0) == pytest.approx((0.7, 0.3))
-    assert _shares(router, 4, 0, 0) == pytest.approx((0.65, 0.35))
-    assert _shares(router, 30, 0, 0)[0] == pytest.approx(0.45)
-    assert _shares(router, 30, 3, 0)[0] == pytest.approx(0.45)
-    assert _shares(router, 30, 3, 4)[0] == pytest.approx(0.45)
+    assert _shares(router, 0, 0, 1) == pytest.approx((0.77, 0.23))
+    assert _shares(router, 1, 2, 1) == pytest.approx((0.43, 0.57))
+    assert _shares(router, 100, 0, 0) == pytest.approx((0.20, 0.80))
+    assert _shares(router, 0, 3, 1) == pytest.approx((0.43, 0.57))
+
+
+def test_outer_share_training_hard_cap_is_90_percent():
+    router = ReviewRouter()
+    assert _shares(router, 30, 3, 4) == pytest.approx((0.10, 0.90))
 
 
 def test_tier_weighting_changes_review_distribution():

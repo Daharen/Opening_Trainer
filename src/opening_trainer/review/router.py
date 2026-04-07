@@ -126,17 +126,56 @@ class ReviewRouter:
         return 80
 
     @staticmethod
-    def _ordinary_penalty(total_due: int) -> float:
-        if total_due == 0:
-            return 0.0
-        return min(0.55, 0.20 + 0.05 * max(0, total_due - 1))
+    def _due_training_pct(count: int) -> int:
+        if count <= 0:
+            return 0
+        pct = 20
+        if count >= 2:
+            pct += 15
+        if count >= 3:
+            pct += 10
+        if count >= 4:
+            pct += 5 * (count - 3)
+        return min(80, pct)
+
+    @staticmethod
+    def _boosted_training_pct(count: int) -> int:
+        return 2 * min(3, max(0, count))
+
+    @staticmethod
+    def _urgent_training_pct(count: int) -> int:
+        return min(4, max(0, count))
+
+    def _compute_training_and_corpus_share_from_pressure_counts(
+        self,
+        due_count: int,
+        boosted_count: int,
+        urgent_count: int,
+    ) -> tuple[float, float]:
+        due_equivalent = due_count + boosted_count + urgent_count
+        boosted_equivalent = boosted_count + urgent_count
+        urgent_equivalent = urgent_count
+
+        due_pct = self._due_training_pct(due_equivalent)
+        boosted_pct = self._boosted_training_pct(boosted_equivalent)
+        urgent_pct = self._urgent_training_pct(urgent_equivalent)
+        training_pct = due_pct + boosted_pct + urgent_pct
+        training_pct = min(90, training_pct)
+        corpus_pct = 100 - training_pct
+        return (corpus_pct / 100.0, training_pct / 100.0)
 
     def _compute_shares(self, d: int, h80: int, h60: int, h40: int, h20: int, b: int, e: int) -> dict[str, float]:
-        total_due = d + h80 + h60 + h40 + h20 + b + e
+        due_count = d + h80 + h60 + h40 + h20
+        boosted_count = b
+        urgent_count = e
+        total_due = due_count + boosted_count + urgent_count
         if total_due == 0:
             return {category: (1.0 if category == 'C' else 0.0) for category in ('C', *REVIEW_CATEGORIES)} | {'corpus': 1.0, 'review': 0.0}
-        review_share = self._ordinary_penalty(total_due)
-        corpus_share = 1.0 - review_share
+        corpus_share, review_share = self._compute_training_and_corpus_share_from_pressure_counts(
+            due_count=due_count,
+            boosted_count=boosted_count,
+            urgent_count=urgent_count,
+        )
         masses = {
             'D': 1 * d,
             'H80': 1 * h80,
