@@ -6,6 +6,7 @@ import time
 
 import chess
 
+import opening_trainer.ui.gui_app as gui_app_module
 from opening_trainer.models import MoveHistoryEntry, SessionOutcome, SessionState, SessionView
 from opening_trainer.settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from opening_trainer.session import TrainingSession
@@ -1280,6 +1281,60 @@ def test_options_dialog_no_longer_owns_smart_contract_controls():
     assert 'Show move list by default' not in source
     assert 'for column in self.inspector.columns' in source
     assert "state = 'normal' if panel_var.get() else 'disabled'" in source
+
+
+def test_theme_palette_is_centralized_for_dark_and_light_modes():
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.dark_mode_enabled = True
+    dark = gui._theme_palette()
+    gui.dark_mode_enabled = False
+    light = gui._theme_palette()
+
+    assert dark['app_bg'] != '#000000'
+    assert dark['field_bg'] != light['field_bg']
+    assert dark['selection_bg'] != light['selection_bg']
+    assert dark['coord_fg'] != light['coord_fg']
+
+
+def test_apply_theme_invokes_internal_surface_theming_paths():
+    source = inspect.getsource(OpeningTrainerGUI._apply_theme)
+
+    assert 'palette = self._theme_palette()' in source
+    assert 'self.move_list_panel.apply_theme(palette)' in source
+    assert 'self.inspector.apply_theme(palette)' in source
+    assert 'self.board_view.apply_theme(palette)' in source
+    assert 'panel.apply_theme(palette)' in source
+    assert "style.configure('Treeview'" in source
+    assert "style.configure('Treeview.Heading'" in source
+
+
+def test_board_coordinates_use_theme_palette_color_when_present():
+    board_view = BoardView.__new__(BoardView)
+    board_view.board_size = 480
+    board_view.square_size = 53
+    board_view.theme_palette = {'coord_fg': '#dddddd'}
+    drawn = []
+    board_view.create_text = lambda *_args, **kwargs: drawn.append(kwargs.get('fill'))
+    BoardView._draw_coordinates(board_view, chess.WHITE)
+
+    assert drawn
+    assert all(color == '#dddddd' for color in drawn)
+
+
+def test_options_save_still_reapplies_theme_and_persists_dark_mode():
+    source = inspect.getsource(OpeningTrainerGUI._open_options)
+
+    assert 'dark_mode_enabled=getattr(self, "dark_mode_enabled", False)' in source
+    assert 'self._apply_theme()' in source
+
+
+def test_windows_titlebar_dark_mode_helper_fails_safely_when_unavailable(monkeypatch):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    gui.root = type('Root', (), {'winfo_id': lambda self: 5})()
+    monkeypatch.setattr(gui_app_module.os, 'name', 'nt')
+    monkeypatch.setattr(gui_app_module, 'ctypes', object())
+
+    gui._set_windows_titlebar_dark_mode(True)
 
 
 def test_pause_button_reuses_escape_pause_surface():

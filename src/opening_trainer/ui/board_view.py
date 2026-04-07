@@ -82,6 +82,7 @@ class BoardView(tk.Canvas):
         self._last_board_fen: str | None = None
         self._last_player_color: chess.Color | None = None
         self._resize_refresh_after_handle: str | None = None
+        self.theme_palette: dict[str, str] = {}
         self.bind('<Configure>', self._on_resize)
         self.configure(width=board_size, height=board_size)
 
@@ -280,6 +281,11 @@ class BoardView(tk.Canvas):
         self._last_board_fen = board.fen()
         self._last_player_color = player_color
         self.delete('all')
+        palette = getattr(self, 'theme_palette', {})
+        try:
+            self.configure(bg=palette.get('board_gutter_bg', palette.get('panel_bg', '#ffffff')))
+        except Exception:
+            pass
         origin_x, origin_y = self.board_origin
         for square in chess.SQUARES:
             row, col = square_to_display(square, player_color)
@@ -321,12 +327,16 @@ class BoardView(tk.Canvas):
         origin_x, origin_y = self.board_origin
         files, ranks = self.coordinate_labels(player_color)
         font = ('TkDefaultFont', max(8, int(self.square_size * 0.16)), 'bold')
+        coord_color = self.theme_palette.get('coord_fg', '#333333')
         for idx, label in enumerate(files):
             x = origin_x + idx * self.square_size + self.square_size / 2
-            self.create_text(x, origin_y + self.board_pixels + BOARD_PADDING / 2, text=label, font=font, fill='#333333')
+            self.create_text(x, origin_y + self.board_pixels + BOARD_PADDING / 2, text=label, font=font, fill=coord_color)
         for idx, label in enumerate(ranks):
             y = origin_y + idx * self.square_size + self.square_size / 2
-            self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill='#333333')
+            self.create_text(BOARD_PADDING / 2, y, text=label, font=font, fill=coord_color)
+
+    def apply_theme(self, palette: dict[str, str]) -> None:
+        self.theme_palette = dict(palette)
 
     def _draw_drag_piece(self) -> None:
         if not self.drag_state or not self.drag_state.moved:

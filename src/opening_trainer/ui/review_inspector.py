@@ -58,10 +58,11 @@ class ReviewInspector(ttk.Frame):
             textvariable=self.filter_var,
             values=['all', 'ordinary_review', 'boosted_review', 'extreme_urgency', 'manual_target'],
             state='readonly',
+            style='ReviewFilter.TCombobox',
         ).pack(anchor='e')
         self.filter_var.trace_add('write', lambda *_: self.refresh())
 
-        tree_frame = ttk.Frame(self)
+        tree_frame = ttk.Frame(self, style='ReviewTreeHost.TFrame')
         tree_frame.pack(fill='both', expand=True)
         self.tree = ttk.Treeview(tree_frame, columns=self.columns, show='headings', height=8, displaycolumns=self.visible_columns)
         scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
@@ -76,13 +77,16 @@ class ReviewInspector(ttk.Frame):
         self.tree.bind('<Button-3>', self._open_context_menu)
         self.tree.bind('<Control-c>', self._copy_with_shortcut)
 
-        button_row = ttk.Frame(self)
+        button_row = ttk.Frame(self, style='ReviewButtonRow.TFrame')
         button_row.pack(fill='x', pady=4)
         ttk.Button(button_row, text='Add Manual Target', command=self._open_manual_target_dialog).pack(side='left', padx=4)
         ttk.Button(button_row, text='Edit Item', command=self._edit_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Board Edit', command=self._edit_item_in_board_setup).pack(side='left', padx=4)
         ttk.Button(button_row, text='Delete item', command=self._delete_item).pack(side='left', padx=4)
         ttk.Button(button_row, text='Reset item', command=self._reset_item).pack(side='left', padx=4)
+        self._tree_frame = tree_frame
+        self._tree_scrollbar = scrollbar
+        self._button_row = button_row
 
     def _handle_cell_focus(self, event: tk.Event) -> None:
         column_token = self.tree.identify_column(event.x)
@@ -234,6 +238,12 @@ class ReviewInspector(ttk.Frame):
                     item.last_routing_reason,
                 ),
             )
+
+    def apply_theme(self, palette: dict[str, str]) -> None:
+        self.configure(style='ReviewInspector.TFrame')
+        self._tree_frame.configure(style='ReviewTreeHost.TFrame')
+        self._button_row.configure(style='ReviewButtonRow.TFrame')
+        self._tree_scrollbar.configure(style='Review.Vertical.TScrollbar')
 
     def _delete_item(self):
         item_id = self.tree.focus()

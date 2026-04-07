@@ -14,6 +14,7 @@ class MoveListPanel(ttk.LabelFrame):
         self.opening_name_label.pack(fill='x', padx=6, pady=(2, 4))
         self.text = tk.Text(self, height=10, width=28, state='disabled', wrap='none')
         self.text.pack(fill='both', expand=True)
+        self._theme_palette: dict[str, str] | None = None
 
     def update_opening_name(self, opening_name: str | None) -> None:
         if isinstance(opening_name, str) and opening_name.strip():
@@ -40,3 +41,19 @@ class MoveListPanel(ttk.LabelFrame):
         self.text.delete('1.0', 'end')
         self.text.insert('1.0', content)
         self.text.configure(state='disabled')
+
+    def apply_theme(self, palette: dict[str, str]) -> None:
+        self._theme_palette = dict(palette)
+        self.configure(style='MoveList.TLabelframe')
+        self.opening_name_label.configure(style='MoveList.TLabel')
+        self.text.configure(
+            bg=palette['field_bg'],
+            fg=palette['text_fg'],
+            insertbackground=palette['text_fg'],
+            selectbackground=palette['selection_bg'],
+            selectforeground=palette['selection_fg'],
+            highlightbackground=palette['border_color'],
+            highlightcolor=palette['border_color'],
+            relief='flat',
+            bd=1,
+        )
