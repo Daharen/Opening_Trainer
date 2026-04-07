@@ -351,6 +351,108 @@ def test_round_end_capacity_tuning_and_backfill_is_deterministic():
     assert len(after_shrink['waiting_queue']) >= 1
 
 
+def test_underfilled_clean_round_does_not_grow_capacity():
+    router = ReviewRouter()
+    active_items = [_item(f'd{i}', 'ordinary_review') for i in range(3)]
+    router.import_profile_state(
+        'default',
+        {
+            'D': {'capacity': 6, 'active_deck': [item.review_item_id for item in active_items], 'waiting_queue': []},
+            'B': {'capacity': 3, 'active_deck': [], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    for item in active_items:
+        router.record_presented_review('default', 'D', item.review_item_id)
+        router.record_review_result('default', 'scheduled_review', was_miss=False)
+    state = router.export_profile_state('default')
+    assert state['D']['capacity'] == 6
+    assert state['stable_review_deck']['last_mutation_reason'] == 'capacity_growth_blocked_underfilled_round'
+
+
+def test_saturated_clean_round_does_grow_capacity():
+    router = ReviewRouter()
+    active_items = [_item(f'd{i}', 'ordinary_review') for i in range(3)]
+    router.import_profile_state(
+        'default',
+        {
+            'D': {'capacity': 3, 'active_deck': [item.review_item_id for item in active_items], 'waiting_queue': []},
+            'B': {'capacity': 3, 'active_deck': [], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    for item in active_items:
+        router.record_presented_review('default', 'D', item.review_item_id)
+        router.record_review_result('default', 'scheduled_review', was_miss=False)
+    state = router.export_profile_state('default')
+    assert state['D']['capacity'] == 4
+    assert state['stable_review_deck']['last_mutation_reason'] == 'capacity_growth'
+
+
+def test_underfilled_missed_round_may_still_shrink_capacity():
+    router = ReviewRouter()
+    active_items = [_item(f'd{i}', 'ordinary_review') for i in range(3)]
+    router.import_profile_state(
+        'default',
+        {
+            'D': {'capacity': 6, 'active_deck': [item.review_item_id for item in active_items], 'waiting_queue': []},
+            'B': {'capacity': 3, 'active_deck': [], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    for index, item in enumerate(active_items):
+        router.record_presented_review('default', 'D', item.review_item_id)
+        router.record_review_result('default', 'scheduled_review', was_miss=index < 2)
+    state = router.export_profile_state('default')
+    assert state['D']['capacity'] == 5
+    assert state['stable_review_deck']['last_mutation_reason'] == 'capacity_shrink'
+
+
+def test_growth_uses_round_start_saturation_snapshot_not_later_active_size():
+    router = ReviewRouter()
+    active_items = [_item(f'd{i}', 'ordinary_review') for i in range(3)]
+    router.import_profile_state(
+        'default',
+        {
+            'D': {'capacity': 3, 'active_deck': [item.review_item_id for item in active_items], 'waiting_queue': []},
+            'B': {'capacity': 3, 'active_deck': [], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    router.record_presented_review('default', 'D', active_items[0].review_item_id)
+    pressure_state = router._ensure_pressure_state('default')['D']
+    removed = pressure_state.active_deck.pop()
+    pressure_state.active_insert_serials.pop(removed, None)
+    router._set_active_membership(router._ensure_review_deck('default'), removed, 'D', None)
+    router.record_review_result('default', 'scheduled_review', was_miss=False)
+    for item_id in list(pressure_state.active_deck):
+        router.record_presented_review('default', 'D', item_id)
+        router.record_review_result('default', 'scheduled_review', was_miss=False)
+    state = router.export_profile_state('default')
+    assert state['D']['capacity'] == 4
+
+
+def test_import_defaults_round_started_saturated_to_false_when_missing():
+    router = ReviewRouter()
+    router.import_profile_state(
+        'default',
+        {
+            'D': {
+                'capacity': 5,
+                'active_deck': ['d0'],
+                'waiting_queue': [],
+                'round_seen_count': 0,
+                'round_miss_count': 0,
+                'round_target_size': 0,
+            },
+            'B': {'capacity': 3, 'active_deck': [], 'waiting_queue': []},
+            'E': {'capacity': 2, 'active_deck': [], 'waiting_queue': []},
+        },
+    )
+    state = router.export_profile_state('default')
+    assert state['D']['round_started_saturated'] is False
+
+
 def test_new_failure_enters_waiting_when_tier_full_without_displacing_active():
     router = ReviewRouter()
     items = [_item(f'b{i}', 'boosted_review') for i in range(5)]
