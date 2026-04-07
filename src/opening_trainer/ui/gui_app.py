@@ -90,11 +90,13 @@ class OpeningTrainerGUI:
         self.pending_restart = False
         self.panel_visible = self._load_panel_visibility_preference()
         self.move_list_visible = self._load_move_list_visibility_preference()
+        self.dark_mode_enabled = self._load_dark_mode_preference()
         self.loading_var = tk.StringVar(value='')
         self.bundle_status_var = tk.StringVar(value='No active corpus bundle selected.')
         self.bundle_detail_var = tk.StringVar(value='Select a corpus bundle to enable corpus-backed opponent play.')
         self.top_summary_var = tk.StringVar(value='')
         self.start_button = None
+        self.pause_button = None
         self.update_button = None
         self._updater_mode_active = False
         self._updater_apply_started = False
@@ -163,28 +165,6 @@ class OpeningTrainerGUI:
         self.root.rowconfigure(3, weight=1)
 
         self._build_menubar()
-
-        toolbar = tk.Frame(self.root)
-        toolbar.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 4))
-        self.start_button = tk.Button(
-            toolbar,
-            text='Start drill',
-            command=self._start_game,
-            bg='#ffd600',
-            fg='black',
-            activebackground='#ffb300',
-            activeforeground='black',
-            disabledforeground='#fff1a8',
-        )
-        self.start_button.pack(side='left')
-        tk.Button(toolbar, text='Options', command=self._open_options).pack(side='left', padx=6)
-        tk.Button(toolbar, text='Profiles', command=self._open_profiles).pack(side='left', padx=6)
-        tk.Button(toolbar, text='Corpus Selection', command=self._open_bundle_picker).pack(side='left', padx=6)
-        tk.Button(toolbar, text='Report', command=self._show_report_placeholder).pack(side='left', padx=6)
-        self.update_button = tk.Button(toolbar, text='Update', command=self._check_for_updates_from_gui)
-        self.update_button.pack(side='left', padx=6)
-        self.panel_toggle_button = tk.Button(toolbar, text='', command=self._toggle_side_panel)
-        self.panel_toggle_button.pack(side='left', padx=(6, 0))
 
         self.summary_strip = ttk.Frame(self.root)
         self.summary_strip.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 2))
@@ -323,6 +303,22 @@ class OpeningTrainerGUI:
         self.root_pane.add(self.main_region, minsize=500, stretch='always')
         self.root_pane.add(self.side_panel, minsize=280)
 
+        self.action_bar = tk.Frame(self.root)
+        self.action_bar.grid(row=4, column=0, sticky='ew', padx=12, pady=(0, 12))
+        self.start_button = tk.Button(
+            self.action_bar,
+            text='Start Drill',
+            command=self._start_game,
+            bg='#ffd600',
+            fg='black',
+            activebackground='#ffb300',
+            activeforeground='black',
+            disabledforeground='#fff1a8',
+        )
+        self.start_button.pack(side='left')
+        self.pause_button = tk.Button(self.action_bar, text='Pause (P)', command=self._pause_from_button, state='disabled')
+        self.pause_button.pack(side='left', padx=(8, 0))
+
         self.board_view.bind('<ButtonPress-1>', self._on_board_press)
         self.board_view.bind('<B1-Motion>', self._on_board_drag)
         self.board_view.bind('<ButtonRelease-1>', self._on_board_release)
@@ -333,6 +329,7 @@ class OpeningTrainerGUI:
         self._refresh_top_control_strip()
         self._start_live_clock_refresh()
         self._bind_pause_hotkeys()
+        self._apply_theme()
         self.root.protocol('WM_DELETE_WINDOW', self._request_shutdown)
 
     def _log_animation_event(self, event: str, **fields: object) -> None:
@@ -369,6 +366,9 @@ class OpeningTrainerGUI:
     def _load_move_list_visibility_preference(self) -> bool:
         return self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth()).move_list_visible
 
+    def _load_dark_mode_preference(self) -> bool:
+        return self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth()).dark_mode_enabled
+
     def _remembered_bundle_path(self) -> str | None:
         settings = self.session.settings_store.load(maximum_depth=self.session.max_supported_training_depth())
         value = settings.last_bundle_path
@@ -386,6 +386,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -407,6 +408,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=bundle_path,
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -432,6 +434,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=catalog_root,
@@ -441,11 +444,6 @@ class OpeningTrainerGUI:
             )
         )
 
-    def _toggle_side_panel(self) -> None:
-        self.panel_visible = not self.panel_visible
-        self._apply_shell_layout()
-        self._save_shell_preferences()
-
     def _apply_shell_layout(self, initializing: bool = False) -> None:
         if self.move_list_visible:
             self.move_list_panel.grid()
@@ -453,16 +451,11 @@ class OpeningTrainerGUI:
             self.move_list_panel.grid_remove()
         if self.panel_visible:
             self.inspector.grid()
-            self._set_panel_toggle_label('Hide Training Panel')
         else:
             self.inspector.grid_remove()
-            self._set_panel_toggle_label('Show Training Panel')
+        self._update_pause_button_state()
         if not initializing:
             self._refresh_supporting_surfaces()
-
-    def _set_panel_toggle_label(self, label: str) -> None:
-        if hasattr(self.panel_toggle_button, 'configure'):
-            self.panel_toggle_button.configure(text=label)
 
     def _show_loading(self, message: str) -> None:
         self.loading_var.set(message)
@@ -589,6 +582,7 @@ class OpeningTrainerGUI:
                 selected_time_control_id=selected_time_control_id,
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
+                dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -1337,6 +1331,7 @@ class OpeningTrainerGUI:
         window.transient(self.root)
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill='both', expand=True)
+        dark_mode_var = tk.BooleanVar(value=self.dark_mode_enabled)
         panel_var = tk.BooleanVar(value=self.panel_visible)
         move_list_var = tk.BooleanVar(value=self.move_list_visible)
         visible_columns = set(self.session.settings.training_panel_visible_columns or DEFAULT_TRAINING_PANEL_COLUMNS)
@@ -1344,21 +1339,34 @@ class OpeningTrainerGUI:
             column: tk.BooleanVar(value=column in visible_columns)
             for column in self.inspector.columns
         }
-        ttk.Checkbutton(frame, text='Show training/review panel by default', variable=panel_var).pack(anchor='w')
-        ttk.Checkbutton(frame, text='Show move list by default', variable=move_list_var).pack(anchor='w', pady=(0, 8))
-        ttk.Label(frame, text='Training panel columns', justify='left').pack(anchor='w')
+        ttk.Checkbutton(frame, text='Dark Mode', variable=dark_mode_var).pack(anchor='w')
+        ttk.Checkbutton(frame, text='Show Moves List', variable=move_list_var).pack(anchor='w')
+        ttk.Checkbutton(frame, text='Show Training Panel', variable=panel_var).pack(anchor='w', pady=(0, 8))
+        ttk.Label(frame, text='Training Panel Columns', justify='left').pack(anchor='w')
         columns_frame = ttk.Frame(frame)
         columns_frame.pack(fill='x', pady=(0, 8))
+        column_checkbuttons: list[ttk.Checkbutton] = []
         for index, column in enumerate(self.inspector.columns):
-            ttk.Checkbutton(
+            checkbutton = ttk.Checkbutton(
                 columns_frame,
                 text=self.inspector.column_labels[column],
                 variable=column_vars[column],
-            ).grid(row=index // 3, column=index % 3, sticky='w', padx=(0, 12), pady=2)
+            )
+            checkbutton.grid(row=index // 3, column=index % 3, sticky='w', padx=(0, 12), pady=2)
+            column_checkbuttons.append(checkbutton)
+
+        def _sync_column_state(*_args):
+            state = 'normal' if panel_var.get() else 'disabled'
+            for checkbutton in column_checkbuttons:
+                checkbutton.configure(state=state)
+
+        panel_var.trace_add('write', _sync_column_state)
+        _sync_column_state()
 
         def save():
             self.panel_visible = panel_var.get()
             self.move_list_visible = move_list_var.get()
+            self.dark_mode_enabled = dark_mode_var.get()
             selected_columns = tuple(
                 column for column in self.inspector.columns if column_vars[column].get()
             ) or DEFAULT_TRAINING_PANEL_COLUMNS
@@ -1372,6 +1380,7 @@ class OpeningTrainerGUI:
                     selected_time_control_id=self.session.settings.selected_time_control_id,
                     side_panel_visible=self.panel_visible,
                     move_list_visible=self.move_list_visible,
+                    dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
                     training_panel_visible_columns=selected_columns,
                     last_bundle_path=self._remembered_bundle_path(),
                     last_corpus_catalog_root=self._catalog_root_setting(),
@@ -1381,6 +1390,7 @@ class OpeningTrainerGUI:
                 )
             )
             window.destroy()
+            self._apply_theme()
             self.inspector.set_visible_columns(selected_columns)
             self._apply_shell_layout(initializing=True)
             self._refresh_supporting_surfaces()
@@ -1391,6 +1401,43 @@ class OpeningTrainerGUI:
     def _bind_pause_hotkeys(self) -> None:
         self.root.bind_all('<KeyPress-p>', lambda event: self._on_pause_hotkey(event, source='key_p'))
         self.root.bind_all('<Escape>', lambda event: self._on_pause_hotkey(event, source='key_escape'))
+
+    def _pause_from_button(self) -> None:
+        self._ensure_live_flow_state()
+        if self.session.state not in {SessionState.PLAYER_TURN, SessionState.OPPONENT_TURN}:
+            return
+        self._open_pause_surface(source='bottom_bar')
+
+    def _update_pause_button_state(self) -> None:
+        if not hasattr(self, 'pause_button') or self.pause_button is None:
+            return
+        enabled = self.session.state in {SessionState.PLAYER_TURN, SessionState.OPPONENT_TURN}
+        self.pause_button.configure(state='normal' if enabled else 'disabled')
+
+    def _apply_theme(self) -> None:
+        dark = bool(self.dark_mode_enabled)
+        bg = '#101214' if dark else '#f0f0f0'
+        fg = '#ececec' if dark else '#111111'
+        panel_bg = '#1b1f23' if dark else '#f0f0f0'
+        menu_bg = '#17191c' if dark else '#f0f0f0'
+        menu_fg = '#f5f5f5' if dark else '#111111'
+        self.root.configure(bg=bg)
+        style = ttk.Style(self.root)
+        style.configure('.', background=panel_bg, foreground=fg)
+        style.configure('TFrame', background=panel_bg)
+        style.configure('TLabelframe', background=panel_bg, foreground=fg)
+        style.configure('TLabelframe.Label', background=panel_bg, foreground=fg)
+        style.configure('TLabel', background=panel_bg, foreground=fg)
+        style.configure('TCheckbutton', background=panel_bg, foreground=fg)
+        style.configure('TButton', background=panel_bg, foreground=fg)
+        style.configure('TCombobox', fieldbackground='#23272b' if dark else '#ffffff', foreground=fg)
+        for widget in (getattr(self, 'action_bar', None), getattr(self, 'main_region', None), getattr(self, 'side_panel', None)):
+            if widget is not None:
+                widget.configure(bg=bg if widget is self.action_bar else panel_bg)
+        self.root.option_add('*Menu.background', menu_bg)
+        self.root.option_add('*Menu.foreground', menu_fg)
+        self.root.option_add('*Menu.activeBackground', '#2b3036' if dark else '#d9d9d9')
+        self.root.option_add('*Menu.activeForeground', menu_fg if dark else '#111111')
 
     def _ensure_live_flow_state(self) -> None:
         if not hasattr(self, 'paused'):
@@ -1590,6 +1637,7 @@ class OpeningTrainerGUI:
         log_line(f'GUI_PENDING_OPPONENT_RESUMED reason={reason} restored_delay_seconds={restored:.3f}', tag='timing')
 
     def _refresh_view(self, transient_status: str | None = None) -> None:
+        self._update_pause_button_state()
         self._refresh_board_canvas()
         self._refresh_supporting_surfaces()
         if transient_status:
@@ -2080,12 +2128,29 @@ class OpeningTrainerGUI:
     def _build_menubar(self) -> None:
         menubar = tk.Menu(self.root)
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label='Check for Updates', command=self._check_for_updates_from_gui)
         file_menu.add_command(label='Exit', command=self._request_shutdown)
         menubar.add_cascade(label='File', menu=file_menu)
+
+        options_menu = tk.Menu(menubar, tearoff=0)
+        options_menu.add_command(label='Open Options…', command=self._open_options)
+        menubar.add_cascade(label='Options', menu=options_menu)
+
         profiles_menu = tk.Menu(menubar, tearoff=0)
         profiles_menu.add_command(label='Manage Profiles…', command=self._open_profiles)
         menubar.add_cascade(label='Profiles', menu=profiles_menu)
+
+        corpus_menu = tk.Menu(menubar, tearoff=0)
+        corpus_menu.add_command(label='Open Corpus Selection…', command=self._open_bundle_picker)
+        menubar.add_cascade(label='Corpus Selection', menu=corpus_menu)
+
+        update_menu = tk.Menu(menubar, tearoff=0)
+        update_menu.add_command(label='Check for Updates', command=self._check_for_updates_from_gui)
+        menubar.add_cascade(label='Update', menu=update_menu)
+
+        report_menu = tk.Menu(menubar, tearoff=0)
+        report_menu.add_command(label='Open Report', command=self._show_report_placeholder)
+        menubar.add_cascade(label='Report', menu=report_menu)
+
         dev_menu = tk.Menu(menubar, tearoff=0)
         dev_menu.add_command(label='Open Dev Console', command=self._open_dev_console)
         dev_menu.add_command(label='Review Deck Inspector', command=self._open_review_deck_inspector)
@@ -2946,11 +3011,4 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-
-
-
-
-
-
-
 

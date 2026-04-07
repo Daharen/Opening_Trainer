@@ -29,6 +29,7 @@ class TrainerSettings:
     selected_time_control_id: str = '600+0'
     side_panel_visible: bool = False
     move_list_visible: bool = True
+    dark_mode_enabled: bool = False
     training_panel_visible_columns: tuple[str, ...] = DEFAULT_TRAINING_PANEL_COLUMNS
     last_bundle_path: str | None = None
     last_corpus_catalog_root: str | None = None
@@ -64,6 +65,7 @@ class TrainerSettings:
             selected_time_control_id=selected_time_control,
             side_panel_visible=bool(self.side_panel_visible),
             move_list_visible=bool(self.move_list_visible),
+            dark_mode_enabled=bool(self.dark_mode_enabled),
             training_panel_visible_columns=visible_columns,
             last_bundle_path=bundle_path,
             last_corpus_catalog_root=catalog_root,
@@ -103,6 +105,7 @@ class TrainerSettingsStore:
             selected_time_control_id=str(payload.get('selected_time_control_id', '600+0')),
             side_panel_visible=bool(payload.get('side_panel_visible', False)),
             move_list_visible=bool(payload.get('move_list_visible', True)),
+            dark_mode_enabled=bool(payload.get('dark_mode_enabled', False)),
             training_panel_visible_columns=tuple(payload.get('training_panel_visible_columns') or DEFAULT_TRAINING_PANEL_COLUMNS),
             last_bundle_path=payload.get('last_bundle_path') or None,
             last_corpus_catalog_root=payload.get('last_corpus_catalog_root') or None,

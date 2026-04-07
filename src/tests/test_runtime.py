@@ -1076,6 +1076,7 @@ def test_settings_store_persists_shell_defaults_and_last_bundle(tmp_path):
             active_training_ply_depth=3,
             side_panel_visible=False,
             move_list_visible=True,
+            dark_mode_enabled=True,
             training_panel_visible_columns=('position', 'side'),
             last_bundle_path='  /tmp/example_bundle  ',
             last_corpus_catalog_root='  /tmp/corpus_root  ',
@@ -1084,6 +1085,7 @@ def test_settings_store_persists_shell_defaults_and_last_bundle(tmp_path):
 
     assert saved.side_panel_visible is False
     assert saved.move_list_visible is True
+    assert saved.dark_mode_enabled is True
     assert saved.training_panel_visible_columns == ('position', 'side')
     assert saved.last_bundle_path == '/tmp/example_bundle'
     assert saved.last_corpus_catalog_root == '/tmp/corpus_root'
@@ -1110,6 +1112,7 @@ def test_settings_store_defaults_and_persists_training_panel_columns(tmp_path):
     assert reloaded.training_panel_visible_columns == ('position', 'side', 'due')
     assert reloaded.side_panel_visible is True
     assert reloaded.move_list_visible is False
+    assert reloaded.dark_mode_enabled is False
     assert reloaded == saved
 
 
