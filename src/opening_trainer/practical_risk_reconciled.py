@@ -337,6 +337,36 @@ class PracticalRiskReconciledService:
     def get_root_summary(self, position_key: str, band_id: str) -> dict[str, Any] | None:
         return self._root_summaries.get((position_key, band_id))
 
+    @staticmethod
+    def admission_is_sharp_gambit_family(admission: dict[str, Any] | None) -> bool:
+        if not admission:
+            return False
+        family_label = str(admission.get("family_label") or "").strip().lower()
+        if family_label == "sharp/gambit":
+            return True
+        reason_code = str(admission.get("failure_reason_code") or "").strip().lower()
+        if reason_code == "would_pass_if_sharp_toggle_enabled":
+            return True
+        local_reason = str(admission.get("local_reason") or "").strip().lower()
+        if "sharp" in local_reason or "gambit" in local_reason:
+            return True
+        return False
+
+    @staticmethod
+    def explanation_is_sharp_gambit_family(explanation: dict[str, Any] | None) -> bool:
+        if not explanation:
+            return False
+        reason_code = str(explanation.get("reason_code") or "").strip().lower()
+        toggle_state_required = str(explanation.get("toggle_state_required") or "").strip().lower()
+        family_label = str(explanation.get("family_label") or "").strip().lower()
+        if reason_code == "would_pass_if_sharp_toggle_enabled":
+            return True
+        if toggle_state_required == "sharp_on":
+            return True
+        if family_label == "sharp/gambit":
+            return True
+        return False
+
 
 class ReconciledFailureRenderer:
     @staticmethod

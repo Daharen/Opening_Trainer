@@ -7,6 +7,7 @@ import chess
 from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResult, ReasonCode
 from opening_trainer.evaluator import MoveEvaluator
 from opening_trainer.practical_risk_reconciled import PracticalRiskReconciledService, ReconciledFailureRenderer
+from opening_trainer.session_logging import get_session_logger, reset_logger_for_tests
 
 
 class StubBookAuthority:
@@ -223,6 +224,59 @@ def test_engine_fail_reconciled_admitted_rescues_on_real_schema(tmp_path):
     assert passed.reason_text == "Accepted via practical-risk reconciliation for the current training band."
 
 
+def test_sharp_family_admission_toggle_off_is_policy_rejected(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_admission.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    failed = _eval(service, requested_band_id="1200-1400", sharp=False)
+    assert failed.accepted is False
+    assert failed.metadata["reconciled"]["decision_source"] == "reconciled_policy_reject_sharp_toggle_off"
+    assert "Enable sharp/gambit lines" in failed.reason_text
+    assert "Rejected by engine" not in failed.reason_text
+
+
+def test_sharp_family_admission_toggle_on_rescues(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_admission_on.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    passed = _eval(service, requested_band_id="1200-1400", sharp=True)
+    assert passed.accepted is True
+    assert passed.metadata["reconciled"]["decision_source"] == "reconciled_admission"
+
+
+def test_non_sharp_admission_still_rescues_with_toggle_off(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "non_sharp_admission.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "positional line", "1400-1600")
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    passed = _eval(service, requested_band_id="1200-1400", sharp=False)
+    assert passed.accepted is True
+    assert passed.metadata["reconciled"]["decision_source"] == "reconciled_admission"
+
+
 def test_strict_mode_sharp_override_only_when_enabled(tmp_path):
     board = chess.Board()
     position_key = _position_key(board)
@@ -403,7 +457,7 @@ def test_stafford_b8c6_rescue_uses_real_schema_columns(tmp_path):
     )
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
 
-    result = _eval(service, board=board, move_uci="b8c6", requested_band_id="1200-1400", good_moves_acceptable=False)
+    result = _eval(service, board=board, move_uci="b8c6", requested_band_id="1200-1400", sharp=True, good_moves_acceptable=False)
     assert result.accepted is True
     assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission"
 
@@ -555,3 +609,24 @@ def test_reconciled_not_consulted_after_book_or_engine_pass(tmp_path):
     assert engine_pass.accepted is True
     assert engine_pass.canonical_judgment.value == "Better"
     assert engine_pass.metadata["reconciled"]["decision_source"] == "legacy_engine_book"
+
+
+def test_sharp_toggle_off_no_reason_admitted_log_regression(tmp_path):
+    reset_logger_for_tests()
+    get_session_logger().clear_visible_buffer()
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_log_regression.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    result = _eval(service, requested_band_id="1200-1400", sharp=False)
+    assert result.accepted is False
+    visible = "\n".join(get_session_logger().visible_lines())
+    assert "PRACTICAL_RISK_FAIL_CONFIRMED" in visible
+    assert "reason=admitted" not in visible
