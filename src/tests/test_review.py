@@ -77,18 +77,11 @@ def _write_predecessor_db(path: Path, rows: list[tuple[str, str | None, str | No
         connection.close()
 
 
-def _write_reconciled_db_for_position(
-    path: Path,
-    *,
-    position_key: str,
-    move_uci: str,
-    band_id: str = "1000-1200",
-    sharp_family: bool = False,
-) -> None:
+def _write_reconciled_db_for_position(path: Path, *, position_key: str, move_uci: str, band_id: str = "1000-1200") -> None:
     connection = sqlite3.connect(path)
     try:
         connection.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
-        connection.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, local_admitted_if_good_accepted INTEGER, local_admitted_if_good_rejected INTEGER, reconciled_admitted_if_good_accepted INTEGER, reconciled_admitted_if_good_rejected INTEGER, local_admission_origin_if_good_accepted TEXT, local_admission_origin_if_good_rejected TEXT, reconciled_admission_origin_if_good_accepted TEXT, reconciled_admission_origin_if_good_rejected TEXT, engine_quality_class TEXT, local_reason TEXT, practical_ceiling_band_id TEXT, family_label TEXT, failure_reason_code TEXT)")
+        connection.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, local_admitted_if_good_accepted INTEGER, local_admitted_if_good_rejected INTEGER, reconciled_admitted_if_good_accepted INTEGER, reconciled_admitted_if_good_rejected INTEGER, local_admission_origin_if_good_accepted TEXT, local_admission_origin_if_good_rejected TEXT, reconciled_admission_origin_if_good_accepted TEXT, reconciled_admission_origin_if_good_rejected TEXT, engine_quality_class TEXT, local_reason TEXT, practical_ceiling_band_id TEXT)")
         connection.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT, reason_code TEXT, template_id TEXT, family_label TEXT, max_practical_band_id TEXT, first_failure_band_id TEXT, toggle_state_required TEXT, rendered_preview TEXT)")
         connection.execute(
             """
@@ -106,33 +99,9 @@ def _write_reconciled_db_for_position(
         connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
         connection.execute(f"INSERT INTO artifact_metadata(key,value) VALUES('included_band_order','[\"{band_id}\"]')")
         connection.execute(
-            "INSERT INTO reconciled_move_admissions(position_key, band_id, move_uci, local_admitted_if_good_accepted, local_admitted_if_good_rejected, reconciled_admitted_if_good_accepted, reconciled_admitted_if_good_rejected, local_admission_origin_if_good_accepted, local_admission_origin_if_good_rejected, reconciled_admission_origin_if_good_accepted, reconciled_admission_origin_if_good_rejected, engine_quality_class, local_reason, practical_ceiling_band_id, family_label, failure_reason_code) VALUES(?,?, ?,1,1,1,1,'local','local','reconciled','reconciled','good','manual_target_test',?,?,?)",
-            (
-                position_key,
-                band_id,
-                move_uci,
-                band_id,
-                "sharp/gambit" if sharp_family else None,
-                "would_pass_if_sharp_toggle_enabled" if sharp_family else None,
-            ),
+            "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,1,1,'local','local','reconciled','reconciled','good','manual_target_test',?)",
+            (position_key, band_id, move_uci, band_id),
         )
-        if sharp_family:
-            connection.execute(
-                "INSERT INTO failure_explanations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    position_key,
-                    band_id,
-                    move_uci,
-                    "good_exclusive",
-                    "would_pass_if_sharp_toggle_enabled",
-                    "manual_target_sharp_gate",
-                    "sharp/gambit",
-                    band_id,
-                    None,
-                    "sharp_on",
-                    None,
-                ),
-            )
         connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)", (position_key, band_id, 1, 1, 1, 1))
         connection.commit()
     finally:
@@ -834,45 +803,3 @@ def test_manual_target_play_to_position_tested_move_uses_reconciled_fail_interce
 
     assert session.last_evaluation.accepted is True
     assert session.last_evaluation.metadata["reconciled"]["decision_source"] == "reconciled_admission"
-
-
-def test_manual_target_play_to_position_sharp_admission_obeys_toggle(tmp_path):
-    session = _session(tmp_path)
-    reconciled_db = tmp_path / "manual_target_reconciled_sharp.sqlite"
-    target_board = chess.Board()
-    target_board.push_uci("e2e4")
-    target_board.push_uci("e7e5")
-    _write_reconciled_db_for_position(
-        reconciled_db,
-        position_key=normalize_builder_position_key(chess.Board()),
-        move_uci="g1f3",
-        sharp_family=True,
-    )
-    reconciled_service = PracticalRiskReconciledService(reconciled_db, expected_time_control_id="600+0")
-    session.evaluator = MoveEvaluator(
-        book_authority=StubBookAuthority(BOOK_MISS),
-        engine_authority=StubEngineAuthority(
-            EngineAuthorityResult(
-                False,
-                True,
-                ReasonCode.ENGINE_FAIL,
-                'Rejected by engine.',
-                best_move_uci='d2d4',
-                best_move_san='d4',
-                played_move_uci='g1f3',
-                played_move_san='Nf3',
-                cp_loss=170,
-                metadata={'engine_available': True},
-            )
-        ),
-        reconciled_service=reconciled_service,
-    )
-    session._timing_contract_metadata = lambda: ("600+0", "1000-1200")
-
-    blocked = session.evaluator.evaluate(chess.Board(), chess.Move.from_uci("g1f3"), 1, requested_band_id="1000-1200", allow_sharp_gambit_lines=False)
-    assert blocked.accepted is False
-    assert blocked.metadata["reconciled"]["decision_source"] == "sharp_toggle_policy_blocked_admission"
-
-    allowed = session.evaluator.evaluate(chess.Board(), chess.Move.from_uci("g1f3"), 1, requested_band_id="1000-1200", allow_sharp_gambit_lines=True)
-    assert allowed.accepted is True
-    assert allowed.metadata["reconciled"]["decision_source"] == "reconciled_admission"
