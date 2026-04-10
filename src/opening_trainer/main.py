@@ -268,8 +268,9 @@ def run(argv: list[str] | None = None) -> None:
         log_line(runtime_context.corpus.detail, tag="startup")
         log_line(runtime_context.book.detail, tag="startup")
         log_line(runtime_context.engine.detail, tag="startup")
+        reconciled_path = getattr(runtime_context.config, "practical_risk_reconciled_path", None)
         log_line(
-            f"Practical risk reconciled path: {runtime_context.config.practical_risk_reconciled_path}",
+            f"Practical risk reconciled path: {reconciled_path}",
             tag="startup",
         )
         return
