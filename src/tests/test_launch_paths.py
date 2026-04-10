@@ -183,6 +183,7 @@ def test_run_binds_session_logging_before_logger_creation(monkeypatch, tmp_path,
     runtime_context = runtime_context_factory(runtime_mode="dev")
     runtime_context.runtime_paths.log_root = tmp_path / "runtime" / "logs"
     runtime_context.config_source = "test"
+    runtime_context.config.practical_risk_reconciled_path = None
 
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main.initialize_session_logging", lambda path: calls.append(f"init:{path}"))
@@ -300,7 +301,7 @@ def test_powershell_ordinary_failure_message_points_to_session_log_and_dev_launc
 
 def test_strict_assets_does_not_exit_when_only_corpus_bundle_is_unavailable(monkeypatch, runtime_context_factory):
     runtime_context = runtime_context_factory(runtime_mode="consumer")
-    runtime_context.config = SimpleNamespace(strict_assets=True)
+    runtime_context.config = SimpleNamespace(strict_assets=True, practical_risk_reconciled_path=None)
     runtime_context.corpus = SimpleNamespace(label="corpus bundle directory", path=Path("/missing/catalog-root"), available=False)
     runtime_context.engine = SimpleNamespace(label="engine", path=Path("/engine"), available=True)
     runtime_context.book = SimpleNamespace(label="opening book", path=Path("/book"), available=True)
