@@ -106,7 +106,18 @@ def _create_real_schema_db(path, *, bands=("1000-1200", "1400-1600"), admissions
         )
         """
     )
-    conn.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE reconciled_root_summaries(
+            position_key TEXT,
+            band_id TEXT,
+            local_admitted_if_good_accepted_count INTEGER,
+            local_admitted_if_good_rejected_count INTEGER,
+            reconciled_admitted_if_good_accepted_count INTEGER,
+            reconciled_admitted_if_good_rejected_count INTEGER
+        )
+        """
+    )
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('included_band_order',?)", ("[\"%s\"]" % "\",\"".join(bands),))
@@ -126,7 +137,10 @@ def _create_real_schema_db(path, *, bands=("1000-1200", "1400-1600"), admissions
         explanations,
     )
     for admission in admissions:
-        conn.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,'{}')", (admission[0], admission[1]))
+        conn.execute(
+            "INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)",
+            (admission[0], admission[1], 1, 1, 1, 1),
+        )
     conn.commit()
     conn.close()
 
@@ -237,7 +251,18 @@ def test_incompatible_schema_fails_activation_cleanly(tmp_path):
     conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
     conn.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, admitted_good_inclusive INTEGER)")
     conn.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT)")
-    conn.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE reconciled_root_summaries(
+            position_key TEXT,
+            band_id TEXT,
+            local_admitted_if_good_accepted_count INTEGER,
+            local_admitted_if_good_rejected_count INTEGER,
+            reconciled_admitted_if_good_accepted_count INTEGER,
+            reconciled_admitted_if_good_rejected_count INTEGER
+        )
+        """
+    )
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
     conn.execute("INSERT INTO reconciled_move_admissions VALUES(?,?,?,1)", (position_key, "1400-1600", "e2e4"))
@@ -247,6 +272,51 @@ def test_incompatible_schema_fails_activation_cleanly(tmp_path):
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
     assert service.active is False
     assert "artifact schema mismatch in reconciled_move_admissions" in (service.activation_error or "")
+
+
+def test_incompatible_root_summary_schema_fails_activation_cleanly(tmp_path):
+    db = tmp_path / "broken_root_summary.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE reconciled_move_admissions(
+            position_key TEXT,
+            band_id TEXT,
+            move_uci TEXT,
+            local_admitted_if_good_accepted INTEGER,
+            local_admitted_if_good_rejected INTEGER,
+            reconciled_admitted_if_good_accepted INTEGER,
+            reconciled_admitted_if_good_rejected INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE failure_explanations(
+            position_key TEXT,
+            band_id TEXT,
+            move_uci TEXT,
+            mode_id TEXT,
+            reason_code TEXT,
+            template_id TEXT,
+            family_label TEXT,
+            max_practical_band_id TEXT,
+            first_failure_band_id TEXT,
+            toggle_state_required TEXT,
+            rendered_preview TEXT
+        )
+        """
+    )
+    conn.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT)")
+    conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
+    conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
+    conn.commit()
+    conn.close()
+
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    assert service.active is False
+    assert "artifact schema mismatch in reconciled_root_summaries" in (service.activation_error or "")
 
 
 def test_stafford_b8c6_rescue_uses_real_schema_columns(tmp_path):

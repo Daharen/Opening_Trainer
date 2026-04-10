@@ -31,6 +31,14 @@ _REQUIRED_FAILURE_EXPLANATION_COLUMNS = {
     "toggle_state_required",
     "rendered_preview",
 }
+_REQUIRED_ROOT_SUMMARY_COLUMNS = {
+    "position_key",
+    "band_id",
+    "local_admitted_if_good_accepted_count",
+    "local_admitted_if_good_rejected_count",
+    "reconciled_admitted_if_good_accepted_count",
+    "reconciled_admitted_if_good_rejected_count",
+}
 
 
 @dataclass(frozen=True)
@@ -125,6 +133,15 @@ class PracticalRiskReconciledService:
             self.activation_error = (
                 "artifact schema mismatch in failure_explanations: "
                 f"missing columns: {', '.join(missing_failure)}"
+            )
+            return
+
+        root_summary_columns = self._table_columns(conn, "reconciled_root_summaries")
+        missing_root_summary = sorted(_REQUIRED_ROOT_SUMMARY_COLUMNS - root_summary_columns)
+        if missing_root_summary:
+            self.activation_error = (
+                "artifact schema mismatch in reconciled_root_summaries: "
+                f"missing columns: {', '.join(missing_root_summary)}"
             )
 
     @staticmethod
@@ -223,27 +240,43 @@ class PracticalRiskReconciledService:
             }
 
     def _load_root_summaries(self, conn: sqlite3.Connection) -> None:
+        columns = self._table_columns(conn, "reconciled_root_summaries")
+        optional_columns = sorted(column for column in columns if column not in _REQUIRED_ROOT_SUMMARY_COLUMNS)
+        selected_columns = [
+            "position_key",
+            "band_id",
+            "local_admitted_if_good_accepted_count",
+            "local_admitted_if_good_rejected_count",
+            "reconciled_admitted_if_good_accepted_count",
+            "reconciled_admitted_if_good_rejected_count",
+            *optional_columns,
+        ]
         cursor = conn.execute(
             """
-            SELECT position_key, band_id, summary_json
+            SELECT {columns}
             FROM reconciled_root_summaries
             """
+            .format(columns=", ".join(selected_columns))
         )
         for row in cursor:
             position_key, band_id = _as_text(row["position_key"]), _as_text(row["band_id"])
             if not position_key or not band_id:
                 continue
-            summary_payload = row["summary_json"]
-            parsed = summary_payload
-            if isinstance(summary_payload, str):
-                try:
-                    parsed = json.loads(summary_payload)
-                except json.JSONDecodeError:
-                    parsed = summary_payload
+            summary_counts = {
+                "local_admitted_if_good_accepted_count": int(row["local_admitted_if_good_accepted_count"] or 0),
+                "local_admitted_if_good_rejected_count": int(row["local_admitted_if_good_rejected_count"] or 0),
+                "reconciled_admitted_if_good_accepted_count": int(row["reconciled_admitted_if_good_accepted_count"] or 0),
+                "reconciled_admitted_if_good_rejected_count": int(row["reconciled_admitted_if_good_rejected_count"] or 0),
+            }
+            optional_summary_fields = {
+                column: row[column]
+                for column in optional_columns
+            }
             self._root_summaries[(position_key, band_id)] = {
                 "position_key": position_key,
                 "band_id": band_id,
-                "summary": parsed,
+                **summary_counts,
+                **optional_summary_fields,
             }
 
     def resolve_band_id(self, requested_band_id: str | None) -> ReconciledBandResolution:
