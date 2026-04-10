@@ -9,41 +9,6 @@ from typing import Any
 
 EXPECTED_ARTIFACT_ROLE = "practical_risk_reconciled"
 
-
-_SHARP_FAMILY_TOKENS = ("sharp", "gambit")
-
-
-def _looks_like_sharp_family(value: Any) -> bool:
-    text = _as_text(value)
-    if not text:
-        return False
-    lowered = text.lower()
-    return any(token in lowered for token in _SHARP_FAMILY_TOKENS)
-
-
-def admission_is_sharp_gambit_family(
-    admission: dict[str, Any] | None,
-    explanation: dict[str, Any] | None = None,
-) -> bool:
-    if not admission and not explanation:
-        return False
-
-    admission = admission or {}
-    explanation = explanation or {}
-
-    if _looks_like_sharp_family(admission.get("family_label")):
-        return True
-    if admission.get("failure_reason_code") == "would_pass_if_sharp_toggle_enabled":
-        return True
-
-    if explanation.get("reason_code") == "would_pass_if_sharp_toggle_enabled":
-        return True
-    if _as_text(explanation.get("toggle_state_required")) == "sharp_on":
-        return True
-    if _looks_like_sharp_family(explanation.get("family_label")):
-        return True
-    return False
-
 _REQUIRED_ADMISSION_COLUMNS = {
     "position_key",
     "band_id",
