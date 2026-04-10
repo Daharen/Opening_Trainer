@@ -337,24 +337,6 @@ class PracticalRiskReconciledService:
     def get_root_summary(self, position_key: str, band_id: str) -> dict[str, Any] | None:
         return self._root_summaries.get((position_key, band_id))
 
-    def admission_is_sharp_gambit_family(
-        self,
-        admission: dict[str, Any],
-        *,
-        explanation: dict[str, Any] | None = None,
-    ) -> bool:
-        if _looks_like_sharp_gambit(admission.get("family_label")):
-            return True
-        if admission.get("failure_reason_code") == "would_pass_if_sharp_toggle_enabled":
-            return True
-        if explanation is None:
-            return False
-        if _looks_like_sharp_gambit(explanation.get("family_label")):
-            return True
-        if explanation.get("reason_code") == "would_pass_if_sharp_toggle_enabled":
-            return True
-        return explanation.get("toggle_state_required") == "sharp_on"
-
 
 class ReconciledFailureRenderer:
     @staticmethod
@@ -404,12 +386,3 @@ def _parse_band_order(value: Any) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
-
-
-def _looks_like_sharp_gambit(value: Any) -> bool:
-    if value is None:
-        return False
-    normalized = str(value).strip().lower()
-    if not normalized:
-        return False
-    return "sharp" in normalized or "gambit" in normalized
