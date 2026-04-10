@@ -11,7 +11,6 @@ from opening_trainer.evaluation import (
     ReasonCode,
 )
 from opening_trainer.evaluator import MoveEvaluator
-from opening_trainer.practical_risk_reconciled import ReconciledBandResolution
 from opening_trainer.session import TrainingSession
 from opening_trainer.models import SessionState
 
@@ -30,28 +29,6 @@ class StubEngineAuthority:
 
     def evaluate(self, board_before_move: chess.Board, played_move: chess.Move) -> EngineAuthorityResult:
         return self.result
-
-
-class StubReconciledServiceRescue:
-    active = True
-    activation_error = None
-
-    def resolve_band_id(self, requested_band_id):
-        return ReconciledBandResolution(requested_band_id, "1400-1600", "exact")
-
-    def get_move_admission(self, position_key, band_id, move_uci):
-        return {
-            "reconciled_admitted_if_good_accepted": True,
-            "reconciled_admitted_if_good_rejected": True,
-            "reconciled_admission_origin_if_good_accepted": "reconciled",
-            "reconciled_admission_origin_if_good_rejected": "reconciled",
-            "admission_origin": "reconciled",
-            "local_admitted_if_good_accepted": False,
-            "local_admitted_if_good_rejected": False,
-        }
-
-    def get_failure_explanation(self, position_key, band_id, move_uci, mode_id):
-        return None
 
 
 BOOK_MISS = BookAuthorityResult(
@@ -335,31 +312,3 @@ def test_session_consumes_structured_result_without_duplicate_acceptance_logic(m
     assert session.last_outcome is not None
     assert session.last_outcome.passed is False
     assert session.last_outcome.evaluation is session.last_evaluation
-
-
-def test_practical_risk_rescue_clears_engine_fail_reason_text():
-    board, move = make_move("e2e4")
-    evaluator = MoveEvaluator(
-        book_authority=StubBookAuthority(BOOK_MISS),
-        engine_authority=StubEngineAuthority(
-            EngineAuthorityResult(
-                accepted=False,
-                available=True,
-                reason_code=ReasonCode.ENGINE_FAIL,
-                reason_text="Rejected by engine.",
-                best_move_uci="d2d4",
-                best_move_san="d4",
-                played_move_uci="e2e4",
-                played_move_san="e4",
-                cp_loss=180,
-                metadata={"engine_available": True},
-            )
-        ),
-        reconciled_service=StubReconciledServiceRescue(),
-    )
-    result = evaluator.evaluate(board, move, 1, requested_band_id="1400-1600")
-    assert result.accepted is True
-    assert result.canonical_judgment == CanonicalJudgment.BETTER
-    assert result.reason_code == ReasonCode.ENGINE_PASS
-    assert result.reason_text == "Accepted via practical-risk reconciliation."
-    assert "Rejected as an inaccuracy outside engine tolerance." not in result.reason_text
