@@ -39,6 +39,12 @@ _REQUIRED_ROOT_SUMMARY_COLUMNS = {
     "reconciled_admitted_if_good_accepted_count",
     "reconciled_admitted_if_good_rejected_count",
 }
+_ROOT_SUMMARY_COUNT_COLUMNS = (
+    "local_admitted_if_good_accepted_count",
+    "local_admitted_if_good_rejected_count",
+    "reconciled_admitted_if_good_accepted_count",
+    "reconciled_admitted_if_good_rejected_count",
+)
 
 
 @dataclass(frozen=True)
@@ -245,10 +251,7 @@ class PracticalRiskReconciledService:
         selected_columns = [
             "position_key",
             "band_id",
-            "local_admitted_if_good_accepted_count",
-            "local_admitted_if_good_rejected_count",
-            "reconciled_admitted_if_good_accepted_count",
-            "reconciled_admitted_if_good_rejected_count",
+            *_ROOT_SUMMARY_COUNT_COLUMNS,
             *optional_columns,
         ]
         cursor = conn.execute(
@@ -262,12 +265,7 @@ class PracticalRiskReconciledService:
             position_key, band_id = _as_text(row["position_key"]), _as_text(row["band_id"])
             if not position_key or not band_id:
                 continue
-            summary_counts = {
-                "local_admitted_if_good_accepted_count": int(row["local_admitted_if_good_accepted_count"] or 0),
-                "local_admitted_if_good_rejected_count": int(row["local_admitted_if_good_rejected_count"] or 0),
-                "reconciled_admitted_if_good_accepted_count": int(row["reconciled_admitted_if_good_accepted_count"] or 0),
-                "reconciled_admitted_if_good_rejected_count": int(row["reconciled_admitted_if_good_rejected_count"] or 0),
-            }
+            summary_counts = {column: int(row[column] or 0) for column in _ROOT_SUMMARY_COUNT_COLUMNS}
             optional_summary_fields = {
                 column: row[column]
                 for column in optional_columns
