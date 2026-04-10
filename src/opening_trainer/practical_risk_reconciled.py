@@ -9,6 +9,29 @@ from typing import Any
 
 EXPECTED_ARTIFACT_ROLE = "practical_risk_reconciled"
 
+_REQUIRED_ADMISSION_COLUMNS = {
+    "position_key",
+    "band_id",
+    "move_uci",
+    "local_admitted_if_good_accepted",
+    "local_admitted_if_good_rejected",
+    "reconciled_admitted_if_good_accepted",
+    "reconciled_admitted_if_good_rejected",
+}
+_REQUIRED_FAILURE_EXPLANATION_COLUMNS = {
+    "position_key",
+    "band_id",
+    "move_uci",
+    "mode_id",
+    "reason_code",
+    "template_id",
+    "family_label",
+    "max_practical_band_id",
+    "first_failure_band_id",
+    "toggle_state_required",
+    "rendered_preview",
+}
+
 
 @dataclass(frozen=True)
 class ReconciledBandResolution:
@@ -49,6 +72,7 @@ class PracticalRiskReconciledService:
         except sqlite3.Error as exc:
             self.activation_error = f"unable to open sqlite artifact: {exc}"
             return
+        conn.row_factory = sqlite3.Row
         try:
             required = {
                 "artifact_metadata",
@@ -57,12 +81,15 @@ class PracticalRiskReconciledService:
                 "reconciled_root_summaries",
             }
             tables = {
-                row[0]
+                row["name"]
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             missing = sorted(required - tables)
             if missing:
                 self.activation_error = f"missing required tables: {', '.join(missing)}"
+                return
+            self._validate_schema(conn)
+            if self.activation_error:
                 return
             self._load_metadata(conn)
             if self.artifact_role and self.artifact_role != EXPECTED_ARTIFACT_ROLE:
@@ -82,9 +109,31 @@ class PracticalRiskReconciledService:
         finally:
             conn.close()
 
+    def _validate_schema(self, conn: sqlite3.Connection) -> None:
+        admission_columns = self._table_columns(conn, "reconciled_move_admissions")
+        missing_admission = sorted(_REQUIRED_ADMISSION_COLUMNS - admission_columns)
+        if missing_admission:
+            self.activation_error = (
+                "artifact schema mismatch in reconciled_move_admissions: "
+                f"missing columns: {', '.join(missing_admission)}"
+            )
+            return
+
+        failure_columns = self._table_columns(conn, "failure_explanations")
+        missing_failure = sorted(_REQUIRED_FAILURE_EXPLANATION_COLUMNS - failure_columns)
+        if missing_failure:
+            self.activation_error = (
+                "artifact schema mismatch in failure_explanations: "
+                f"missing columns: {', '.join(missing_failure)}"
+            )
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+        return {str(row["name"]).strip() for row in conn.execute(f"PRAGMA table_info({table_name})")}
+
     def _load_metadata(self, conn: sqlite3.Connection) -> None:
         rows = list(conn.execute("SELECT key, value FROM artifact_metadata"))
-        metadata = {str(key): value for key, value in rows}
+        metadata = {str(row["key"]): row["value"] for row in rows}
         self.artifact_role = _as_text(metadata.get("artifact_role"))
         self.time_control_id = _as_text(metadata.get("time_control_id"))
         self.family_id = _as_text(metadata.get("artifact_family_id") or metadata.get("family_id"))
@@ -93,28 +142,55 @@ class PracticalRiskReconciledService:
             self.band_order = tuple(parsed_order)
 
     def _load_admissions(self, conn: sqlite3.Connection) -> None:
-        cursor = conn.execute(
-            """
-            SELECT position_key, band_id, move_uci,
-                   admitted_good_inclusive, admitted_good_exclusive,
-                   admission_origin, engine_quality_class, local_reason
-            FROM reconciled_move_admissions
-            """
-        )
+        columns = self._table_columns(conn, "reconciled_move_admissions")
+        optional_columns = [
+            "local_admission_origin_if_good_accepted",
+            "local_admission_origin_if_good_rejected",
+            "reconciled_admission_origin_if_good_accepted",
+            "reconciled_admission_origin_if_good_rejected",
+            "engine_quality_class",
+            "local_reason",
+            "practical_ceiling_band_id",
+            "max_engine_loss_cp",
+            "family_label",
+            "failure_reason_code",
+        ]
+        selected_columns = [
+            "position_key",
+            "band_id",
+            "move_uci",
+            "local_admitted_if_good_accepted",
+            "local_admitted_if_good_rejected",
+            "reconciled_admitted_if_good_accepted",
+            "reconciled_admitted_if_good_rejected",
+            *[column for column in optional_columns if column in columns],
+        ]
+        cursor = conn.execute(f"SELECT {', '.join(selected_columns)} FROM reconciled_move_admissions")
         for row in cursor:
-            position_key, band_id, move_uci = _as_text(row[0]), _as_text(row[1]), _as_text(row[2])
+            position_key, band_id, move_uci = _as_text(row["position_key"]), _as_text(row["band_id"]), _as_text(row["move_uci"])
             if not position_key or not band_id or not move_uci:
                 continue
-            self._admissions[(position_key, band_id, move_uci)] = {
+            admission = {
                 "position_key": position_key,
                 "band_id": band_id,
                 "move_uci": move_uci,
-                "admitted_good_inclusive": bool(row[3]),
-                "admitted_good_exclusive": bool(row[4]),
-                "admission_origin": _as_text(row[5]),
-                "engine_quality_class": _as_text(row[6]),
-                "local_reason": _as_text(row[7]),
+                "local_admitted_if_good_accepted": bool(row["local_admitted_if_good_accepted"]),
+                "local_admitted_if_good_rejected": bool(row["local_admitted_if_good_rejected"]),
+                "reconciled_admitted_if_good_accepted": bool(row["reconciled_admitted_if_good_accepted"]),
+                "reconciled_admitted_if_good_rejected": bool(row["reconciled_admitted_if_good_rejected"]),
+                "admitted_good_inclusive": bool(row["reconciled_admitted_if_good_accepted"]),
+                "admitted_good_exclusive": bool(row["reconciled_admitted_if_good_rejected"]),
             }
+            for column in optional_columns:
+                if column in selected_columns:
+                    admission[column] = _as_text(row[column])
+            admission["admission_origin"] = _as_text(
+                admission.get("reconciled_admission_origin_if_good_accepted")
+                or admission.get("reconciled_admission_origin_if_good_rejected")
+                or admission.get("local_admission_origin_if_good_accepted")
+                or admission.get("local_admission_origin_if_good_rejected")
+            )
+            self._admissions[(position_key, band_id, move_uci)] = admission
             if band_id not in self.band_order:
                 self.band_order = (*self.band_order, band_id)
 
@@ -129,7 +205,7 @@ class PracticalRiskReconciledService:
             """
         )
         for row in cursor:
-            key = tuple(_as_text(value) for value in row[:4])
+            key = tuple(_as_text(row[column]) for column in ("position_key", "band_id", "move_uci", "mode_id"))
             if not all(key):
                 continue
             self._failure_explanations[key] = {
@@ -137,13 +213,13 @@ class PracticalRiskReconciledService:
                 "band_id": key[1],
                 "move_uci": key[2],
                 "mode_id": key[3],
-                "reason_code": _as_text(row[4]),
-                "template_id": _as_text(row[5]),
-                "family_label": _as_text(row[6]),
-                "max_practical_band_id": _as_text(row[7]),
-                "first_failure_band_id": _as_text(row[8]),
-                "toggle_state_required": _as_text(row[9]),
-                "rendered_preview": _as_text(row[10]),
+                "reason_code": _as_text(row["reason_code"]),
+                "template_id": _as_text(row["template_id"]),
+                "family_label": _as_text(row["family_label"]),
+                "max_practical_band_id": _as_text(row["max_practical_band_id"]),
+                "first_failure_band_id": _as_text(row["first_failure_band_id"]),
+                "toggle_state_required": _as_text(row["toggle_state_required"]),
+                "rendered_preview": _as_text(row["rendered_preview"]),
             }
 
     def _load_root_summaries(self, conn: sqlite3.Connection) -> None:
@@ -154,10 +230,10 @@ class PracticalRiskReconciledService:
             """
         )
         for row in cursor:
-            position_key, band_id = _as_text(row[0]), _as_text(row[1])
+            position_key, band_id = _as_text(row["position_key"]), _as_text(row["band_id"])
             if not position_key or not band_id:
                 continue
-            summary_payload = row[2]
+            summary_payload = row["summary_json"]
             parsed = summary_payload
             if isinstance(summary_payload, str):
                 try:
