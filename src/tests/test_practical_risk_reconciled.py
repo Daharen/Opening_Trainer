@@ -319,6 +319,29 @@ def test_incompatible_root_summary_schema_fails_activation_cleanly(tmp_path):
     assert "artifact schema mismatch in reconciled_root_summaries" in (service.activation_error or "")
 
 
+def test_root_summary_uses_structured_counts_not_legacy_summary_blob(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "root_summary.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford line", "1400-1600")
+        ],
+    )
+
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    summary = service.get_root_summary(position_key, "1400-1600")
+
+    assert service.active is True
+    assert summary is not None
+    assert summary["local_admitted_if_good_accepted_count"] == 1
+    assert summary["local_admitted_if_good_rejected_count"] == 1
+    assert summary["reconciled_admitted_if_good_accepted_count"] == 1
+    assert summary["reconciled_admitted_if_good_rejected_count"] == 1
+    assert "summary_json" not in summary
+
+
 def test_stafford_b8c6_rescue_uses_real_schema_columns(tmp_path):
     board = chess.Board()
     for uci in ("e2e4", "e7e5", "g1f3", "g8f6", "f3e5"):
