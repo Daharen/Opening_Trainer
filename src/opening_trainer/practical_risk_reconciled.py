@@ -45,6 +45,7 @@ _ROOT_SUMMARY_COUNT_COLUMNS = (
     "reconciled_admitted_if_good_accepted_count",
     "reconciled_admitted_if_good_rejected_count",
 )
+_ROOT_SUMMARY_REQUIRED_ID_COLUMNS = {"position_key", "band_id"}
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,8 @@ class PracticalRiskReconciledService:
         self._admissions: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._failure_explanations: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         self._root_summaries: dict[tuple[str, str], dict[str, Any]] = {}
+        self.root_summary_status: str = "not_loaded"
+        self.root_summary_activation_warning: str | None = None
         self._connect_and_load()
 
     def _connect_and_load(self) -> None:
@@ -92,7 +95,6 @@ class PracticalRiskReconciledService:
                 "artifact_metadata",
                 "reconciled_move_admissions",
                 "failure_explanations",
-                "reconciled_root_summaries",
             }
             tables = {
                 row["name"]
@@ -102,7 +104,7 @@ class PracticalRiskReconciledService:
             if missing:
                 self.activation_error = f"missing required tables: {', '.join(missing)}"
                 return
-            self._validate_schema(conn)
+            self._validate_schema(conn, tables)
             if self.activation_error:
                 return
             self._load_metadata(conn)
@@ -116,14 +118,18 @@ class PracticalRiskReconciledService:
                 return
             self._load_admissions(conn)
             self._load_failure_explanations(conn)
-            self._load_root_summaries(conn)
+            try:
+                self._load_root_summaries(conn, tables)
+            except sqlite3.Error as exc:
+                self.root_summary_status = "load_error_ignored"
+                self.root_summary_activation_warning = f"optional root summary load failed: {exc}"
             self.active = True
         except sqlite3.Error as exc:
             self.activation_error = f"sqlite read error: {exc}"
         finally:
             conn.close()
 
-    def _validate_schema(self, conn: sqlite3.Connection) -> None:
+    def _validate_schema(self, conn: sqlite3.Connection, tables: set[str]) -> None:
         admission_columns = self._table_columns(conn, "reconciled_move_admissions")
         missing_admission = sorted(_REQUIRED_ADMISSION_COLUMNS - admission_columns)
         if missing_admission:
@@ -142,13 +148,24 @@ class PracticalRiskReconciledService:
             )
             return
 
+        if "reconciled_root_summaries" not in tables:
+            self.root_summary_status = "missing_optional_table"
+            self.root_summary_activation_warning = "optional table reconciled_root_summaries is missing"
+            return
+
         root_summary_columns = self._table_columns(conn, "reconciled_root_summaries")
-        missing_root_summary = sorted(_REQUIRED_ROOT_SUMMARY_COLUMNS - root_summary_columns)
+        missing_root_summary = sorted(
+            (_ROOT_SUMMARY_REQUIRED_ID_COLUMNS | set(_ROOT_SUMMARY_COUNT_COLUMNS)) - root_summary_columns
+        )
         if missing_root_summary:
-            self.activation_error = (
-                "artifact schema mismatch in reconciled_root_summaries: "
-                f"missing columns: {', '.join(missing_root_summary)}"
+            self.root_summary_status = "optional_schema_mismatch_ignored"
+            self.root_summary_activation_warning = (
+                "optional root summary schema mismatch ignored; missing columns: "
+                f"{', '.join(missing_root_summary)}"
             )
+            return
+
+        self.root_summary_status = "available_schema_valid"
 
     @staticmethod
     def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -245,8 +262,19 @@ class PracticalRiskReconciledService:
                 "rendered_preview": _as_text(row["rendered_preview"]),
             }
 
-    def _load_root_summaries(self, conn: sqlite3.Connection) -> None:
+    def _load_root_summaries(self, conn: sqlite3.Connection, tables: set[str]) -> None:
+        if "reconciled_root_summaries" not in tables:
+            return
         columns = self._table_columns(conn, "reconciled_root_summaries")
+        missing_for_load = (_ROOT_SUMMARY_REQUIRED_ID_COLUMNS | set(_ROOT_SUMMARY_COUNT_COLUMNS)) - columns
+        if missing_for_load:
+            if self.root_summary_status == "not_loaded":
+                self.root_summary_status = "skipped_missing_optional_columns"
+                self.root_summary_activation_warning = (
+                    "optional root summaries skipped; missing columns: "
+                    f"{', '.join(sorted(missing_for_load))}"
+                )
+            return
         optional_columns = sorted(column for column in columns if column not in _REQUIRED_ROOT_SUMMARY_COLUMNS)
         selected_columns = [
             "position_key",
@@ -276,6 +304,7 @@ class PracticalRiskReconciledService:
                 **summary_counts,
                 **optional_summary_fields,
             }
+        self.root_summary_status = "loaded"
 
     def resolve_band_id(self, requested_band_id: str | None) -> ReconciledBandResolution:
         if not requested_band_id:

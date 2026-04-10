@@ -230,6 +230,7 @@ class MoveEvaluator:
 
         if admitted:
             metadata["decision_source"] = "reconciled_admission"
+            rescue_reason_text = "Accepted via practical-risk reconciliation for the current training band."
             log_line(
                 "PRACTICAL_RISK_FAIL_RESCUED "
                 f"position_key={position_key} move_uci={move_uci} reason=admitted "
@@ -237,7 +238,7 @@ class MoveEvaluator:
                 f"resolved_band={resolution.resolved_band_id} mode_id={mode_id}",
                 tag="evaluation",
             )
-            return True, CanonicalJudgment.BETTER, reason_text, metadata
+            return True, CanonicalJudgment.BETTER, rescue_reason_text, metadata
 
         explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
         if explanation is None:
