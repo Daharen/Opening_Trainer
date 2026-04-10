@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 import chess
+import opening_trainer.evaluator as evaluator_module
 
 from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResult, ReasonCode
 from opening_trainer.evaluator import MoveEvaluator
@@ -92,7 +93,9 @@ def _create_real_schema_db(
             reconciled_admission_origin_if_good_rejected TEXT,
             engine_quality_class TEXT,
             local_reason TEXT,
-            practical_ceiling_band_id TEXT
+            practical_ceiling_band_id TEXT,
+            family_label TEXT,
+            failure_reason_code TEXT
         )
         """
     )
@@ -141,7 +144,14 @@ def _create_real_schema_db(
 
     conn.executemany(
         """
-        INSERT INTO reconciled_move_admissions VALUES(
+        INSERT INTO reconciled_move_admissions(
+            position_key, band_id, move_uci,
+            local_admitted_if_good_accepted, local_admitted_if_good_rejected,
+            reconciled_admitted_if_good_accepted, reconciled_admitted_if_good_rejected,
+            local_admission_origin_if_good_accepted, local_admission_origin_if_good_rejected,
+            reconciled_admission_origin_if_good_accepted, reconciled_admission_origin_if_good_rejected,
+            engine_quality_class, local_reason, practical_ceiling_band_id
+        ) VALUES(
             ?,?,?,?,?,?,?,
             ?,?,?,?,
             ?,?,?
@@ -555,3 +565,94 @@ def test_reconciled_not_consulted_after_book_or_engine_pass(tmp_path):
     assert engine_pass.accepted is True
     assert engine_pass.canonical_judgment.value == "Better"
     assert engine_pass.metadata["reconciled"]["decision_source"] == "legacy_engine_book"
+
+
+def test_sharp_admitted_line_obeys_runtime_toggle_gate(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_gate.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "quiet practical", "1400-1600"),
+            (position_key, "1400-1600", "d2d4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford gambit", "1400-1600"),
+        ],
+        explanations=[
+            (position_key, "1400-1600", "d2d4", "good_exclusive", "would_pass_if_sharp_toggle_enabled", "tmpl_sharp", "sharp/gambit", "1400-1600", "1800-2000", "sharp_on", None)
+        ],
+    )
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE reconciled_move_admissions SET family_label='sharp/gambit', failure_reason_code='would_pass_if_sharp_toggle_enabled' WHERE move_uci='d2d4'"
+    )
+    conn.commit()
+    conn.close()
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    sharp_blocked = _eval(service, move_uci="d2d4", requested_band_id="1200-1400", sharp=False)
+    assert sharp_blocked.accepted is False
+    assert "Enable sharp/gambit lines" in sharp_blocked.reason_text
+    assert sharp_blocked.metadata["reconciled"]["decision_source"] == "sharp_toggle_policy_blocked_admission"
+
+    sharp_allowed = _eval(service, move_uci="d2d4", requested_band_id="1200-1400", sharp=True)
+    assert sharp_allowed.accepted is True
+    assert sharp_allowed.reason_text == "Accepted via practical-risk reconciliation for the current training band."
+
+    non_sharp = _eval(service, move_uci="e2e4", requested_band_id="1200-1400", sharp=False)
+    assert non_sharp.accepted is True
+    assert non_sharp.reason_text == "Accepted via practical-risk reconciliation for the current training band."
+
+
+def test_sharp_admission_policy_block_uses_runtime_explanation_without_failure_row(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_gate_runtime_reason.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "d2d4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "sharp/gambit practical", "1400-1600"),
+        ],
+    )
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE reconciled_move_admissions SET family_label='sharp/gambit' WHERE move_uci='d2d4'"
+    )
+    conn.commit()
+    conn.close()
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    result = _eval(service, move_uci="d2d4", requested_band_id="1200-1400", sharp=False)
+    assert result.accepted is False
+    assert "Enable sharp/gambit lines" in result.reason_text
+    assert "Rejected by engine" not in result.reason_text
+
+
+def test_sharp_toggle_off_no_longer_logs_admitted_rescue(monkeypatch, tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_gate_log_regression.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "d2d4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford gambit", "1400-1600"),
+        ],
+        explanations=[
+            (position_key, "1400-1600", "d2d4", "good_exclusive", "would_pass_if_sharp_toggle_enabled", "tmpl_sharp", "sharp/gambit", "1400-1600", "1800-2000", "sharp_on", None)
+        ],
+    )
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE reconciled_move_admissions SET family_label='sharp/gambit', failure_reason_code='would_pass_if_sharp_toggle_enabled' WHERE move_uci='d2d4'"
+    )
+    conn.commit()
+    conn.close()
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    logs: list[str] = []
+    monkeypatch.setattr(evaluator_module, "log_line", lambda message, tag=None: logs.append(message))
+
+    result = _eval(service, move_uci="d2d4", requested_band_id="1200-1400", sharp=False)
+
+    assert result.accepted is False
+    assert any("PRACTICAL_RISK_FAIL_INTERCEPT_BEGIN" in line and "sharp_toggle=off" in line for line in logs)
+    assert any("PRACTICAL_RISK_FAIL_CONFIRMED" in line and "reason_code=would_pass_if_sharp_toggle_enabled" in line for line in logs)
+    assert not any("PRACTICAL_RISK_FAIL_RESCUED" in line and "reason=admitted" in line for line in logs)
