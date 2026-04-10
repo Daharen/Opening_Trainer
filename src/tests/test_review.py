@@ -81,14 +81,14 @@ def _write_reconciled_db_for_position(path: Path, *, position_key: str, move_uci
     connection = sqlite3.connect(path)
     try:
         connection.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
-        connection.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, admitted_good_inclusive INTEGER, admitted_good_exclusive INTEGER, admission_origin TEXT, engine_quality_class TEXT, local_reason TEXT)")
+        connection.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, local_admitted_if_good_accepted INTEGER, local_admitted_if_good_rejected INTEGER, reconciled_admitted_if_good_accepted INTEGER, reconciled_admitted_if_good_rejected INTEGER, local_admission_origin_if_good_accepted TEXT, local_admission_origin_if_good_rejected TEXT, reconciled_admission_origin_if_good_accepted TEXT, reconciled_admission_origin_if_good_rejected TEXT, engine_quality_class TEXT, local_reason TEXT)")
         connection.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT, reason_code TEXT, template_id TEXT, family_label TEXT, max_practical_band_id TEXT, first_failure_band_id TEXT, toggle_state_required TEXT, rendered_preview TEXT)")
         connection.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
         connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
         connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
         connection.execute(f"INSERT INTO artifact_metadata(key,value) VALUES('included_band_order','[\"{band_id}\"]')")
         connection.execute(
-            "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,'local','good','manual_target_test')",
+            "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,1,1,'local','local','reconciled','reconciled','good','manual_target_test')",
             (position_key, band_id, move_uci),
         )
         connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,'{}')", (position_key, band_id))

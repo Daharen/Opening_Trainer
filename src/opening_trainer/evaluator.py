@@ -208,10 +208,25 @@ class MoveEvaluator:
             )
             return accepted, canonical_judgment, reason_text, metadata
 
-        admitted = bool(admission.get(f"admitted_{mode_id}"))
-        metadata["admission_origin"] = admission.get("admission_origin")
+        mode_to_reconciled_admission_column = {
+            "good_inclusive": "reconciled_admitted_if_good_accepted",
+            "good_exclusive": "reconciled_admitted_if_good_rejected",
+        }
+        mode_to_origin_column = {
+            "good_inclusive": "reconciled_admission_origin_if_good_accepted",
+            "good_exclusive": "reconciled_admission_origin_if_good_rejected",
+        }
+        admitted_column = mode_to_reconciled_admission_column.get(mode_id)
+        origin_column = mode_to_origin_column.get(mode_id)
+        admitted = bool(admission.get(admitted_column)) if admitted_column else False
+        metadata["admitted_column"] = admitted_column
+        metadata["admission_origin"] = admission.get(origin_column) or admission.get("admission_origin")
         metadata["engine_quality_class"] = admission.get("engine_quality_class")
         metadata["local_reason"] = admission.get("local_reason")
+        metadata["local_admitted_if_good_accepted"] = admission.get("local_admitted_if_good_accepted")
+        metadata["local_admitted_if_good_rejected"] = admission.get("local_admitted_if_good_rejected")
+        metadata["reconciled_admitted_if_good_accepted"] = admission.get("reconciled_admitted_if_good_accepted")
+        metadata["reconciled_admitted_if_good_rejected"] = admission.get("reconciled_admitted_if_good_rejected")
 
         if admitted:
             metadata["decision_source"] = "reconciled_admission"
