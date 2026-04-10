@@ -99,9 +99,10 @@ class MoveEvaluator:
             "decision_source": "legacy_engine_book",
         }
         if canonical_judgment == CanonicalJudgment.FAIL:
-            accepted, canonical_judgment, reason_text, reconciled_meta = self._apply_reconciled_rules(
+            accepted, canonical_judgment, reason_code, reason_text, reconciled_meta = self._apply_reconciled_rules(
                 accepted=accepted,
                 canonical_judgment=canonical_judgment,
+                reason_code=reason_code,
                 reason_text=reason_text,
                 position_key=position_key,
                 move_uci=move_uci,
@@ -154,13 +155,14 @@ class MoveEvaluator:
         *,
         accepted: bool,
         canonical_judgment: CanonicalJudgment,
+        reason_code: ReasonCode,
         reason_text: str,
         position_key: str,
         move_uci: str,
         requested_band_id: str | None,
         allow_sharp_gambit_lines: bool,
         mode_id: str,
-    ) -> tuple[bool, CanonicalJudgment, str, dict[str, object]]:
+    ) -> tuple[bool, CanonicalJudgment, ReasonCode, str, dict[str, object]]:
         service = self.reconciled_service
         metadata: dict[str, object] = {
             "requested_band_id": requested_band_id,
@@ -177,7 +179,7 @@ class MoveEvaluator:
                 f"position_key={position_key} move_uci={move_uci} reason={metadata['activation_error']}",
                 tag="evaluation",
             )
-            return accepted, canonical_judgment, reason_text, metadata
+            return accepted, canonical_judgment, reason_code, reason_text, metadata
 
         resolution = service.resolve_band_id(requested_band_id)
         metadata["resolved_band_id"] = resolution.resolved_band_id
@@ -196,7 +198,7 @@ class MoveEvaluator:
                 f"position_key={position_key} move_uci={move_uci} reason=missing_resolved_band",
                 tag="evaluation",
             )
-            return accepted, canonical_judgment, reason_text, metadata
+            return accepted, canonical_judgment, reason_code, reason_text, metadata
 
         admission = service.get_move_admission(position_key, resolution.resolved_band_id, move_uci)
         if admission is None:
@@ -206,7 +208,7 @@ class MoveEvaluator:
                 f"position_key={position_key} move_uci={move_uci} reason=no_admission_row",
                 tag="evaluation",
             )
-            return accepted, canonical_judgment, reason_text, metadata
+            return accepted, canonical_judgment, reason_code, reason_text, metadata
 
         mode_to_reconciled_admission_column = {
             "good_inclusive": "reconciled_admitted_if_good_accepted",
@@ -237,7 +239,7 @@ class MoveEvaluator:
                 f"resolved_band={resolution.resolved_band_id} mode_id={mode_id}",
                 tag="evaluation",
             )
-            return True, CanonicalJudgment.BETTER, reason_text, metadata
+            return True, CanonicalJudgment.BETTER, ReasonCode.ENGINE_PASS, "Accepted via practical-risk reconciliation.", metadata
 
         explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
         if explanation is None:
@@ -247,7 +249,7 @@ class MoveEvaluator:
                 f"position_key={position_key} move_uci={move_uci} reason=missing_failure_explanation",
                 tag="evaluation",
             )
-            return False, CanonicalJudgment.FAIL, reason_text, metadata
+            return False, CanonicalJudgment.FAIL, reason_code, reason_text, metadata
 
         metadata["failure_explanation"] = explanation
         reason_code = explanation.get("reason_code")
@@ -266,7 +268,7 @@ class MoveEvaluator:
                 f"resolved_band={resolution.resolved_band_id} mode_id={mode_id}",
                 tag="evaluation",
             )
-            return True, CanonicalJudgment.BETTER, "Accepted via sharp/gambit override.", metadata
+            return True, CanonicalJudgment.BETTER, ReasonCode.ENGINE_PASS, "Accepted via sharp/gambit override.", metadata
 
         rendered = ReconciledFailureRenderer.render(
             explanation,
@@ -283,4 +285,4 @@ class MoveEvaluator:
             f"toggle_state_required={explanation.get('toggle_state_required') or 'none'}",
             tag="evaluation",
         )
-        return False, CanonicalJudgment.FAIL, rendered, metadata
+        return False, CanonicalJudgment.FAIL, ReasonCode.ENGINE_FAIL, rendered, metadata
