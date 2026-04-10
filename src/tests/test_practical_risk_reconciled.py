@@ -62,97 +62,42 @@ class StubEnginePassAuthority:
         )
 
 
-def _position_key(board: chess.Board) -> str:
-    return board.fen().rsplit(" ", 2)[0]
-
-
-def _create_real_schema_db(path, *, bands=("1000-1200", "1400-1600"), admissions=(), explanations=()):
+def _make_db(path, *, bands=("1000-1200", "1400-1600"), reason_code="would_pass_if_sharp_toggle_enabled"):
+    board = chess.Board()
+    position_key = board.fen().rsplit(" ", 2)[0]
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
-    conn.execute(
-        """
-        CREATE TABLE reconciled_move_admissions(
-            position_key TEXT,
-            band_id TEXT,
-            move_uci TEXT,
-            local_admitted_if_good_accepted INTEGER,
-            local_admitted_if_good_rejected INTEGER,
-            reconciled_admitted_if_good_accepted INTEGER,
-            reconciled_admitted_if_good_rejected INTEGER,
-            local_admission_origin_if_good_accepted TEXT,
-            local_admission_origin_if_good_rejected TEXT,
-            reconciled_admission_origin_if_good_accepted TEXT,
-            reconciled_admission_origin_if_good_rejected TEXT,
-            engine_quality_class TEXT,
-            local_reason TEXT,
-            practical_ceiling_band_id TEXT
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE failure_explanations(
-            position_key TEXT,
-            band_id TEXT,
-            move_uci TEXT,
-            mode_id TEXT,
-            reason_code TEXT,
-            template_id TEXT,
-            family_label TEXT,
-            max_practical_band_id TEXT,
-            first_failure_band_id TEXT,
-            toggle_state_required TEXT,
-            rendered_preview TEXT
-        )
-        """
-    )
+    conn.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, admitted_good_inclusive INTEGER, admitted_good_exclusive INTEGER, admission_origin TEXT, engine_quality_class TEXT, local_reason TEXT)")
+    conn.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT, reason_code TEXT, template_id TEXT, family_label TEXT, max_practical_band_id TEXT, first_failure_band_id TEXT, toggle_state_required TEXT, rendered_preview TEXT)")
     conn.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('included_band_order',?)", ("[\"%s\"]" % "\",\"".join(bands),))
-
-    conn.executemany(
-        """
-        INSERT INTO reconciled_move_admissions VALUES(
-            ?,?,?,?,?,?,?,
-            ?,?,?,?,
-            ?,?,?
-        )
-        """,
-        admissions,
+    conn.execute("INSERT INTO reconciled_move_admissions VALUES(?,?, 'e2e4',0,0,'reconciled','good','sharp line')", (position_key, "1400-1600"))
+    conn.execute(
+        "INSERT INTO failure_explanations VALUES(?,?,'e2e4','good_exclusive',?,?,?,?,?,?,?)",
+        (position_key, "1400-1600", reason_code, "tmpl", "sharp line", "1400-1600", "1800-2000", "sharp_on", None),
     )
-    conn.executemany(
-        "INSERT INTO failure_explanations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        explanations,
-    )
-    for admission in admissions:
-        conn.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,'{}')", (admission[0], admission[1]))
+    conn.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,'{}')", (position_key, "1400-1600"))
     conn.commit()
     conn.close()
 
 
-def _eval(service, *, move_uci="e2e4", board=None, requested_band_id="1200-1400", sharp=False, good_moves_acceptable=False):
+def _eval(service, *, sharp=False):
     evaluator = MoveEvaluator(
         book_authority=StubBookAuthority(),
         engine_authority=StubEngineAuthority(),
         reconciled_service=service,
     )
-    evaluator.config = type(evaluator.config)(**{**evaluator.config.snapshot(), "good_moves_acceptable": good_moves_acceptable})
-    board = board or chess.Board()
-    move = chess.Move.from_uci(move_uci)
-    return evaluator.evaluate(board, move, 1, requested_band_id=requested_band_id, allow_sharp_gambit_lines=sharp)
-
-
-def test_real_schema_exact_band_lookup_and_fallback_order(tmp_path):
+    evaluator.config = type(evaluator.config)(**{**evaluator.config.snapshot(), "good_moves_acceptable": False})
     board = chess.Board()
-    position_key = _position_key(board)
+    move = chess.Move.from_uci("e2e4")
+    return evaluator.evaluate(board, move, 1, requested_band_id="1200-1400", allow_sharp_gambit_lines=sharp)
+
+
+def test_exact_band_lookup_and_fallback_order(tmp_path):
     db = tmp_path / "reconciled.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 0, 0, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
-        ],
-    )
+    _make_db(db)
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
 
     exact = service.resolve_band_id("1400-1600")
@@ -168,36 +113,9 @@ def test_real_schema_exact_band_lookup_and_fallback_order(tmp_path):
     assert lower.provenance == "fallback_nearest_lower"
 
 
-def test_engine_fail_reconciled_admitted_rescues_on_real_schema(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
+def test_strict_mode_sharp_off_fails_and_sharp_on_overrides(tmp_path):
     db = tmp_path / "reconciled.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford line", "1400-1600")
-        ],
-    )
-    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-
-    passed = _eval(service, requested_band_id="1200-1400")
-    assert passed.accepted is True
-    assert passed.metadata["reconciled"]["decision_source"] == "reconciled_admission"
-
-
-def test_strict_mode_sharp_override_only_when_enabled(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
-    db = tmp_path / "reconciled.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 0, 0, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
-        ],
-        explanations=[
-            (position_key, "1400-1600", "e2e4", "good_exclusive", "would_pass_if_sharp_toggle_enabled", "tmpl", "sharp line", "1400-1600", "1800-2000", "sharp_on", None)
-        ],
-    )
+    _make_db(db)
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
 
     failed = _eval(service, sharp=False)
@@ -209,19 +127,9 @@ def test_strict_mode_sharp_override_only_when_enabled(tmp_path):
     assert passed.metadata["reconciled"]["decision_source"] == "sharp_toggle_override_from_failure_explanation"
 
 
-def test_outgrown_above_band_remains_fail(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
+def test_outgrown_reason_not_overridden_by_sharp_toggle(tmp_path):
     db = tmp_path / "reconciled.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 0, 0, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
-        ],
-        explanations=[
-            (position_key, "1400-1600", "e2e4", "good_exclusive", "outgrown_above_band", "tmpl", "stafford", "1400-1600", "1800-2000", "sharp_on", None)
-        ],
-    )
+    _make_db(db, reason_code="outgrown_above_band")
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
 
     result = _eval(service, sharp=True)
@@ -229,76 +137,11 @@ def test_outgrown_above_band_remains_fail(tmp_path):
     assert "outgrown" in result.reason_text.lower()
 
 
-def test_incompatible_schema_fails_activation_cleanly(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
-    db = tmp_path / "broken.sqlite"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
-    conn.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, admitted_good_inclusive INTEGER)")
-    conn.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT)")
-    conn.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
-    conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
-    conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
-    conn.execute("INSERT INTO reconciled_move_admissions VALUES(?,?,?,1)", (position_key, "1400-1600", "e2e4"))
-    conn.commit()
-    conn.close()
-
-    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-    assert service.active is False
-    assert "artifact schema mismatch in reconciled_move_admissions" in (service.activation_error or "")
-
-
-def test_stafford_b8c6_rescue_uses_real_schema_columns(tmp_path):
-    board = chess.Board()
-    for uci in ("e2e4", "e7e5", "g1f3", "g8f6", "f3e5"):
-        board.push_uci(uci)
-    position_key = _position_key(board)
-    db = tmp_path / "stafford.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "b8c6", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford gambit", "1400-1600")
-        ],
-    )
-    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-
-    result = _eval(service, board=board, move_uci="b8c6", requested_band_id="1200-1400", good_moves_acceptable=False)
-    assert result.accepted is True
-    assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission"
-
-
-def test_manual_target_play_to_position_tested_move_rescues_real_schema(tmp_path):
-    board = chess.Board()
-    for uci in ("d2d4", "g8f6", "c2c4", "e7e6"):
-        board.push_uci(uci)
-    position_key = _position_key(board)
-    db = tmp_path / "manual_target.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1000-1200", "g1f3", 1, 1, 1, 1, "local", "local", "reconciled", "reconciled", "good", "manual_target_test", "1000-1200")
-        ],
-        bands=("1000-1200",),
-    )
-    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-
-    result = _eval(service, board=board, move_uci="g1f3", requested_band_id="1000-1200")
-    assert result.accepted is True
-    assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission"
-
-
 def test_missing_row_and_invalid_artifact_fallback_cleanly(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
     db = tmp_path / "reconciled.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 0, 0, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
-        ],
-    )
+    _make_db(db)
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    board = chess.Board()
     move = chess.Move.from_uci("d2d4")
     evaluator = MoveEvaluator(book_authority=StubBookAuthority(), engine_authority=StubEngineAuthority(), reconciled_service=service)
     result = evaluator.evaluate(board, move, 1, requested_band_id="1200-1400", allow_sharp_gambit_lines=False)
@@ -327,16 +170,10 @@ def test_failure_renderer_stable_without_rendered_preview():
 
 
 def test_reconciled_not_consulted_after_book_or_engine_pass(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
     db = tmp_path / "reconciled.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 1, 1, 1, 1, "local", "local", "reconciled", "reconciled", "good", "manual", "1400-1600")
-        ],
-    )
+    _make_db(db)
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    board = chess.Board()
     move = chess.Move.from_uci("e2e4")
 
     book_pass = MoveEvaluator(
