@@ -230,6 +230,10 @@ class MoveEvaluator:
 
         if admitted:
             metadata["decision_source"] = "reconciled_admission"
+            acceptance_reason = self._rescued_acceptance_reason(
+                resolved_band_id=resolution.resolved_band_id,
+                mode_id=mode_id,
+            )
             log_line(
                 "PRACTICAL_RISK_FAIL_RESCUED "
                 f"position_key={position_key} move_uci={move_uci} reason=admitted "
@@ -237,7 +241,7 @@ class MoveEvaluator:
                 f"resolved_band={resolution.resolved_band_id} mode_id={mode_id}",
                 tag="evaluation",
             )
-            return True, CanonicalJudgment.BETTER, reason_text, metadata
+            return True, CanonicalJudgment.BETTER, acceptance_reason, metadata
 
         explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
         if explanation is None:
@@ -284,3 +288,10 @@ class MoveEvaluator:
             tag="evaluation",
         )
         return False, CanonicalJudgment.FAIL, rendered, metadata
+
+    @staticmethod
+    def _rescued_acceptance_reason(*, resolved_band_id: str | None, mode_id: str) -> str:
+        mode_detail = "Good-inclusive" if mode_id == "good_inclusive" else "Good-exclusive"
+        if resolved_band_id:
+            return f"Accepted via practical-risk reconciliation ({mode_detail}, band {resolved_band_id})."
+        return f"Accepted via practical-risk reconciliation ({mode_detail})."
