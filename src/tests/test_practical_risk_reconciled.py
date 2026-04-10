@@ -92,7 +92,9 @@ def _create_real_schema_db(
             reconciled_admission_origin_if_good_rejected TEXT,
             engine_quality_class TEXT,
             local_reason TEXT,
-            practical_ceiling_band_id TEXT
+            practical_ceiling_band_id TEXT,
+            family_label TEXT,
+            failure_reason_code TEXT
         )
         """
     )
@@ -139,21 +141,28 @@ def _create_real_schema_db(
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('included_band_order',?)", ("[\"%s\"]" % "\",\"".join(bands),))
 
+    normalized_admissions = []
+    for admission in admissions:
+        if len(admission) == 14:
+            normalized_admissions.append((*admission, None, None))
+        else:
+            normalized_admissions.append(admission)
+
     conn.executemany(
         """
         INSERT INTO reconciled_move_admissions VALUES(
-            ?,?,?,?,?,?,?,
+            ?,?,?,?,?,?, ?,
             ?,?,?,?,
-            ?,?,?
+            ?,?,?,?,?
         )
         """,
-        admissions,
+        normalized_admissions,
     )
     conn.executemany(
         "INSERT INTO failure_explanations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         explanations,
     )
-    for admission in admissions:
+    for admission in normalized_admissions:
         if include_root_summary_counts:
             conn.execute(
                 "INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)",
@@ -555,3 +564,124 @@ def test_reconciled_not_consulted_after_book_or_engine_pass(tmp_path):
     assert engine_pass.accepted is True
     assert engine_pass.canonical_judgment.value == "Better"
     assert engine_pass.metadata["reconciled"]["decision_source"] == "legacy_engine_book"
+
+
+def test_sharp_family_admission_blocked_when_toggle_off(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_family_blocked.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (
+                position_key,
+                "1400-1600",
+                "e2e4",
+                0,
+                0,
+                1,
+                1,
+                "local",
+                "local",
+                "reconciled",
+                "reconciled",
+                "good",
+                "stafford gambit",
+                "1400-1600",
+                "sharp/gambit",
+                "would_pass_if_sharp_toggle_enabled",
+            )
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    result = _eval(service, requested_band_id="1200-1400", sharp=False)
+    assert result.accepted is False
+    assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission_blocked_by_sharp_toggle"
+    assert "Enable sharp/gambit lines" in result.reason_text
+
+
+def test_sharp_family_admission_rescues_when_toggle_on(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_family_allowed.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (
+                position_key,
+                "1400-1600",
+                "e2e4",
+                0,
+                0,
+                1,
+                1,
+                "local",
+                "local",
+                "reconciled",
+                "reconciled",
+                "good",
+                "stafford gambit",
+                "1400-1600",
+                "sharp/gambit",
+                "would_pass_if_sharp_toggle_enabled",
+            )
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    result = _eval(service, requested_band_id="1200-1400", sharp=True)
+    assert result.accepted is True
+    assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission"
+
+
+def test_non_sharp_admission_still_rescues_with_toggle_off(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "non_sharp_admission.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "solid line", "1400-1600", "solid", None)
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    result = _eval(service, requested_band_id="1200-1400", sharp=False)
+    assert result.accepted is True
+    assert result.reason_text == "Accepted via practical-risk reconciliation for the current training band."
+
+
+def test_sharp_family_admission_block_uses_runtime_explanation_without_failure_row(tmp_path):
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_runtime_explanation.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (
+                position_key,
+                "1400-1600",
+                "e2e4",
+                0,
+                0,
+                1,
+                1,
+                "local",
+                "local",
+                "reconciled",
+                "reconciled",
+                "good",
+                "stafford gambit",
+                "1400-1600",
+                "sharp/gambit",
+                None,
+            )
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    result = _eval(service, requested_band_id="1200-1400", sharp=False)
+    assert result.accepted is False
+    assert "Enable sharp/gambit lines" in result.reason_text
+    assert "Rejected by engine" not in result.reason_text
