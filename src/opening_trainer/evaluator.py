@@ -208,17 +208,8 @@ class MoveEvaluator:
             )
             return accepted, canonical_judgment, reason_text, metadata
 
-        mode_to_reconciled_field = {
-            "good_inclusive": "reconciled_admitted_if_good_accepted",
-            "good_exclusive": "reconciled_admitted_if_good_rejected",
-        }
-        mode_to_origin_field = {
-            "good_inclusive": "reconciled_admission_origin_if_good_accepted",
-            "good_exclusive": "reconciled_admission_origin_if_good_rejected",
-        }
-        admitted_field = mode_to_reconciled_field.get(mode_id)
-        admitted = bool(admission.get(admitted_field)) if admitted_field else False
-        metadata["admission_origin"] = admission.get(mode_to_origin_field.get(mode_id, "")) or admission.get("admission_origin")
+        admitted = bool(admission.get(f"admitted_{mode_id}"))
+        metadata["admission_origin"] = admission.get("admission_origin")
         metadata["engine_quality_class"] = admission.get("engine_quality_class")
         metadata["local_reason"] = admission.get("local_reason")
 
