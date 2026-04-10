@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import chess
@@ -77,7 +78,14 @@ def _write_predecessor_db(path: Path, rows: list[tuple[str, str | None, str | No
         connection.close()
 
 
-def _write_reconciled_db_for_position(path: Path, *, position_key: str, move_uci: str, band_id: str = "1000-1200") -> None:
+def _write_reconciled_db_for_position(
+    path: Path,
+    *,
+    position_key: str,
+    move_uci: str,
+    band_id: str = "1000-1200",
+    local_reason: str = "manual_target_test",
+) -> None:
     connection = sqlite3.connect(path)
     try:
         connection.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
@@ -99,8 +107,8 @@ def _write_reconciled_db_for_position(path: Path, *, position_key: str, move_uci
         connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
         connection.execute(f"INSERT INTO artifact_metadata(key,value) VALUES('included_band_order','[\"{band_id}\"]')")
         connection.execute(
-            "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,1,1,'local','local','reconciled','reconciled','good','manual_target_test',?)",
-            (position_key, band_id, move_uci, band_id),
+            "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,1,1,'local','local','reconciled','reconciled','good',?,?)",
+            (position_key, band_id, move_uci, local_reason, band_id),
         )
         connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)", (position_key, band_id, 1, 1, 1, 1))
         connection.commit()
@@ -803,3 +811,58 @@ def test_manual_target_play_to_position_tested_move_uses_reconciled_fail_interce
 
     assert session.last_evaluation.accepted is True
     assert session.last_evaluation.metadata["reconciled"]["decision_source"] == "reconciled_admission"
+
+
+def test_manual_target_play_to_position_sharp_admission_honors_toggle(tmp_path):
+    reconciled_db = tmp_path / "manual_target_reconciled_sharp.sqlite"
+    target_board = chess.Board()
+    target_board.push_uci("e2e4")
+    target_board.push_uci("e7e5")
+    _write_reconciled_db_for_position(
+        reconciled_db,
+        position_key=normalize_builder_position_key(chess.Board()),
+        move_uci="g1f3",
+        local_reason="sharp line",
+    )
+    reconciled_service = PracticalRiskReconciledService(reconciled_db, expected_time_control_id="600+0")
+
+    def _run_case(allow_sharp: bool) -> bool:
+        session = _session(tmp_path)
+        session.evaluator = MoveEvaluator(
+            book_authority=StubBookAuthority(BOOK_MISS),
+            engine_authority=StubEngineAuthority(
+                EngineAuthorityResult(
+                    False,
+                    True,
+                    ReasonCode.ENGINE_FAIL,
+                    'Rejected by engine.',
+                    best_move_uci='d2d4',
+                    best_move_san='d4',
+                    played_move_uci='g1f3',
+                    played_move_san='Nf3',
+                    cp_loss=170,
+                    metadata={'engine_available': True},
+                )
+            ),
+            reconciled_service=reconciled_service,
+        )
+        session.settings = replace(session.settings, allow_sharp_gambit_lines=allow_sharp)
+        item = session.add_manual_target(
+            target_fen=target_board.fen(),
+            predecessor_line_uci='e2e4 e7e5',
+            urgency_tier='ordinary_review',
+            allow_below_threshold_reach=False,
+            manual_presentation_mode='play_to_position',
+        )
+        session.current_routing = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
+        session.current_review_item_id = item.review_item_id
+        session.active_review_plan = session.current_routing.review_plan
+        session.board.reset()
+        session.state = session.state.PLAYER_TURN
+        session.player_color = chess.WHITE
+        session._timing_contract_metadata = lambda: ("600+0", "1000-1200")
+        session.submit_user_move_uci('g1f3')
+        return bool(session.last_evaluation.accepted)
+
+    assert _run_case(False) is False
+    assert _run_case(True) is True

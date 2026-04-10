@@ -227,6 +227,40 @@ class MoveEvaluator:
         metadata["local_admitted_if_good_rejected"] = admission.get("local_admitted_if_good_rejected")
         metadata["reconciled_admitted_if_good_accepted"] = admission.get("reconciled_admitted_if_good_accepted")
         metadata["reconciled_admitted_if_good_rejected"] = admission.get("reconciled_admitted_if_good_rejected")
+        metadata["family_label"] = admission.get("family_label")
+
+        admission_is_sharp_family = service.admission_is_sharp_gambit_family(admission)
+        metadata["admission_is_sharp_gambit_family"] = admission_is_sharp_family
+
+        if admitted and admission_is_sharp_family and not allow_sharp_gambit_lines:
+            explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
+            if explanation is None:
+                explanation = {
+                    "reason_code": "would_pass_if_sharp_toggle_enabled",
+                    "template_id": "runtime_policy_gate",
+                    "family_label": admission.get("family_label") or "sharp/gambit line",
+                    "max_practical_band_id": admission.get("practical_ceiling_band_id"),
+                    "first_failure_band_id": None,
+                    "toggle_state_required": "sharp_on",
+                    "rendered_preview": None,
+                }
+            metadata["failure_explanation"] = explanation
+            metadata["decision_source"] = "reconciled_policy_reject_sharp_toggle_off"
+            rendered = ReconciledFailureRenderer.render(
+                explanation,
+                requested_band_id=requested_band_id,
+                resolved_band_id=resolution.resolved_band_id,
+            )
+            log_line(
+                "PRACTICAL_RISK_FAIL_CONFIRMED "
+                f"position_key={position_key} move_uci={move_uci} reason_code=would_pass_if_sharp_toggle_enabled "
+                f"template_id={explanation.get('template_id') or 'runtime_policy_gate'} "
+                f"max_practical_band={explanation.get('max_practical_band_id') or 'unknown'} "
+                f"first_failure_band={explanation.get('first_failure_band_id') or 'unknown'} "
+                f"toggle_state_required=sharp_on",
+                tag="evaluation",
+            )
+            return False, CanonicalJudgment.FAIL, rendered, metadata
 
         if admitted:
             metadata["decision_source"] = "reconciled_admission"
@@ -252,6 +286,7 @@ class MoveEvaluator:
 
         metadata["failure_explanation"] = explanation
         reason_code = explanation.get("reason_code")
+        metadata["explanation_is_sharp_gambit_family"] = service.explanation_is_sharp_gambit_family(explanation)
         sharp_override_allowed = (
             allow_sharp_gambit_lines
             and reason_code == "would_pass_if_sharp_toggle_enabled"
