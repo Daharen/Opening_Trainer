@@ -4,6 +4,7 @@ import sqlite3
 
 import chess
 
+from opening_trainer.bundle_corpus import normalize_builder_position_key
 from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResult, ReasonCode
 from opening_trainer.evaluator import MoveEvaluator
 from opening_trainer.practical_risk_reconciled import PracticalRiskReconciledService, ReconciledFailureRenderer
@@ -64,16 +65,46 @@ class StubEnginePassAuthority:
 
 def _make_db(path, *, bands=("1000-1200", "1400-1600"), reason_code="would_pass_if_sharp_toggle_enabled"):
     board = chess.Board()
-    position_key = board.fen().rsplit(" ", 2)[0]
+    position_key = normalize_builder_position_key(board)
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
-    conn.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, admitted_good_inclusive INTEGER, admitted_good_exclusive INTEGER, admission_origin TEXT, engine_quality_class TEXT, local_reason TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE reconciled_move_admissions(
+            position_key TEXT,
+            band_id TEXT,
+            move_uci TEXT,
+            local_admitted_if_good_accepted INTEGER,
+            local_admitted_if_good_rejected INTEGER,
+            reconciled_admitted_if_good_accepted INTEGER,
+            reconciled_admitted_if_good_rejected INTEGER,
+            local_admission_origin_if_good_accepted TEXT,
+            local_admission_origin_if_good_rejected TEXT,
+            reconciled_admission_origin_if_good_accepted TEXT,
+            reconciled_admission_origin_if_good_rejected TEXT,
+            engine_quality_class TEXT,
+            local_reason TEXT
+        )
+        """
+    )
     conn.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT, reason_code TEXT, template_id TEXT, family_label TEXT, max_practical_band_id TEXT, first_failure_band_id TEXT, toggle_state_required TEXT, rendered_preview TEXT)")
     conn.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('included_band_order',?)", ("[\"%s\"]" % "\",\"".join(bands),))
-    conn.execute("INSERT INTO reconciled_move_admissions VALUES(?,?, 'e2e4',0,0,'reconciled','good','sharp line')", (position_key, "1400-1600"))
+    conn.execute(
+        """
+        INSERT INTO reconciled_move_admissions VALUES(
+            ?, ?, 'e2e4',
+            0, 0,
+            0, 0,
+            'local_rule', 'local_rule',
+            'reconciled_rule', 'reconciled_rule',
+            'good', 'sharp line'
+        )
+        """,
+        (position_key, "1400-1600"),
+    )
     conn.execute(
         "INSERT INTO failure_explanations VALUES(?,?,'e2e4','good_exclusive',?,?,?,?,?,?,?)",
         (position_key, "1400-1600", reason_code, "tmpl", "sharp line", "1400-1600", "1800-2000", "sharp_on", None),
@@ -111,6 +142,20 @@ def test_exact_band_lookup_and_fallback_order(tmp_path):
     lower = service.resolve_band_id("1800-2000")
     assert lower.resolved_band_id == "1400-1600"
     assert lower.provenance == "fallback_nearest_lower"
+
+
+def test_engine_fail_rescued_by_reconciled_admission_real_schema(tmp_path):
+    db = tmp_path / "reconciled.sqlite"
+    _make_db(db)
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE reconciled_move_admissions SET reconciled_admitted_if_good_rejected=1 WHERE move_uci='e2e4'"
+        )
+        connection.commit()
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    result = _eval(service, sharp=False)
+    assert result.accepted is True
+    assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission"
 
 
 def test_strict_mode_sharp_off_fails_and_sharp_on_overrides(tmp_path):
@@ -151,6 +196,84 @@ def test_missing_row_and_invalid_artifact_fallback_cleanly(tmp_path):
     bad = PracticalRiskReconciledService(db, expected_time_control_id="300+0")
     assert bad.active is False
     assert "time_control_id mismatch" in (bad.activation_error or "")
+
+
+def test_incompatible_schema_fails_activation_with_contract_message(tmp_path):
+    db = tmp_path / "reconciled_incompatible.sqlite"
+    with sqlite3.connect(db) as connection:
+        connection.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
+        connection.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, admitted_good_inclusive INTEGER)")
+        connection.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT)")
+        connection.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
+        connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
+        connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
+        connection.commit()
+
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    assert service.active is False
+    assert "schema contract mismatch for reconciled_move_admissions" in (service.activation_error or "")
+
+
+def test_stafford_b8c6_engine_fail_rescued_with_real_schema(tmp_path):
+    db = tmp_path / "stafford.sqlite"
+    board = chess.Board()
+    for uci in ("e2e4", "e7e5", "g1f3"):
+        board.push_uci(uci)
+    position_key = normalize_builder_position_key(board)
+    with sqlite3.connect(db) as connection:
+        connection.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
+        connection.execute(
+            """
+            CREATE TABLE reconciled_move_admissions(
+                position_key TEXT,
+                band_id TEXT,
+                move_uci TEXT,
+                local_admitted_if_good_accepted INTEGER,
+                local_admitted_if_good_rejected INTEGER,
+                reconciled_admitted_if_good_accepted INTEGER,
+                reconciled_admitted_if_good_rejected INTEGER,
+                local_admission_origin_if_good_accepted TEXT,
+                local_admission_origin_if_good_rejected TEXT,
+                reconciled_admission_origin_if_good_accepted TEXT,
+                reconciled_admission_origin_if_good_rejected TEXT,
+                engine_quality_class TEXT,
+                local_reason TEXT
+            )
+            """
+        )
+        connection.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT, reason_code TEXT, template_id TEXT, family_label TEXT, max_practical_band_id TEXT, first_failure_band_id TEXT, toggle_state_required TEXT, rendered_preview TEXT)")
+        connection.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
+        connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
+        connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
+        connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('included_band_order','[\"1400-1600\"]')")
+        connection.execute(
+            """
+            INSERT INTO reconciled_move_admissions VALUES(
+                ?, '1400-1600', 'b8c6',
+                0, 0,
+                0, 1,
+                'local_rule', 'local_rule',
+                'stafford_family', 'stafford_family',
+                'risky', 'stafford trap'
+            )
+            """,
+            (position_key,),
+        )
+        connection.execute("INSERT INTO reconciled_root_summaries VALUES(?, '1400-1600', '{}')", (position_key,))
+        connection.commit()
+
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(),
+        engine_authority=StubEngineAuthority(),
+        reconciled_service=service,
+    )
+    evaluator.config = type(evaluator.config)(**{**evaluator.config.snapshot(), "good_moves_acceptable": False})
+    result = evaluator.evaluate(board, chess.Move.from_uci("b8c6"), 4, requested_band_id="1400-1600", allow_sharp_gambit_lines=False)
+
+    assert result.accepted is True
+    assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission"
+    assert "sqlite read error" not in (result.metadata["reconciled"].get("activation_error") or "")
 
 
 def test_failure_renderer_stable_without_rendered_preview():
