@@ -42,6 +42,7 @@ from .runtime import (
     load_runtime_config,
     max_supported_player_moves_from_retained_plies,
 )
+from .practical_risk_reconciled import PracticalRiskReconciledService
 from .settings import CONSERVATIVE_FALLBACK_MAX_DEPTH, MANUAL_MODE, SMART_PROFILE_MODE, TrainerSettings, TrainerSettingsStore
 from .session_events import build_event, event_to_dict
 from .session_logging import log_line
@@ -136,6 +137,8 @@ class TrainingSession:
                 selected_time_control_id=self.settings.selected_time_control_id,
                 side_panel_visible=self.settings.side_panel_visible,
                 move_list_visible=self.settings.move_list_visible,
+                dark_mode_enabled=self.settings.dark_mode_enabled,
+                allow_sharp_gambit_lines=self.settings.allow_sharp_gambit_lines,
                 training_panel_visible_columns=self.settings.training_panel_visible_columns,
                 last_bundle_path=self.settings.last_bundle_path,
                 last_corpus_catalog_root=self.settings.last_corpus_catalog_root,
@@ -145,6 +148,11 @@ class TrainingSession:
             )
         self.developer_timing_overrides = self.developer_timing_store.load()
         self.live_timing_debug_state = self._initial_timing_debug_state()
+        self.practical_risk_reconciled = PracticalRiskReconciledService.from_runtime(
+            runtime_config=self.runtime_context.config,
+            runtime_paths=self.runtime_context.runtime_paths,
+            time_control_id=self.settings.selected_time_control_id,
+        )
         self._apply_settings(self.settings)
         self.timed_state: TimedSessionState | None = None
         self._player_turn_started_at: float | None = None
@@ -394,9 +402,14 @@ class TrainingSession:
             required_moves, good_accepted = self.settings.active_training_ply_depth, self.settings.good_moves_acceptable
         self.required_player_moves = required_moves
         self.config = type(self.config)(**{**self.config.snapshot(), 'active_envelope_player_moves': self.required_player_moves, 'good_moves_acceptable': good_accepted})
-        self.evaluator.config = self.config
-        self.evaluator.overlay_classifier.config = self.config
-        self.evaluator.engine_authority.config = self.config
+        if hasattr(self.evaluator, "config"):
+            self.evaluator.config = self.config
+        if hasattr(self.evaluator, "practical_risk_reconciled"):
+            self.evaluator.practical_risk_reconciled = self.practical_risk_reconciled
+        if hasattr(self.evaluator, "overlay_classifier") and hasattr(self.evaluator.overlay_classifier, "config"):
+            self.evaluator.overlay_classifier.config = self.config
+        if hasattr(self.evaluator, "engine_authority") and hasattr(self.evaluator.engine_authority, "config"):
+            self.evaluator.engine_authority.config = self.config
         self.opponent.set_fallback_mode(self.settings.opponent_fallback_mode)
 
     def _profile_name(self) -> str:
@@ -701,6 +714,7 @@ class TrainingSession:
 
     def corpus_summary_text(self) -> str:
         timing_text = self._timing_summary_text()
+        reconciled_text = self.practical_risk_status_text()
         bundle_dir = self.runtime_context.config.corpus_bundle_dir
         if bundle_dir:
             provider = getattr(self.opponent, 'bundle_provider', None)
@@ -719,17 +733,29 @@ class TrainingSession:
                 band_text = self._format_rating_band(band) or self._bundle_name_fallback(bundle_dir)
                 retained_text = f' | Retained depth: {retained}' if retained is not None else ''
                 policy_text = f' | Rating policy: {rating_policy}' if isinstance(rating_policy, str) and rating_policy.strip() else ''
-                return f'Corpus: {band_text}{retained_text}{policy_text}{timing_text}'
-            return f'Corpus: {self._bundle_name_fallback(bundle_dir)}{timing_text}'
+                return f'Corpus: {band_text}{retained_text}{policy_text}{timing_text}{reconciled_text}'
+            return f'Corpus: {self._bundle_name_fallback(bundle_dir)}{timing_text}{reconciled_text}'
         artifact_path = self.runtime_context.config.corpus_artifact_path
         if artifact_path:
             try:
                 artifact = load_artifact(artifact_path)
                 band_text = self._format_rating_band(getattr(artifact, 'target_rating_band', None)) or 'artifact'
-                return f'Corpus: {band_text} | Retained depth: {artifact.retained_ply_depth}{timing_text}'
+                return f'Corpus: {band_text} | Retained depth: {artifact.retained_ply_depth}{timing_text}{reconciled_text}'
             except Exception:
-                return f'Corpus: legacy artifact{timing_text}'
-        return f'Corpus: fallback / no bundle metadata{timing_text}'
+                return f'Corpus: legacy artifact{timing_text}{reconciled_text}'
+        return f'Corpus: fallback / no bundle metadata{timing_text}{reconciled_text}'
+
+    def practical_risk_status_text(self) -> str:
+        requested_band_id = self._timing_contract_metadata()[1]
+        resolution = self.practical_risk_reconciled.resolve_band_id(requested_band_id)
+        active = self.practical_risk_reconciled.active
+        state = "active" if active else "inactive"
+        return (
+            f" | Reconciled D: {state}"
+            f" | Requested band: {requested_band_id or 'n/a'}"
+            f" | Resolved band: {resolution.resolved_band_id or 'n/a'}"
+            f" | Sharp: {'on' if self.settings.allow_sharp_gambit_lines else 'off'}"
+        )
 
     def _format_rating_band(self, band: object) -> str | None:
         if isinstance(band, dict):
@@ -854,6 +880,14 @@ class TrainingSession:
             return self.get_view()
         if self._resolve_terminal_board_state():
             return self.get_view()
+        requested_band_id = self._timing_contract_metadata()[1]
+        if hasattr(self.evaluator, "practical_risk_context"):
+            self.evaluator.practical_risk_context = {
+                "position_key": normalize_builder_position_key(board_before_move),
+                "requested_band_id": requested_band_id,
+                "good_moves_acceptable": self.config.good_moves_acceptable,
+                "allow_sharp_gambit_lines": self.settings.allow_sharp_gambit_lines,
+            }
         evaluation = self.evaluator.evaluate(board_before_move, move, self.player_move_count)
         self.last_evaluation = evaluation
         self._refresh_opening_name_state(reason='position_refresh')
@@ -1103,6 +1137,8 @@ class TrainingSession:
         existing = next((item for item in items if item.position_key == position_key and item.side_to_move == side), None)
         previous_frequency_state = existing.frequency_state if existing is not None else None
         accepted = list(evaluation.metadata.get('candidate_moves', [])) if isinstance(evaluation.metadata, dict) else []
+        reconciled_meta = evaluation.metadata.get("reconciled", {}) if isinstance(evaluation.metadata, dict) else {}
+        failure_explanation = reconciled_meta.get("failure_explanation") if isinstance(reconciled_meta, dict) else None
         line_preview = ' '.join(move.san for move in self.run_path[-6:])
         inherited_manual_metadata = self._manual_inherited_failure_metadata(board_before_move, items)
         if existing is None:
@@ -1130,6 +1166,17 @@ class TrainingSession:
                 item.manual_presentation_mode = ManualPresentationMode.PLAY_TO_POSITION.value
                 item.manual_forced_player_color = inherited_manual_metadata['manual_forced_player_color']
             impact_summary = f'Updated review item; urgency is now {item.urgency_tier}.'
+        if isinstance(failure_explanation, dict):
+            item.practical_risk_reason_code = str(failure_explanation.get("reason_code") or "") or None
+            item.practical_risk_template_id = str(failure_explanation.get("template_id") or "") or None
+            item.practical_risk_family_label = str(failure_explanation.get("family_label") or "") or None
+            item.practical_risk_max_practical_band_id = str(failure_explanation.get("max_practical_band_id") or "") or None
+            item.practical_risk_first_failure_band_id = str(failure_explanation.get("first_failure_band_id") or "") or None
+            item.practical_risk_toggle_state_required = str(failure_explanation.get("toggle_state_required") or "") or None
+            item.practical_risk_resolved_band_id = str(reconciled_meta.get("resolved_band_id") or "") or None
+            item.practical_risk_would_pass_with_sharp_enabled = (
+                str(failure_explanation.get("reason_code") or "") == "would_pass_if_sharp_toggle_enabled"
+            )
         decision = self.router.stubborn_extreme_repeat(self.active_profile_id, item) if item.pending_forced_stubborn_repeat else self.router.immediate_retry(self.active_profile_id, item)
         self.router.record_review_result(self.active_profile_id, self.current_routing.routing_source if self.current_routing else '', was_miss=True)
         if self.current_routing and self.current_routing.selected_review_item_id:
@@ -1726,6 +1773,17 @@ class TrainingSession:
         color_name = 'WHITE' if self.player_color == chess.WHITE else 'BLACK'
         for line in self.runtime_context.startup_status(mode=self.mode.upper(), user_color=color_name).lines:
             log_line(line, tag='evaluation')
+        reconciled = self.practical_risk_reconciled
+        resolution = reconciled.resolve_band_id(self._timing_contract_metadata()[1])
+        log_line(
+            (
+                f"Reconciled artifact path: {reconciled.path}; active={'yes' if reconciled.active else 'no'}; "
+                f"family_id={reconciled.family_id}; time_control_id={reconciled.artifact_time_control_id}; "
+                f"requested_band={resolution.requested_band_id}; resolved_band={resolution.resolved_band_id}; "
+                f"sharp_toggle={'on' if self.settings.allow_sharp_gambit_lines else 'off'}"
+            ),
+            tag='evaluation',
+        )
 
     def _print_evaluation_feedback(self, evaluation: EvaluationResult) -> None:
         for line in format_evaluation_feedback(evaluation):

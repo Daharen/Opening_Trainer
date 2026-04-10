@@ -136,6 +136,14 @@ class ReviewItem:
     manual_forced_player_color: str = ManualForcedPlayerColor.AUTO.value
     manual_parent_review_item_id: str | None = None
     manual_reach_policy_inherited: bool = False
+    practical_risk_reason_code: str | None = None
+    practical_risk_template_id: str | None = None
+    practical_risk_family_label: str | None = None
+    practical_risk_max_practical_band_id: str | None = None
+    practical_risk_first_failure_band_id: str | None = None
+    practical_risk_toggle_state_required: str | None = None
+    practical_risk_resolved_band_id: str | None = None
+    practical_risk_would_pass_with_sharp_enabled: bool = False
 
     @classmethod
     def create(
@@ -237,6 +245,14 @@ class ReviewItem:
         payload.setdefault('manual_forced_player_color', ManualForcedPlayerColor.AUTO.value)
         payload.setdefault('manual_parent_review_item_id', None)
         payload.setdefault('manual_reach_policy_inherited', False)
+        payload.setdefault('practical_risk_reason_code', None)
+        payload.setdefault('practical_risk_template_id', None)
+        payload.setdefault('practical_risk_family_label', None)
+        payload.setdefault('practical_risk_max_practical_band_id', None)
+        payload.setdefault('practical_risk_first_failure_band_id', None)
+        payload.setdefault('practical_risk_toggle_state_required', None)
+        payload.setdefault('practical_risk_resolved_band_id', None)
+        payload.setdefault('practical_risk_would_pass_with_sharp_enabled', False)
         return cls(**payload)
 
 

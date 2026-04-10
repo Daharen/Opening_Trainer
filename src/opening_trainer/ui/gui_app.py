@@ -189,6 +189,7 @@ class OpeningTrainerGUI:
         self.manual_elo_var = tk.StringVar(value='')
         self.manual_depth_var = tk.IntVar(value=self.session.settings.active_training_ply_depth)
         self.manual_good_var = tk.StringVar(value='Yes' if self.session.settings.good_moves_acceptable else 'No')
+        self.allow_sharp_gambit_var = tk.BooleanVar(value=self.session.settings.allow_sharp_gambit_lines)
         self.opponent_fallback_mode_var = tk.StringVar(value=self.session.settings.opponent_fallback_mode)
         self.catalog_root_var = tk.StringVar()
         self.catalog_category_combo = None
@@ -276,6 +277,12 @@ class OpeningTrainerGUI:
             width=28,
         )
         self.fallback_mode_combo.grid(row=0, column=14, sticky='w', padx=(0, 8))
+        ttk.Checkbutton(
+            self.control_strip,
+            text='Allow sharp/gambit',
+            variable=self.allow_sharp_gambit_var,
+            command=self._on_manual_contract_changed,
+        ).grid(row=0, column=15, sticky='w', padx=(0, 8))
         self.top_time_control_combo.bind('<<ComboboxSelected>>', self._on_top_time_control_selected)
         self.top_elo_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_depth_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
@@ -455,6 +462,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=self.allow_sharp_gambit_var.get(),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -477,6 +485,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=self.allow_sharp_gambit_var.get(),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=bundle_path,
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -503,6 +512,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=self.allow_sharp_gambit_var.get(),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=catalog_root,
@@ -651,6 +661,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=self.allow_sharp_gambit_var.get(),
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -741,6 +752,7 @@ class OpeningTrainerGUI:
         self.top_track_var.set(track)
         status = self.session.smart_profile_status()
         self.smart_mode_var.set(status.active)
+        self.allow_sharp_gambit_var.set(self.session.settings.allow_sharp_gambit_lines)
         bands = sorted(
             {entry.target_rating_band for entry in (self.catalog.entries if self.catalog else ()) if entry.time_control_id == self.top_time_control_var.get().strip()},
             key=sort_key_rating_band,
@@ -1054,6 +1066,8 @@ class OpeningTrainerGUI:
                     selected_time_control_id=settings.selected_time_control_id,
                     side_panel_visible=settings.side_panel_visible,
                     move_list_visible=settings.move_list_visible,
+                    dark_mode_enabled=settings.dark_mode_enabled,
+                    allow_sharp_gambit_lines=settings.allow_sharp_gambit_lines,
                     training_panel_visible_columns=settings.training_panel_visible_columns,
                     last_bundle_path=settings.last_bundle_path,
                     last_corpus_catalog_root=settings.last_corpus_catalog_root,
@@ -1450,6 +1464,7 @@ class OpeningTrainerGUI:
                     side_panel_visible=self.panel_visible,
                     move_list_visible=self.move_list_visible,
                     dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                    allow_sharp_gambit_lines=self.allow_sharp_gambit_var.get(),
                     training_panel_visible_columns=selected_columns,
                     last_bundle_path=self._remembered_bundle_path(),
                     last_corpus_catalog_root=self._catalog_root_setting(),

@@ -38,6 +38,7 @@ def _build_runtime_overrides(args: argparse.Namespace) -> RuntimeOverrides:
         runtime_config_path=args.runtime_config,
         engine_depth=args.engine_depth,
         engine_time_limit_seconds=args.engine_time_limit,
+        practical_risk_reconciled_path=args.practical_risk_reconciled_path,
         strict_assets=True if args.strict_assets else None,
     )
 
@@ -189,6 +190,7 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("--book-path", help="Override the Polyglot opening-book path.")
     parser.add_argument("--engine-depth", type=int, help="Override engine search depth.")
     parser.add_argument("--engine-time-limit", type=float, help="Override engine analysis time limit in seconds.")
+    parser.add_argument("--practical-risk-reconciled-path", help="Override Stage D practical risk reconciled SQLite path.")
     parser.add_argument("--strict-assets", action="store_true", help="Exit if configured runtime assets are missing.")
     parser.add_argument("--show-runtime", action="store_true", help="Print resolved runtime asset diagnostics and exit.")
     parser.add_argument(
@@ -268,6 +270,10 @@ def run(argv: list[str] | None = None) -> None:
         log_line(runtime_context.corpus.detail, tag="startup")
         log_line(runtime_context.book.detail, tag="startup")
         log_line(runtime_context.engine.detail, tag="startup")
+        log_line(
+            f"Practical risk reconciled path: {runtime_context.config.practical_risk_reconciled_path or 'auto/default'}",
+            tag="startup",
+        )
         return
     if args.probe_gui_bootstrap:
         _probe_gui_bootstrap(runtime_context)

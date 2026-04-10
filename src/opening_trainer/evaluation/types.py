@@ -38,6 +38,9 @@ class ReasonCode(str, Enum):
     ENGINE_FAIL = "engine_fail"
     ENGINE_UNAVAILABLE = "engine_unavailable"
     MISSED_WIN = "missed_win"
+    RECONCILED_ADMISSION = "reconciled_admission"
+    RECONCILED_FAIL = "reconciled_fail"
+    SHARP_TOGGLE_OVERRIDE = "sharp_toggle_override"
 
 
 @dataclass(frozen=True)

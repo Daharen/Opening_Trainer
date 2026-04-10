@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import chess
+from .practical_risk_reconciled import render_failure_explanation
 
 from .evaluation import (
     AuthoritySource,
@@ -28,6 +29,8 @@ class MoveEvaluator:
         self.book_authority = book_authority or OpeningBookAuthority()
         self.engine_authority = engine_authority or EngineAuthority(self.config)
         self.overlay_classifier = overlay_classifier or OverlayClassifier(self.config)
+        self.practical_risk_reconciled = None
+        self.practical_risk_context: dict[str, object] = {}
 
     def evaluate(
         self,
@@ -55,6 +58,61 @@ class MoveEvaluator:
         book_result = self.book_authority.evaluate(board_before_move, played_move)
         engine_result = self.engine_authority.evaluate(board_before_move, played_move)
         accepted, canonical_judgment, authority_source = resolve_canonical_judgment(book_result, engine_result)
+        reconciled_metadata: dict[str, object] = {}
+        reconciled = self.practical_risk_reconciled
+        context = self.practical_risk_context if isinstance(self.practical_risk_context, dict) else {}
+        if reconciled is not None and getattr(reconciled, "active", False):
+            position_key = context.get("position_key")
+            requested_band_id = context.get("requested_band_id")
+            good_mode = bool(context.get("good_moves_acceptable", self.config.good_moves_acceptable))
+            mode_id = "good_inclusive" if good_mode else "good_exclusive"
+            allow_sharp = bool(context.get("allow_sharp_gambit_lines", False))
+            if isinstance(position_key, str) and position_key.strip():
+                band_resolution = reconciled.resolve_band_id(str(requested_band_id) if requested_band_id else None)
+                admission = reconciled.get_move_admission(position_key, band_resolution.resolved_band_id, move_uci)
+                if admission is not None:
+                    admitted = bool(admission.get("admitted_good_inclusive")) if mode_id == "good_inclusive" else bool(admission.get("admitted_good_exclusive"))
+                    reconciled_metadata = {
+                        "requested_band_id": band_resolution.requested_band_id,
+                        "resolved_band_id": band_resolution.resolved_band_id,
+                        "band_resolution_provenance": band_resolution.provenance,
+                        "admission_origin": admission.get("admission_origin"),
+                        "engine_quality_class": admission.get("engine_quality_class"),
+                        "local_reason": admission.get("local_reason"),
+                        "reconciled_local_distinction": admission.get("reconciled_local_distinction"),
+                        "mode_id": mode_id,
+                    }
+                    if admitted:
+                        accepted = True
+                        if canonical_judgment != CanonicalJudgment.BOOK:
+                            canonical_judgment = CanonicalJudgment.BETTER
+                            authority_source = AuthoritySource.ENGINE
+                    else:
+                        failure = reconciled.get_failure_explanation(position_key, band_resolution.resolved_band_id, move_uci, mode_id)
+                        reconciled_metadata["failure_explanation"] = failure
+                        sharp_override = (
+                            allow_sharp
+                            and isinstance(failure, dict)
+                            and str(failure.get("reason_code")) == "would_pass_if_sharp_toggle_enabled"
+                            and str(failure.get("toggle_state_required")) == "sharp_on"
+                        )
+                        if sharp_override:
+                            accepted = True
+                            if canonical_judgment != CanonicalJudgment.BOOK:
+                                canonical_judgment = CanonicalJudgment.BETTER
+                                authority_source = AuthoritySource.ENGINE
+                            reconciled_metadata["override"] = "sharp_toggle_override_from_failure_explanation"
+                        else:
+                            accepted = False
+                            canonical_judgment = CanonicalJudgment.FAIL
+                            if failure is not None:
+                                reconciled_metadata["failure_text"] = render_failure_explanation(
+                                    failure,
+                                    requested_band_id=band_resolution.requested_band_id,
+                                    resolved_band_id=band_resolution.resolved_band_id,
+                                )
+                else:
+                    reconciled_metadata = {"provenance": "reconciled_artifact_no_row"}
 
         if canonical_judgment == CanonicalJudgment.AUTHORITY_UNAVAILABLE:
             overlay_label = OverlayLabel.AUTHORITY_UNAVAILABLE
@@ -70,6 +128,15 @@ class MoveEvaluator:
         if canonical_judgment == CanonicalJudgment.BOOK:
             reason_code = book_result.reason_code
             reason_text = book_result.reason_text
+        elif reconciled_metadata.get("override"):
+            reason_code = ReasonCode.SHARP_TOGGLE_OVERRIDE
+            reason_text = "Accepted via sharp/gambit toggle override from reconciled artifact."
+        elif canonical_judgment == CanonicalJudgment.FAIL and reconciled_metadata.get("failure_text"):
+            reason_code = ReasonCode.RECONCILED_FAIL
+            reason_text = str(reconciled_metadata["failure_text"])
+        elif accepted and reconciled_metadata:
+            reason_code = ReasonCode.RECONCILED_ADMISSION
+            reason_text = "Accepted by reconciled practical-risk admissions."
         elif engine_result.available:
             reason_code = overlay_reason_code
             reason_text = overlay_reason_text
@@ -104,6 +171,7 @@ class MoveEvaluator:
                 "mate_after_move_for_side_to_move": engine_result.mate_after_move_for_side_to_move,
                 "principal_variation": engine_result.principal_variation,
             },
+            "reconciled": reconciled_metadata,
         }
 
         return EvaluationResult(
