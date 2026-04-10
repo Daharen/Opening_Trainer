@@ -16,6 +16,7 @@ from .evaluation import (
     resolve_canonical_judgment,
 )
 from .practical_risk_reconciled import PracticalRiskReconciledService, ReconciledFailureRenderer
+from .session_logging import log_line
 
 
 class MoveEvaluator:
@@ -97,7 +98,7 @@ class MoveEvaluator:
             "artifact_active": bool(self.reconciled_service and self.reconciled_service.active),
             "decision_source": "legacy_engine_book",
         }
-        if canonical_judgment != CanonicalJudgment.BOOK:
+        if canonical_judgment == CanonicalJudgment.FAIL:
             accepted, canonical_judgment, reason_text, reconciled_meta = self._apply_reconciled_rules(
                 accepted=accepted,
                 canonical_judgment=canonical_judgment,
@@ -171,18 +172,40 @@ class MoveEvaluator:
         }
         if not service or not service.active:
             metadata["activation_error"] = getattr(service, "activation_error", "artifact_not_configured") if service else "artifact_not_configured"
+            log_line(
+                "PRACTICAL_RISK_FAIL_FALLBACK_TO_LEGACY "
+                f"position_key={position_key} move_uci={move_uci} reason={metadata['activation_error']}",
+                tag="evaluation",
+            )
             return accepted, canonical_judgment, reason_text, metadata
 
         resolution = service.resolve_band_id(requested_band_id)
         metadata["resolved_band_id"] = resolution.resolved_band_id
         metadata["band_resolution_provenance"] = resolution.provenance
+        log_line(
+            "PRACTICAL_RISK_FAIL_INTERCEPT_BEGIN "
+            f"position_key={position_key} move_uci={move_uci} requested_band={requested_band_id or 'unset'} "
+            f"resolved_band={resolution.resolved_band_id or 'unset'} mode_id={mode_id} "
+            f"sharp_toggle={'on' if allow_sharp_gambit_lines else 'off'}",
+            tag="evaluation",
+        )
         if not resolution.resolved_band_id:
             metadata["decision_source"] = "reconciled_missing_band"
+            log_line(
+                "PRACTICAL_RISK_FAIL_FALLBACK_TO_LEGACY "
+                f"position_key={position_key} move_uci={move_uci} reason=missing_resolved_band",
+                tag="evaluation",
+            )
             return accepted, canonical_judgment, reason_text, metadata
 
         admission = service.get_move_admission(position_key, resolution.resolved_band_id, move_uci)
         if admission is None:
             metadata["decision_source"] = "reconciled_artifact_no_row"
+            log_line(
+                "PRACTICAL_RISK_FAIL_FALLBACK_TO_LEGACY "
+                f"position_key={position_key} move_uci={move_uci} reason=no_admission_row",
+                tag="evaluation",
+            )
             return accepted, canonical_judgment, reason_text, metadata
 
         admitted = bool(admission.get(f"admitted_{mode_id}"))
@@ -192,11 +215,23 @@ class MoveEvaluator:
 
         if admitted:
             metadata["decision_source"] = "reconciled_admission"
+            log_line(
+                "PRACTICAL_RISK_FAIL_RESCUED "
+                f"position_key={position_key} move_uci={move_uci} reason=admitted "
+                f"origin={admission.get('admission_origin') or 'unknown'} "
+                f"resolved_band={resolution.resolved_band_id} mode_id={mode_id}",
+                tag="evaluation",
+            )
             return True, CanonicalJudgment.BETTER, reason_text, metadata
 
         explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
         if explanation is None:
             metadata["decision_source"] = "reconciled_reject_no_explanation"
+            log_line(
+                "PRACTICAL_RISK_FAIL_FALLBACK_TO_LEGACY "
+                f"position_key={position_key} move_uci={move_uci} reason=missing_failure_explanation",
+                tag="evaluation",
+            )
             return False, CanonicalJudgment.FAIL, reason_text, metadata
 
         metadata["failure_explanation"] = explanation
@@ -209,6 +244,13 @@ class MoveEvaluator:
         metadata["would_pass_with_sharp_enabled"] = reason_code == "would_pass_if_sharp_toggle_enabled"
         if sharp_override_allowed:
             metadata["decision_source"] = "sharp_toggle_override_from_failure_explanation"
+            log_line(
+                "PRACTICAL_RISK_FAIL_RESCUED "
+                f"position_key={position_key} move_uci={move_uci} reason=sharp_toggle_override "
+                f"origin={admission.get('admission_origin') or 'unknown'} "
+                f"resolved_band={resolution.resolved_band_id} mode_id={mode_id}",
+                tag="evaluation",
+            )
             return True, CanonicalJudgment.BETTER, "Accepted via sharp/gambit override.", metadata
 
         rendered = ReconciledFailureRenderer.render(
@@ -217,4 +259,13 @@ class MoveEvaluator:
             resolved_band_id=resolution.resolved_band_id,
         )
         metadata["decision_source"] = "reconciled_failure_explanation"
+        log_line(
+            "PRACTICAL_RISK_FAIL_CONFIRMED "
+            f"position_key={position_key} move_uci={move_uci} reason_code={reason_code or 'unknown'} "
+            f"template_id={explanation.get('template_id') or 'unknown'} "
+            f"max_practical_band={explanation.get('max_practical_band_id') or 'unknown'} "
+            f"first_failure_band={explanation.get('first_failure_band_id') or 'unknown'} "
+            f"toggle_state_required={explanation.get('toggle_state_required') or 'none'}",
+            tag="evaluation",
+        )
         return False, CanonicalJudgment.FAIL, rendered, metadata
