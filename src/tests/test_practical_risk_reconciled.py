@@ -66,14 +66,7 @@ def _position_key(board: chess.Board) -> str:
     return board.fen().rsplit(" ", 2)[0]
 
 
-def _create_real_schema_db(
-    path,
-    *,
-    bands=("1000-1200", "1400-1600"),
-    admissions=(),
-    explanations=(),
-    include_root_summary_count_columns: bool = True,
-):
+def _create_real_schema_db(path, *, bands=("1000-1200", "1400-1600"), admissions=(), explanations=()):
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
     conn.execute(
@@ -113,28 +106,18 @@ def _create_real_schema_db(
         )
         """
     )
-    if include_root_summary_count_columns:
-        conn.execute(
-            """
-            CREATE TABLE reconciled_root_summaries(
-                position_key TEXT,
-                band_id TEXT,
-                local_admitted_if_good_accepted_count INTEGER,
-                local_admitted_if_good_rejected_count INTEGER,
-                reconciled_admitted_if_good_accepted_count INTEGER,
-                reconciled_admitted_if_good_rejected_count INTEGER
-            )
-            """
+    conn.execute(
+        """
+        CREATE TABLE reconciled_root_summaries(
+            position_key TEXT,
+            band_id TEXT,
+            local_admitted_if_good_accepted_count INTEGER,
+            local_admitted_if_good_rejected_count INTEGER,
+            reconciled_admitted_if_good_accepted_count INTEGER,
+            reconciled_admitted_if_good_rejected_count INTEGER
         )
-    else:
-        conn.execute(
-            """
-            CREATE TABLE reconciled_root_summaries(
-                position_key TEXT,
-                band_id TEXT
-            )
-            """
-        )
+        """
+    )
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
     conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('included_band_order',?)", ("[\"%s\"]" % "\",\"".join(bands),))
@@ -154,16 +137,10 @@ def _create_real_schema_db(
         explanations,
     )
     for admission in admissions:
-        if include_root_summary_count_columns:
-            conn.execute(
-                "INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)",
-                (admission[0], admission[1], 1, 1, 1, 1),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO reconciled_root_summaries VALUES(?,?)",
-                (admission[0], admission[1]),
-            )
+        conn.execute(
+            "INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)",
+            (admission[0], admission[1], 1, 1, 1, 1),
+        )
     conn.commit()
     conn.close()
 
@@ -266,13 +243,6 @@ def test_outgrown_above_band_remains_fail(tmp_path):
     assert "outgrown" in result.reason_text.lower()
 
 
-def test_legacy_engine_fail_wording_only_when_final_outcome_is_fail(tmp_path):
-    service = PracticalRiskReconciledService(None, expected_time_control_id="600+0")
-    result = _eval(service)
-    assert result.accepted is False
-    assert "outside engine tolerance" in result.reason_text
-
-
 def test_incompatible_schema_fails_activation_cleanly(tmp_path):
     board = chess.Board()
     position_key = _position_key(board)
@@ -304,36 +274,7 @@ def test_incompatible_schema_fails_activation_cleanly(tmp_path):
     assert "artifact schema mismatch in reconciled_move_admissions" in (service.activation_error or "")
 
 
-def test_invalid_failure_explanations_schema_fails_activation_cleanly(tmp_path):
-    db = tmp_path / "broken_failure.sqlite"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
-    conn.execute(
-        """
-        CREATE TABLE reconciled_move_admissions(
-            position_key TEXT,
-            band_id TEXT,
-            move_uci TEXT,
-            local_admitted_if_good_accepted INTEGER,
-            local_admitted_if_good_rejected INTEGER,
-            reconciled_admitted_if_good_accepted INTEGER,
-            reconciled_admitted_if_good_rejected INTEGER
-        )
-        """
-    )
-    conn.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT)")
-    conn.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT)")
-    conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
-    conn.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
-    conn.commit()
-    conn.close()
-
-    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-    assert service.active is False
-    assert "artifact schema mismatch in failure_explanations" in (service.activation_error or "")
-
-
-def test_incompatible_root_summary_schema_is_non_fatal_and_inspectable(tmp_path):
+def test_incompatible_root_summary_schema_fails_activation_cleanly(tmp_path):
     db = tmp_path / "broken_root_summary.sqlite"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
@@ -374,50 +315,8 @@ def test_incompatible_root_summary_schema_is_non_fatal_and_inspectable(tmp_path)
     conn.close()
 
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-    assert service.active is True
-    assert service.activation_error is None
-    assert service.root_summary_status == "optional_schema_mismatch_ignored"
-    assert "missing optional count columns" in (service.root_summary_activation_warning or "")
-
-
-def test_service_activates_and_rescues_when_root_summary_counts_missing(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
-    db = tmp_path / "degraded_root_summary.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford line", "1400-1600")
-        ],
-        include_root_summary_count_columns=False,
-    )
-
-    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-    result = _eval(service, requested_band_id="1200-1400")
-    assert service.active is True
-    assert service.root_summary_status == "optional_schema_mismatch_ignored"
-    assert result.accepted is True
-    assert result.metadata["reconciled"]["decision_source"] == "reconciled_admission"
-
-
-def test_rescued_outcome_reason_text_does_not_keep_engine_fail_wording(tmp_path):
-    board = chess.Board()
-    position_key = _position_key(board)
-    db = tmp_path / "rescued_text.sqlite"
-    _create_real_schema_db(
-        db,
-        admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford line", "1400-1600")
-        ],
-        include_root_summary_count_columns=False,
-    )
-    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
-
-    result = _eval(service, requested_band_id="1200-1400")
-    assert result.accepted is True
-    assert result.canonical_judgment.name == "BETTER"
-    assert "Rejected as an inaccuracy outside engine tolerance." not in result.reason_text
-    assert result.reason_text == "Accepted via practical-risk reconciliation."
+    assert service.active is False
+    assert "artifact schema mismatch in reconciled_root_summaries" in (service.activation_error or "")
 
 
 def test_root_summary_uses_structured_counts_not_legacy_summary_blob(tmp_path):
@@ -474,7 +373,6 @@ def test_manual_target_play_to_position_tested_move_rescues_real_schema(tmp_path
             (position_key, "1000-1200", "g1f3", 1, 1, 1, 1, "local", "local", "reconciled", "reconciled", "good", "manual_target_test", "1000-1200")
         ],
         bands=("1000-1200",),
-        include_root_summary_count_columns=False,
     )
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
 

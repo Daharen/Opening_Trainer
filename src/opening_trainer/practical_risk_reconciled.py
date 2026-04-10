@@ -72,8 +72,6 @@ class PracticalRiskReconciledService:
         self._admissions: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._failure_explanations: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         self._root_summaries: dict[tuple[str, str], dict[str, Any]] = {}
-        self.root_summary_status: str = "not_loaded"
-        self.root_summary_activation_warning: str | None = None
         self._connect_and_load()
 
     def _connect_and_load(self) -> None:
@@ -145,11 +143,11 @@ class PracticalRiskReconciledService:
             return
 
         root_summary_columns = self._table_columns(conn, "reconciled_root_summaries")
-        missing_root_summary_identity = sorted({"position_key", "band_id"} - root_summary_columns)
-        if missing_root_summary_identity:
+        missing_root_summary = sorted(_REQUIRED_ROOT_SUMMARY_COLUMNS - root_summary_columns)
+        if missing_root_summary:
             self.activation_error = (
                 "artifact schema mismatch in reconciled_root_summaries: "
-                f"missing columns: {', '.join(missing_root_summary_identity)}"
+                f"missing columns: {', '.join(missing_root_summary)}"
             )
 
     @staticmethod
@@ -249,14 +247,6 @@ class PracticalRiskReconciledService:
 
     def _load_root_summaries(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, "reconciled_root_summaries")
-        missing_count_columns = sorted(set(_ROOT_SUMMARY_COUNT_COLUMNS) - columns)
-        if missing_count_columns:
-            self.root_summary_status = "optional_schema_mismatch_ignored"
-            self.root_summary_activation_warning = (
-                "reconciled_root_summaries missing optional count columns: "
-                f"{', '.join(missing_count_columns)}"
-            )
-            return
         optional_columns = sorted(column for column in columns if column not in _REQUIRED_ROOT_SUMMARY_COLUMNS)
         selected_columns = [
             "position_key",
@@ -286,7 +276,6 @@ class PracticalRiskReconciledService:
                 **summary_counts,
                 **optional_summary_fields,
             }
-        self.root_summary_status = "loaded"
 
     def resolve_band_id(self, requested_band_id: str | None) -> ReconciledBandResolution:
         if not requested_band_id:
