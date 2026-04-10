@@ -1717,6 +1717,40 @@ def test_top_strip_contract_change_surfaces_missing_bundle_status():
     assert "No discovered bundle matches 600+0 / 1400-1600" in gui.recent_var.get()
 
 
+def test_manual_contract_change_persists_sharp_toggle_outside_smart_mode():
+    gui = _build_control_strip_gui()
+    gui.smart_mode_var = FakeBoolVar(False)
+    gui.allow_sharp_gambit_var = FakeBoolVar(True)
+    gui.top_time_control_var = FakeStringVar("600+0")
+    gui.manual_elo_var = FakeStringVar("1200-1400")
+    gui.catalog = type("Catalog", (), {"entries": ()})()
+    manual_entry = type("Entry", (), {"bundle_dir": "/tmp/manual_600_0_1200_1400"})()
+    gui.catalog.grouped = lambda: {"Rapid": {"600+0": {"1200-1400": (manual_entry,)}}}
+    gui.catalog_grouped = gui.catalog.grouped()
+    captured = {}
+
+    class _Session:
+        settings = TrainerSettings(training_mode="manual", selected_time_control_id="600+0", smart_profile_enabled=False, allow_sharp_gambit_lines=False)
+
+        def update_settings(self, settings):
+            captured["updated"] = settings
+            self.settings = settings
+            return settings
+
+        def smart_profile_status(self):
+            return type("Status", (), {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None})()
+
+        def max_supported_training_depth(self):
+            return 6
+
+    gui.session = _Session()
+    gui._load_selected_bundle = lambda _path: None
+    gui._remembered_bundle_path = lambda: "/tmp/old_bundle"
+
+    gui._apply_top_contract_change(reason="manual contract changed")
+
+    assert captured["updated"].allow_sharp_gambit_lines is True
+
 
 def test_load_selected_bundle_invokes_loading_state(monkeypatch, tmp_path):
     gui = _build_gui(tmp_path)

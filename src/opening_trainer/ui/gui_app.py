@@ -627,7 +627,12 @@ class OpeningTrainerGUI:
 
     def _on_manual_contract_changed(self, _event=None) -> None:
         current_fallback_mode = self._selected_opponent_fallback_mode()
-        if self.smart_mode_var.get() and current_fallback_mode == self.session.settings.opponent_fallback_mode:
+        selected_sharp_toggle = bool(self.allow_sharp_gambit_var.get()) if hasattr(self, "allow_sharp_gambit_var") else self.session.settings.allow_sharp_gambit_lines
+        if (
+            self.smart_mode_var.get()
+            and current_fallback_mode == self.session.settings.opponent_fallback_mode
+            and selected_sharp_toggle == self.session.settings.allow_sharp_gambit_lines
+        ):
             return
         self._apply_top_contract_change(reason='manual contract changed')
 
@@ -656,7 +661,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
-                allow_sharp_gambit_lines=settings.allow_sharp_gambit_lines,
+                allow_sharp_gambit_lines=bool(self.allow_sharp_gambit_var.get()) if hasattr(self, "allow_sharp_gambit_var") else settings.allow_sharp_gambit_lines,
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),

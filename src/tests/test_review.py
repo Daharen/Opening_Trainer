@@ -9,6 +9,7 @@ import pytest
 from opening_trainer.bundle_corpus import normalize_builder_position_key
 from opening_trainer.evaluation import BookAuthorityResult, EngineAuthorityResult, ReasonCode
 from opening_trainer.evaluator import MoveEvaluator
+from opening_trainer.practical_risk_reconciled import PracticalRiskReconciledService
 from opening_trainer.review.manual_target import validate_manual_target
 from opening_trainer.review.models import ReviewItem, ReviewPathMove
 from opening_trainer.review.profile_service import ProfileService
@@ -71,6 +72,26 @@ def _write_predecessor_db(path: Path, rows: list[tuple[str, str | None, str | No
             "INSERT INTO predecessor_master(position_key, parent_position_key, incoming_move_uci) VALUES (?, ?, ?)",
             rows,
         )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _write_reconciled_db_for_position(path: Path, *, position_key: str, move_uci: str, band_id: str = "1000-1200") -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
+        connection.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, admitted_good_inclusive INTEGER, admitted_good_exclusive INTEGER, admission_origin TEXT, engine_quality_class TEXT, local_reason TEXT)")
+        connection.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT, reason_code TEXT, template_id TEXT, family_label TEXT, max_practical_band_id TEXT, first_failure_band_id TEXT, toggle_state_required TEXT, rendered_preview TEXT)")
+        connection.execute("CREATE TABLE reconciled_root_summaries(position_key TEXT, band_id TEXT, summary_json TEXT)")
+        connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
+        connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
+        connection.execute(f"INSERT INTO artifact_metadata(key,value) VALUES('included_band_order','[\"{band_id}\"]')")
+        connection.execute(
+            "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,'local','good','manual_target_test')",
+            (position_key, band_id, move_uci),
+        )
+        connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,'{}')", (position_key, band_id))
         connection.commit()
     finally:
         connection.close()
@@ -720,3 +741,54 @@ def test_manual_target_route_construction_failure_inherits_reach_policy(tmp_path
     descendant = created[0]
     assert descendant.manual_reach_policy_inherited is True
     assert descendant.manual_parent_review_item_id == item.review_item_id
+
+
+def test_manual_target_play_to_position_tested_move_uses_reconciled_fail_intercept(tmp_path):
+    session = _session(tmp_path)
+    reconciled_db = tmp_path / "manual_target_reconciled.sqlite"
+    target_board = chess.Board()
+    target_board.push_uci("e2e4")
+    target_board.push_uci("e7e5")
+    _write_reconciled_db_for_position(
+        reconciled_db,
+        position_key=normalize_builder_position_key(chess.Board()),
+        move_uci="g1f3",
+    )
+    reconciled_service = PracticalRiskReconciledService(reconciled_db, expected_time_control_id="600+0")
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(BOOK_MISS),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(
+                False,
+                True,
+                ReasonCode.ENGINE_FAIL,
+                'Rejected by engine.',
+                best_move_uci='d2d4',
+                best_move_san='d4',
+                played_move_uci='g1f3',
+                played_move_san='Nf3',
+                cp_loss=170,
+                metadata={'engine_available': True},
+            )
+        ),
+        reconciled_service=reconciled_service,
+    )
+    item = session.add_manual_target(
+        target_fen=target_board.fen(),
+        predecessor_line_uci='e2e4 e7e5',
+        urgency_tier='ordinary_review',
+        allow_below_threshold_reach=False,
+        manual_presentation_mode='play_to_position',
+    )
+    session.current_routing = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
+    session.current_review_item_id = item.review_item_id
+    session.active_review_plan = session.current_routing.review_plan
+    session.board.reset()
+    session.state = session.state.PLAYER_TURN
+    session.player_color = chess.WHITE
+    session._timing_contract_metadata = lambda: ("600+0", "1000-1200")
+
+    session.submit_user_move_uci('g1f3')
+
+    assert session.last_evaluation.accepted is True
+    assert session.last_evaluation.metadata["reconciled"]["decision_source"] == "reconciled_admission"

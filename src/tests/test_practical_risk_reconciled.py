@@ -34,6 +34,34 @@ class StubEngineAuthority:
         )
 
 
+class StubBookPassAuthority:
+    def evaluate(self, board_before_move, played_move):
+        return BookAuthorityResult(
+            accepted=True,
+            available=True,
+            reason_code=ReasonCode.BOOK_HIT,
+            reason_text="Accepted via book membership.",
+            candidate_move_uci=played_move.uci(),
+            metadata={"book_available": True},
+        )
+
+
+class StubEnginePassAuthority:
+    def evaluate(self, board_before_move, played_move):
+        return EngineAuthorityResult(
+            accepted=True,
+            available=True,
+            reason_code=ReasonCode.ENGINE_PASS,
+            reason_text="Accepted by engine",
+            best_move_uci=played_move.uci(),
+            best_move_san=board_before_move.san(played_move),
+            played_move_uci=played_move.uci(),
+            played_move_san=board_before_move.san(played_move),
+            cp_loss=0,
+            metadata={"engine_available": True},
+        )
+
+
 def _make_db(path, *, bands=("1000-1200", "1400-1600"), reason_code="would_pass_if_sharp_toggle_enabled"):
     board = chess.Board()
     position_key = board.fen().rsplit(" ", 2)[0]
@@ -139,3 +167,29 @@ def test_failure_renderer_stable_without_rendered_preview():
     )
     assert "Good moves are enabled" in rendered
     assert "requested band" in rendered
+
+
+def test_reconciled_not_consulted_after_book_or_engine_pass(tmp_path):
+    db = tmp_path / "reconciled.sqlite"
+    _make_db(db)
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+    board = chess.Board()
+    move = chess.Move.from_uci("e2e4")
+
+    book_pass = MoveEvaluator(
+        book_authority=StubBookPassAuthority(),
+        engine_authority=StubEngineAuthority(),
+        reconciled_service=service,
+    ).evaluate(board, move, 1, requested_band_id="1200-1400", allow_sharp_gambit_lines=True)
+    assert book_pass.accepted is True
+    assert book_pass.canonical_judgment.value == "Book"
+    assert book_pass.metadata["reconciled"]["decision_source"] == "legacy_engine_book"
+
+    engine_pass = MoveEvaluator(
+        book_authority=StubBookAuthority(),
+        engine_authority=StubEnginePassAuthority(),
+        reconciled_service=service,
+    ).evaluate(board, move, 1, requested_band_id="1200-1400", allow_sharp_gambit_lines=True)
+    assert engine_pass.accepted is True
+    assert engine_pass.canonical_judgment.value == "Better"
+    assert engine_pass.metadata["reconciled"]["decision_source"] == "legacy_engine_book"
