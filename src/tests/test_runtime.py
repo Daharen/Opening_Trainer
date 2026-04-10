@@ -178,6 +178,28 @@ def test_engine_path_environment_remains_literal_when_probed(tmp_path, monkeypat
     assert f"configured value={engine_path}" in runtime.engine.detail
 
 
+def test_practical_risk_reconciled_path_resolution_order(tmp_path, monkeypatch):
+    runtime_config = tmp_path / "runtime.local.json"
+    runtime_config.write_text(json.dumps({"practical_risk_reconciled_path": "/from/runtime/local.sqlite"}), encoding="utf-8")
+    monkeypatch.setenv("OPENING_TRAINER_PRACTICAL_RISK_RECONCILED_PATH", "/from/env.sqlite")
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_config_path=str(runtime_config)))
+
+    assert runtime.config.practical_risk_reconciled_path == "/from/runtime/local.sqlite"
+
+
+def test_practical_risk_reconciled_path_env_then_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENING_TRAINER_PRACTICAL_RISK_RECONCILED_PATH", "/from/env.sqlite")
+    runtime = load_runtime_config(RuntimeOverrides(runtime_config_path=str(tmp_path / "missing.json")))
+    assert runtime.config.practical_risk_reconciled_path == "/from/env.sqlite"
+
+    monkeypatch.delenv("OPENING_TRAINER_PRACTICAL_RISK_RECONCILED_PATH", raising=False)
+    runtime_default = load_runtime_config(RuntimeOverrides(runtime_config_path=str(tmp_path / "missing.json")))
+    assert str(runtime_default.config.practical_risk_reconciled_path).endswith(
+        "practical_risk/reconciled/default/practical_risk_reconciled.sqlite"
+    )
+
+
 def test_invalid_engine_path_returns_authority_unavailable_not_fail(tmp_path):
     overrides = RuntimeOverrides(
         engine_executable_path="/definitely/missing/stockfish",
