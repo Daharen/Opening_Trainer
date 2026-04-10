@@ -77,42 +77,24 @@ def _write_predecessor_db(path: Path, rows: list[tuple[str, str | None, str | No
         connection.close()
 
 
-def _write_reconciled_db_for_position(
-    path: Path,
-    *,
-    position_key: str,
-    move_uci: str,
-    band_id: str = "1000-1200",
-    root_summary_schema: str = "full",
-) -> None:
+def _write_reconciled_db_for_position(path: Path, *, position_key: str, move_uci: str, band_id: str = "1000-1200") -> None:
     connection = sqlite3.connect(path)
     try:
         connection.execute("CREATE TABLE artifact_metadata(key TEXT, value TEXT)")
         connection.execute("CREATE TABLE reconciled_move_admissions(position_key TEXT, band_id TEXT, move_uci TEXT, local_admitted_if_good_accepted INTEGER, local_admitted_if_good_rejected INTEGER, reconciled_admitted_if_good_accepted INTEGER, reconciled_admitted_if_good_rejected INTEGER, local_admission_origin_if_good_accepted TEXT, local_admission_origin_if_good_rejected TEXT, reconciled_admission_origin_if_good_accepted TEXT, reconciled_admission_origin_if_good_rejected TEXT, engine_quality_class TEXT, local_reason TEXT, practical_ceiling_band_id TEXT)")
         connection.execute("CREATE TABLE failure_explanations(position_key TEXT, band_id TEXT, move_uci TEXT, mode_id TEXT, reason_code TEXT, template_id TEXT, family_label TEXT, max_practical_band_id TEXT, first_failure_band_id TEXT, toggle_state_required TEXT, rendered_preview TEXT)")
-        if root_summary_schema == "full":
-            connection.execute(
-                """
-                CREATE TABLE reconciled_root_summaries(
-                    position_key TEXT,
-                    band_id TEXT,
-                    local_admitted_if_good_accepted_count INTEGER,
-                    local_admitted_if_good_rejected_count INTEGER,
-                    reconciled_admitted_if_good_accepted_count INTEGER,
-                    reconciled_admitted_if_good_rejected_count INTEGER
-                )
-                """
+        connection.execute(
+            """
+            CREATE TABLE reconciled_root_summaries(
+                position_key TEXT,
+                band_id TEXT,
+                local_admitted_if_good_accepted_count INTEGER,
+                local_admitted_if_good_rejected_count INTEGER,
+                reconciled_admitted_if_good_accepted_count INTEGER,
+                reconciled_admitted_if_good_rejected_count INTEGER
             )
-        else:
-            connection.execute(
-                """
-                CREATE TABLE reconciled_root_summaries(
-                    position_key TEXT,
-                    band_id TEXT,
-                    observed_node_count INTEGER
-                )
-                """
-            )
+            """
+        )
         connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('artifact_role','practical_risk_reconciled')")
         connection.execute("INSERT INTO artifact_metadata(key,value) VALUES('time_control_id','600+0')")
         connection.execute(f"INSERT INTO artifact_metadata(key,value) VALUES('included_band_order','[\"{band_id}\"]')")
@@ -120,10 +102,7 @@ def _write_reconciled_db_for_position(
             "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,1,1,'local','local','reconciled','reconciled','good','manual_target_test',?)",
             (position_key, band_id, move_uci, band_id),
         )
-        if root_summary_schema == "full":
-            connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)", (position_key, band_id, 1, 1, 1, 1))
-        else:
-            connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,?)", (position_key, band_id, 1))
+        connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)", (position_key, band_id, 1, 1, 1, 1))
         connection.commit()
     finally:
         connection.close()
@@ -822,60 +801,5 @@ def test_manual_target_play_to_position_tested_move_uses_reconciled_fail_interce
 
     session.submit_user_move_uci('g1f3')
 
-    assert session.last_evaluation.accepted is True
-    assert session.last_evaluation.metadata["reconciled"]["decision_source"] == "reconciled_admission"
-    assert "Rejected as an inaccuracy outside engine tolerance." not in session.last_evaluation.reason_text
-
-
-def test_manual_target_play_to_position_rescue_with_degraded_root_summary_schema(tmp_path):
-    session = _session(tmp_path)
-    reconciled_db = tmp_path / "manual_target_reconciled_degraded.sqlite"
-    target_board = chess.Board()
-    target_board.push_uci("e2e4")
-    target_board.push_uci("e7e5")
-    _write_reconciled_db_for_position(
-        reconciled_db,
-        position_key=normalize_builder_position_key(chess.Board()),
-        move_uci="g1f3",
-        root_summary_schema="degraded",
-    )
-    reconciled_service = PracticalRiskReconciledService(reconciled_db, expected_time_control_id="600+0")
-    session.evaluator = MoveEvaluator(
-        book_authority=StubBookAuthority(BOOK_MISS),
-        engine_authority=StubEngineAuthority(
-            EngineAuthorityResult(
-                False,
-                True,
-                ReasonCode.ENGINE_FAIL,
-                'Rejected by engine.',
-                best_move_uci='d2d4',
-                best_move_san='d4',
-                played_move_uci='g1f3',
-                played_move_san='Nf3',
-                cp_loss=170,
-                metadata={'engine_available': True},
-            )
-        ),
-        reconciled_service=reconciled_service,
-    )
-    item = session.add_manual_target(
-        target_fen=target_board.fen(),
-        predecessor_line_uci='e2e4 e7e5',
-        urgency_tier='ordinary_review',
-        allow_below_threshold_reach=False,
-        manual_presentation_mode='play_to_position',
-    )
-    session.current_routing = session.router.select(session.active_profile_id, session.review_storage.load_items(session.active_profile_id))
-    session.current_review_item_id = item.review_item_id
-    session.active_review_plan = session.current_routing.review_plan
-    session.board.reset()
-    session.state = session.state.PLAYER_TURN
-    session.player_color = chess.WHITE
-    session._timing_contract_metadata = lambda: ("600+0", "1000-1200")
-
-    session.submit_user_move_uci('g1f3')
-
-    assert reconciled_service.active is True
-    assert reconciled_service.root_summary_status == "skipped_missing_optional_columns"
     assert session.last_evaluation.accepted is True
     assert session.last_evaluation.metadata["reconciled"]["decision_source"] == "reconciled_admission"

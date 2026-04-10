@@ -72,8 +72,6 @@ class PracticalRiskReconciledService:
         self._admissions: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._failure_explanations: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         self._root_summaries: dict[tuple[str, str], dict[str, Any]] = {}
-        self.root_summary_status: str = "not_attempted"
-        self.root_summary_activation_warning: str | None = None
         self._connect_and_load()
 
     def _connect_and_load(self) -> None:
@@ -94,6 +92,7 @@ class PracticalRiskReconciledService:
                 "artifact_metadata",
                 "reconciled_move_admissions",
                 "failure_explanations",
+                "reconciled_root_summaries",
             }
             tables = {
                 row["name"]
@@ -142,6 +141,14 @@ class PracticalRiskReconciledService:
                 f"missing columns: {', '.join(missing_failure)}"
             )
             return
+
+        root_summary_columns = self._table_columns(conn, "reconciled_root_summaries")
+        missing_root_summary = sorted(_REQUIRED_ROOT_SUMMARY_COLUMNS - root_summary_columns)
+        if missing_root_summary:
+            self.activation_error = (
+                "artifact schema mismatch in reconciled_root_summaries: "
+                f"missing columns: {', '.join(missing_root_summary)}"
+            )
 
     @staticmethod
     def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -239,67 +246,36 @@ class PracticalRiskReconciledService:
             }
 
     def _load_root_summaries(self, conn: sqlite3.Connection) -> None:
-        tables = {
-            row["name"]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
-        if "reconciled_root_summaries" not in tables:
-            self.root_summary_status = "skipped_missing_optional_table"
-            self.root_summary_activation_warning = "optional table reconciled_root_summaries not present"
-            return
-
-        try:
-            columns = self._table_columns(conn, "reconciled_root_summaries")
-            if not {"position_key", "band_id"}.issubset(columns):
-                self.root_summary_status = "optional_schema_mismatch_ignored"
-                self.root_summary_activation_warning = (
-                    "optional root summary schema missing required keys: position_key, band_id"
-                )
-                return
-
-            missing_count_columns = sorted(column for column in _ROOT_SUMMARY_COUNT_COLUMNS if column not in columns)
-            recognized_columns = {"position_key", "band_id", *(column for column in _ROOT_SUMMARY_COUNT_COLUMNS if column in columns)}
-            optional_columns = sorted(column for column in columns if column not in recognized_columns)
-            selected_columns = ["position_key", "band_id", *sorted(column for column in _ROOT_SUMMARY_COUNT_COLUMNS if column in columns), *optional_columns]
-            cursor = conn.execute(
-                """
-                SELECT {columns}
-                FROM reconciled_root_summaries
-                """
-                .format(columns=", ".join(selected_columns))
-            )
-            for row in cursor:
-                position_key, band_id = _as_text(row["position_key"]), _as_text(row["band_id"])
-                if not position_key or not band_id:
-                    continue
-                summary_counts = {
-                    column: int(row[column] or 0)
-                    for column in _ROOT_SUMMARY_COUNT_COLUMNS
-                    if column in columns
-                }
-                optional_summary_fields = {
-                    column: row[column]
-                    for column in optional_columns
-                }
-                self._root_summaries[(position_key, band_id)] = {
-                    "position_key": position_key,
-                    "band_id": band_id,
-                    **summary_counts,
-                    **optional_summary_fields,
-                }
-
-            if missing_count_columns:
-                self.root_summary_status = "skipped_missing_optional_columns"
-                self.root_summary_activation_warning = (
-                    "optional root summary count columns missing: "
-                    + ", ".join(missing_count_columns)
-                )
-            else:
-                self.root_summary_status = "loaded"
-                self.root_summary_activation_warning = None
-        except sqlite3.Error as exc:
-            self.root_summary_status = "optional_schema_mismatch_ignored"
-            self.root_summary_activation_warning = f"optional root summary load failed: {exc}"
+        columns = self._table_columns(conn, "reconciled_root_summaries")
+        optional_columns = sorted(column for column in columns if column not in _REQUIRED_ROOT_SUMMARY_COLUMNS)
+        selected_columns = [
+            "position_key",
+            "band_id",
+            *_ROOT_SUMMARY_COUNT_COLUMNS,
+            *optional_columns,
+        ]
+        cursor = conn.execute(
+            """
+            SELECT {columns}
+            FROM reconciled_root_summaries
+            """
+            .format(columns=", ".join(selected_columns))
+        )
+        for row in cursor:
+            position_key, band_id = _as_text(row["position_key"]), _as_text(row["band_id"])
+            if not position_key or not band_id:
+                continue
+            summary_counts = {column: int(row[column] or 0) for column in _ROOT_SUMMARY_COUNT_COLUMNS}
+            optional_summary_fields = {
+                column: row[column]
+                for column in optional_columns
+            }
+            self._root_summaries[(position_key, band_id)] = {
+                "position_key": position_key,
+                "band_id": band_id,
+                **summary_counts,
+                **optional_summary_fields,
+            }
 
     def resolve_band_id(self, requested_band_id: str | None) -> ReconciledBandResolution:
         if not requested_band_id:
