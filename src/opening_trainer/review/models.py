@@ -136,6 +136,7 @@ class ReviewItem:
     manual_forced_player_color: str = ManualForcedPlayerColor.AUTO.value
     manual_parent_review_item_id: str | None = None
     manual_reach_policy_inherited: bool = False
+    d_failure_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -237,6 +238,7 @@ class ReviewItem:
         payload.setdefault('manual_forced_player_color', ManualForcedPlayerColor.AUTO.value)
         payload.setdefault('manual_parent_review_item_id', None)
         payload.setdefault('manual_reach_policy_inherited', False)
+        payload.setdefault('d_failure_metadata', {})
         return cls(**payload)
 
 

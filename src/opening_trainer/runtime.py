@@ -67,6 +67,7 @@ ENV_ENGINE_DEPTH = "OPENING_TRAINER_ENGINE_DEPTH"
 ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
 ENV_OPPONENT_FALLBACK_MODE = "OPENING_TRAINER_OPPONENT_FALLBACK_MODE"
 ENV_PREDECESSOR_MASTER_DB_PATH = "OPENING_TRAINER_PREDECESSOR_MASTER_DB_PATH"
+ENV_PRACTICAL_RISK_RECONCILED_PATH = "OPENING_TRAINER_PRACTICAL_RISK_RECONCILED_PATH"
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ class RuntimeConfig:
     predecessor_master_db_path: str | None = None
     strict_assets: bool = False
     opponent_fallback_mode: str = "current_bundle_only"
+    practical_risk_reconciled_path: str | None = None
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "RuntimeConfig":
@@ -102,6 +104,7 @@ class RuntimeConfig:
             predecessor_master_db_path=payload.get("predecessor_master_db_path"),
             strict_assets=bool(payload.get("strict_assets", False)),
             opponent_fallback_mode=str(payload.get("opponent_fallback_mode", "current_bundle_only")),
+            practical_risk_reconciled_path=payload.get("practical_risk_reconciled_path"),
         )
 
 
@@ -118,6 +121,7 @@ class RuntimeOverrides:
     predecessor_master_db_path: str | None = None
     strict_assets: bool | None = None
     opponent_fallback_mode: str | None = None
+    practical_risk_reconciled_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -263,6 +267,12 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
             )
             or "current_bundle_only"
         ),
+        practical_risk_reconciled_path=_resolve_practical_risk_reconciled_path(
+            override_value=overrides.practical_risk_reconciled_path,
+            file_value=file_config.practical_risk_reconciled_path,
+            env_value=os.getenv(ENV_PRACTICAL_RISK_RECONCILED_PATH),
+            runtime_paths=resolved_runtime_paths.paths,
+        ),
     )
 
     evaluator_base = EvaluatorConfig()
@@ -345,6 +355,23 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         engine=engine,
         config_source=config_resolution.description,
     )
+
+
+def _resolve_practical_risk_reconciled_path(
+    *,
+    override_value: str | None,
+    file_value: str | None,
+    env_value: str | None,
+    runtime_paths: RuntimePaths,
+) -> str:
+    if override_value and str(override_value).strip():
+        return str(override_value).strip()
+    if file_value and str(file_value).strip():
+        return str(file_value).strip()
+    if env_value and str(env_value).strip():
+        return str(env_value).strip()
+    default_path = runtime_paths.content_root / "practical_risk" / "reconciled" / "default" / "practical_risk_reconciled.sqlite"
+    return str(default_path)
 
 
 def corpus_status_detail(path: str | Path | None) -> str:

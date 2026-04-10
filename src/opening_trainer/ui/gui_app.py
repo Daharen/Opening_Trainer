@@ -189,6 +189,7 @@ class OpeningTrainerGUI:
         self.manual_elo_var = tk.StringVar(value='')
         self.manual_depth_var = tk.IntVar(value=self.session.settings.active_training_ply_depth)
         self.manual_good_var = tk.StringVar(value='Yes' if self.session.settings.good_moves_acceptable else 'No')
+        self.allow_sharp_gambit_var = tk.BooleanVar(value=self.session.settings.allow_sharp_gambit_lines)
         self.opponent_fallback_mode_var = tk.StringVar(value=self.session.settings.opponent_fallback_mode)
         self.catalog_root_var = tk.StringVar()
         self.catalog_category_combo = None
@@ -263,7 +264,8 @@ class OpeningTrainerGUI:
         self.top_good_label.grid(row=0, column=12, sticky='w', padx=(0, 8))
         self.top_good_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.manual_good_var, values=['Yes', 'No'], width=4)
         self.top_good_combo.grid(row=0, column=12, sticky='w', padx=(0, 8))
-        ttk.Label(self.control_strip, text='Human fallback').grid(row=0, column=13, sticky='w')
+        ttk.Checkbutton(self.control_strip, text='Allow sharp/gambit', variable=self.allow_sharp_gambit_var, command=self._on_manual_contract_changed).grid(row=0, column=13, sticky='w', padx=(0, 8))
+        ttk.Label(self.control_strip, text='Human fallback').grid(row=0, column=14, sticky='w')
         self.fallback_mode_combo = ttk.Combobox(
             self.control_strip,
             state='readonly',
@@ -275,7 +277,7 @@ class OpeningTrainerGUI:
             ),
             width=28,
         )
-        self.fallback_mode_combo.grid(row=0, column=14, sticky='w', padx=(0, 8))
+        self.fallback_mode_combo.grid(row=0, column=15, sticky='w', padx=(0, 8))
         self.top_time_control_combo.bind('<<ComboboxSelected>>', self._on_top_time_control_selected)
         self.top_elo_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_depth_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
@@ -455,6 +457,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=bool(self.allow_sharp_gambit_var.get()) if hasattr(self, "allow_sharp_gambit_var") else settings.allow_sharp_gambit_lines,
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -477,6 +480,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=bool(self.allow_sharp_gambit_var.get()) if hasattr(self, "allow_sharp_gambit_var") else settings.allow_sharp_gambit_lines,
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=bundle_path,
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -503,6 +507,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=settings.allow_sharp_gambit_lines,
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=catalog_root,
@@ -651,6 +656,7 @@ class OpeningTrainerGUI:
                 side_panel_visible=self.panel_visible,
                 move_list_visible=self.move_list_visible,
                 dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                allow_sharp_gambit_lines=settings.allow_sharp_gambit_lines,
                 training_panel_visible_columns=settings.training_panel_visible_columns,
                 last_bundle_path=self._remembered_bundle_path(),
                 last_corpus_catalog_root=self._catalog_root_setting(),
@@ -662,6 +668,8 @@ class OpeningTrainerGUI:
         self.top_time_control_var.set(updated.selected_time_control_id)
         if hasattr(self, "opponent_fallback_mode_var"):
             self.opponent_fallback_mode_var.set(updated.opponent_fallback_mode)
+        if hasattr(self, "allow_sharp_gambit_var"):
+            self.allow_sharp_gambit_var.set(updated.allow_sharp_gambit_lines)
         self._refresh_top_control_strip()
         resolved_bundle_path, blocked_message = self._resolve_bundle_for_top_contract(updated)
         remembered_path = self._remembered_bundle_path()
@@ -1321,7 +1329,26 @@ class OpeningTrainerGUI:
         retained_ply_depth = self.session.bundle_retained_ply_depth()
         cap = self.session.max_supported_training_depth()
         retained_text = f' | Bundle max: {retained_ply_depth // 2} player moves' if retained_ply_depth is not None else ''
-        return f'Training depth: {self.session.required_player_moves} player moves | Good accepted: {"yes" if self.session.config.good_moves_acceptable else "no"} | App max: {cap} player moves{retained_text}'
+        reconciled = getattr(self.session, "practical_risk_reconciled", None)
+        reconciled_active = "active" if reconciled and reconciled.active else "inactive"
+        requested_band = None
+        resolved_band = None
+        if getattr(self.session, "last_evaluation", None) and isinstance(self.session.last_evaluation.metadata, dict):
+            reconciled_meta = self.session.last_evaluation.metadata.get("reconciled", {})
+            if isinstance(reconciled_meta, dict):
+                requested_band = reconciled_meta.get("requested_band_id")
+                resolved_band = reconciled_meta.get("resolved_band_id")
+        reconciled_text = (
+            f' | Reconciled {reconciled_active}'
+            f' req={requested_band or "n/a"}'
+            f' resolved={resolved_band or "n/a"}'
+            f' sharp={"on" if self.session.settings.allow_sharp_gambit_lines else "off"}'
+        )
+        return (
+            f'Training depth: {self.session.required_player_moves} player moves | '
+            f'Good accepted: {"yes" if self.session.config.good_moves_acceptable else "no"} | '
+            f'App max: {cap} player moves{retained_text}{reconciled_text}'
+        )
 
     def _smart_profile_summary_text(self) -> str:
         status = self.session.smart_profile_status()
@@ -1450,6 +1477,7 @@ class OpeningTrainerGUI:
                     side_panel_visible=self.panel_visible,
                     move_list_visible=self.move_list_visible,
                     dark_mode_enabled=getattr(self, "dark_mode_enabled", False),
+                    allow_sharp_gambit_lines=self.session.settings.allow_sharp_gambit_lines,
                     training_panel_visible_columns=selected_columns,
                     last_bundle_path=self._remembered_bundle_path(),
                     last_corpus_catalog_root=self._catalog_root_setting(),

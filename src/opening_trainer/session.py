@@ -15,6 +15,7 @@ from .bundle_corpus import normalize_builder_position_key
 from .corpus import load_artifact
 from .developer_timing import DeveloperTimingOverrideState, DeveloperTimingOverrideStore, LiveTimingDebugState, parse_overlay_key_dimensions
 from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
+from .practical_risk_reconciled import PracticalRiskReconciledService
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, MoveHistoryEntry, SessionOutcome, SessionState, SessionView
 from .opening_names import OpeningNameDataset
@@ -99,10 +100,16 @@ class TrainingSession:
             rng=random,
             opponent_fallback_mode=self.runtime_context.config.opponent_fallback_mode,
         )
+        time_control_id, _rating_band = self._timing_contract_metadata()
+        self.practical_risk_reconciled = PracticalRiskReconciledService(
+            self.runtime_context.config.practical_risk_reconciled_path,
+            expected_time_control_id=time_control_id,
+        )
         self.evaluator = MoveEvaluator(
             config=self.config,
             book_authority=OpeningBookAuthority(self.runtime_context.book.path if self.runtime_context.book.available else None),
             engine_authority=EngineAuthority(self.config),
+            reconciled_service=self.practical_risk_reconciled,
         )
         self.required_player_moves = self.config.active_envelope_player_moves
         default_review_root = self.runtime_context.runtime_paths.profile_root
@@ -136,6 +143,8 @@ class TrainingSession:
                 selected_time_control_id=self.settings.selected_time_control_id,
                 side_panel_visible=self.settings.side_panel_visible,
                 move_list_visible=self.settings.move_list_visible,
+                dark_mode_enabled=self.settings.dark_mode_enabled,
+                allow_sharp_gambit_lines=self.settings.allow_sharp_gambit_lines,
                 training_panel_visible_columns=self.settings.training_panel_visible_columns,
                 last_bundle_path=self.settings.last_bundle_path,
                 last_corpus_catalog_root=self.settings.last_corpus_catalog_root,
@@ -394,10 +403,22 @@ class TrainingSession:
             required_moves, good_accepted = self.settings.active_training_ply_depth, self.settings.good_moves_acceptable
         self.required_player_moves = required_moves
         self.config = type(self.config)(**{**self.config.snapshot(), 'active_envelope_player_moves': self.required_player_moves, 'good_moves_acceptable': good_accepted})
-        self.evaluator.config = self.config
-        self.evaluator.overlay_classifier.config = self.config
-        self.evaluator.engine_authority.config = self.config
+        if hasattr(self.evaluator, "config"):
+            self.evaluator.config = self.config
+        if hasattr(self.evaluator, "overlay_classifier") and hasattr(self.evaluator.overlay_classifier, "config"):
+            self.evaluator.overlay_classifier.config = self.config
+        if hasattr(self.evaluator, "engine_authority") and hasattr(self.evaluator.engine_authority, "config"):
+            self.evaluator.engine_authority.config = self.config
+        self._refresh_practical_risk_reconciled()
         self.opponent.set_fallback_mode(self.settings.opponent_fallback_mode)
+
+    def _refresh_practical_risk_reconciled(self) -> None:
+        time_control_id, _rating_band = self._timing_contract_metadata()
+        self.practical_risk_reconciled = PracticalRiskReconciledService(
+            self.runtime_context.config.practical_risk_reconciled_path,
+            expected_time_control_id=time_control_id,
+        )
+        self.evaluator.reconciled_service = self.practical_risk_reconciled
 
     def _profile_name(self) -> str:
         return self.review_storage.load_profile_meta(self.active_profile_id).display_name
@@ -854,7 +875,17 @@ class TrainingSession:
             return self.get_view()
         if self._resolve_terminal_board_state():
             return self.get_view()
-        evaluation = self.evaluator.evaluate(board_before_move, move, self.player_move_count)
+        _time_control_id, rating_band = self._timing_contract_metadata()
+        try:
+            evaluation = self.evaluator.evaluate(
+                board_before_move,
+                move,
+                self.player_move_count,
+                requested_band_id=rating_band,
+                allow_sharp_gambit_lines=self.settings.allow_sharp_gambit_lines,
+            )
+        except TypeError:
+            evaluation = self.evaluator.evaluate(board_before_move, move, self.player_move_count)
         self.last_evaluation = evaluation
         self._refresh_opening_name_state(reason='position_refresh')
         self._print_evaluation_feedback(evaluation)
@@ -1107,6 +1138,7 @@ class TrainingSession:
         inherited_manual_metadata = self._manual_inherited_failure_metadata(board_before_move, items)
         if existing is None:
             item = ReviewItem.create(self.active_profile_id, position_key, board_before_move.fen(), side, evaluation.reason_text, evaluation.preferred_move_uci, accepted, self.run_path)
+            item.d_failure_metadata = self._d_failure_metadata(evaluation)
             if inherited_manual_metadata is not None:
                 item.origin_kind = ReviewItemOrigin.MANUAL_TARGET.value
                 item.allow_below_threshold_reach = inherited_manual_metadata['allow_below_threshold_reach']
@@ -1120,6 +1152,7 @@ class TrainingSession:
             impact_summary = 'Created new review item and scheduled immediate retry.'
         else:
             item = apply_failure(existing, evaluation.reason_text, evaluation.preferred_move_uci, [asdict(move) for move in self.run_path], line_preview, self.current_routing.routing_source if self.current_routing else 'ordinary_corpus_play')
+            item.d_failure_metadata = self._d_failure_metadata(evaluation)
             if inherited_manual_metadata is not None:
                 item.origin_kind = ReviewItemOrigin.MANUAL_TARGET.value
                 item.allow_below_threshold_reach = inherited_manual_metadata['allow_below_threshold_reach']
@@ -1161,6 +1194,22 @@ class TrainingSession:
             ),
         )
         return item, impact_summary, decision.routing_source
+
+
+    def _d_failure_metadata(self, evaluation: EvaluationResult) -> dict[str, object]:
+        metadata = evaluation.metadata if isinstance(evaluation.metadata, dict) else {}
+        reconciled = metadata.get("reconciled") if isinstance(metadata.get("reconciled"), dict) else {}
+        failure = reconciled.get("failure_explanation") if isinstance(reconciled.get("failure_explanation"), dict) else {}
+        return {
+            "reason_code": failure.get("reason_code"),
+            "template_id": failure.get("template_id"),
+            "family_label": failure.get("family_label"),
+            "max_practical_band_id": failure.get("max_practical_band_id"),
+            "first_failure_band_id": failure.get("first_failure_band_id"),
+            "toggle_state_required": failure.get("toggle_state_required"),
+            "resolved_band_id": reconciled.get("resolved_band_id"),
+            "would_pass_with_sharp_enabled": bool(reconciled.get("would_pass_with_sharp_enabled", False)),
+        }
 
     def _manual_inherited_failure_metadata(self, board_before_move: chess.Board, items: list[ReviewItem]) -> dict[str, object] | None:
         if not self.current_routing or self.current_routing.routing_source != RoutingSource.MANUAL_TARGET.value:
