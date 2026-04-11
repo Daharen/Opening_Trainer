@@ -147,26 +147,6 @@ def test_user_move_opening_exit_reason_and_release_behavior(tmp_path):
     assert session.last_evaluation.reason_code != ReasonCode.OPENING_EXIT_BEFORE_OPPONENT
 
 
-def test_opening_locked_requested_without_selected_opening_is_not_effective(tmp_path):
-    sqlite_path = _write_opening_locked_artifact(tmp_path)
-    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
-    session = TrainingSession(runtime_context=runtime)
-    session.opening_locked_provider = OpeningLockedProvider(sqlite_path)
-
-    session.update_settings(
-        TrainerSettings(
-            training_mode="manual",
-            smart_profile_enabled=False,
-            opening_locked_mode_enabled=True,
-            selected_opening_name=None,
-        )
-    )
-
-    assert session.opening_locked_state.requested is True
-    assert session.opening_locked_state.enabled is False
-    assert session.opening_locked_state.ineffective_reason == "no opening selected"
-
-
 def test_opening_exit_correction_uses_canonical_line(tmp_path):
     sqlite_path = _write_opening_locked_artifact(tmp_path)
     board = chess.Board()

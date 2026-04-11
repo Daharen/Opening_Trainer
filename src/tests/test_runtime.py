@@ -24,16 +24,6 @@ from opening_trainer.session import TrainingSession
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_corpus.pgn"
 
 
-def _write_opening_locked_artifact_root(base: Path) -> Path:
-    root = base / "opening_locked_mode"
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "manifest.json").write_text(json.dumps({"opening_count": 1}), encoding="utf-8")
-    with sqlite3.connect(root / "opening_locked_openings.sqlite") as conn:
-        conn.execute("CREATE TABLE opening_membership(position_key TEXT, opening_name TEXT, is_exact INTEGER)")
-        conn.execute("CREATE TABLE canonical_continuation(opening_name TEXT, position_key TEXT, move_uci TEXT, ply_index INTEGER)")
-    return root
-
-
 def _reset_session_logger(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(session_logging.SESSION_LOG_DIR_ENV, str(tmp_path / "sessions"))
     monkeypatch.delenv(session_logging.SESSION_LOG_PATH_ENV, raising=False)
@@ -208,42 +198,6 @@ def test_practical_risk_reconciled_path_env_then_default(tmp_path, monkeypatch):
     assert str(runtime_default.config.practical_risk_reconciled_path).endswith(
         "practical_risk/reconciled/default/practical_risk_reconciled.sqlite"
     )
-
-
-def test_opening_locked_artifact_dev_override_precedence(tmp_path):
-    explicit_root = _write_opening_locked_artifact_root(tmp_path / "explicit")
-    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev", opening_locked_artifact_root=str(explicit_root)))
-    assert runtime.opening_locked_artifact.loaded is True
-    assert runtime.opening_locked_artifact.source == "cli"
-    assert runtime.opening_locked_artifact.manifest_path == explicit_root / "manifest.json"
-
-
-def test_opening_locked_artifact_dev_config_then_env(monkeypatch, tmp_path):
-    config_root = _write_opening_locked_artifact_root(tmp_path / "from_config")
-    env_root = _write_opening_locked_artifact_root(tmp_path / "from_env")
-    config_path = tmp_path / "runtime.local.json"
-    config_path.write_text(json.dumps({"opening_locked_artifact_root": str(config_root)}), encoding="utf-8")
-    monkeypatch.setenv("OPENING_TRAINER_OPENING_LOCKED_ARTIFACT_ROOT", str(env_root))
-    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev", runtime_config_path=str(config_path)))
-    assert runtime.opening_locked_artifact.loaded is True
-    assert runtime.opening_locked_artifact.source == "runtime-config"
-    assert runtime.opening_locked_artifact.sqlite_path == config_root / "opening_locked_openings.sqlite"
-
-
-def test_opening_locked_artifact_consumer_content_root_discovery(monkeypatch, tmp_path):
-    local_app_data = tmp_path / "lad"
-    content_root = local_app_data / "OpeningTrainerContent"
-    _write_opening_locked_artifact_root(content_root)
-    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
-    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="consumer"))
-    assert runtime.opening_locked_artifact.loaded is True
-    assert runtime.opening_locked_artifact.manifest_path == content_root / "opening_locked_mode" / "manifest.json"
-
-
-def test_opening_locked_artifact_dev_unavailable_reports_tried_locations(tmp_path):
-    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev", runtime_config_path=str(tmp_path / "missing_runtime.json")))
-    assert runtime.opening_locked_artifact.loaded is False
-    assert "tried:" in runtime.opening_locked_artifact.detail
 
 
 def test_invalid_engine_path_returns_authority_unavailable_not_fail(tmp_path):

@@ -79,7 +79,9 @@ def resolve_runtime_paths(mode: RuntimeMode, *, repo_root: Path, workspace_root:
             profile_root=repo_root / "runtime" / "profiles",
             runtime_config_path=workspace_root / "runtime.local.json",
             corpus_bundle_root=repo_root / "runtime" / "bundles",
-            predecessor_master_db_path=repo_root / "runtime_assets" / "canonical_predecessor_master.sqlite",
+            predecessor_master_db_path=Path(
+                r"F:\Opening Trainer Large Data File\Work Surface\opening_trainer_content_seed_rapid600_v1\canonical_predecessor_master.sqlite"
+            ),
             opening_book_path=repo_root / "runtime" / "opening_book.bin",
             opening_names_path=repo_root / "data" / "opening_book_names.zip",
             stockfish_root=repo_root / "tools" / "stockfish",

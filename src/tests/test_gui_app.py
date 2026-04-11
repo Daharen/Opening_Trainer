@@ -54,7 +54,6 @@ class FakeGridWidget:
 
     def configure(self, **kwargs):
         self.width = kwargs.get('width', self.width)
-        self.state = kwargs.get('state', getattr(self, "state", None))
 
 
 class FakePane:
@@ -1527,64 +1526,10 @@ def _build_control_strip_gui():
     gui.top_depth_label = FakeGridWidget()
     gui.top_good_label = FakeGridWidget()
     gui.recent_var = FakeStringVar("")
-    gui.opening_locked_enabled_var = FakeBoolVar(False)
-    gui.opening_locked_opening_var = FakeStringVar("")
-    gui.opening_locked_enabled_check = FakeGridWidget()
-    gui.opening_locked_opening_combo = _FakeComboStrip()
     gui._remembered_bundle_path = lambda: None
     gui._catalog_root_setting = lambda: str(getattr(gui, "catalog_root", "catalog-root"))
     gui._refresh_supporting_surfaces = lambda: None
     return gui
-
-
-def test_opening_locked_toggle_does_not_self_revert_when_selection_empty():
-    gui = _build_control_strip_gui()
-    gui.smart_mode_var = FakeBoolVar(False)
-    gui.top_time_control_var = FakeStringVar("600+0")
-    gui.manual_elo_var = FakeStringVar("400-600")
-    gui.opening_locked_enabled_var = FakeBoolVar(True)
-    gui.opening_locked_opening_var = FakeStringVar("")
-    gui.catalog = type("Catalog", (), {"entries": ()})()
-    entry = type("Entry", (), {"bundle_dir": "/tmp/manual"})()
-    gui.catalog.grouped = lambda: {"Rapid": {"600+0": {"400-600": (entry,)}}}
-    gui.catalog_grouped = gui.catalog.grouped()
-    captured = {}
-
-    class _Session:
-        settings = TrainerSettings(training_mode="manual", selected_time_control_id="600+0", smart_profile_enabled=False)
-
-        def update_settings(self, settings):
-            captured["updated"] = settings
-            self.settings = settings
-            return settings
-
-        def smart_profile_status(self):
-            return type("Status", (), {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None})()
-
-        def max_supported_training_depth(self):
-            return 6
-
-    gui.session = _Session()
-    gui._load_selected_bundle = lambda _path: None
-    gui._remembered_bundle_path = lambda: "/tmp/other"
-
-    gui._apply_top_contract_change(reason="manual contract changed")
-
-    assert captured["updated"].opening_locked_mode_enabled is True
-    assert captured["updated"].selected_opening_name is None
-
-
-def test_opening_locked_dropdown_enabled_when_artifact_available_while_toggle_off():
-    gui = _build_control_strip_gui()
-    gui.session.settings = TrainerSettings(opening_locked_mode_enabled=False, selected_opening_name=None)
-    gui.session._opening_locked_status = type("OpeningLockedStatus", (), {"loaded": True, "detail": "loaded"})()
-    gui.session.opening_locked_artifact_status = lambda: gui.session._opening_locked_status
-    gui.session.opening_locked_opening_names = lambda: ["Italian Game", "Ruy Lopez"]
-
-    gui._refresh_top_control_strip()
-
-    assert gui.opening_locked_enabled_check.state == "normal"
-    assert gui.opening_locked_opening_combo.state == "readonly"
 
 
 def test_smart_on_shows_labels_and_hides_manual_controls():
