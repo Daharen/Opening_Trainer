@@ -111,8 +111,8 @@ class OpeningLockedProvider:
         return CanonicalContinuation(next_move_uci=(line[0] if line else None), line=line)
 
 
-def discover_opening_locked_artifact(content_root: Path) -> OpeningLockedArtifactStatus:
-    artifact_root = content_root / "opening_locked_mode"
+def discover_opening_locked_artifact(content_root: Path, *, artifact_root_override: Path | None = None) -> OpeningLockedArtifactStatus:
+    artifact_root = artifact_root_override if artifact_root_override is not None else (content_root / "opening_locked_mode")
     manifest_path = artifact_root / "manifest.json"
     sqlite_path = artifact_root / "opening_locked_openings.sqlite"
     if not manifest_path.exists() or not sqlite_path.exists():

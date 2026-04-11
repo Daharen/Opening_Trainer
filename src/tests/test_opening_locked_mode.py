@@ -39,6 +39,17 @@ def test_opening_locked_artifact_discovery_present_and_missing(tmp_path):
     assert found.opening_count == 2
 
 
+def test_dev_runtime_reports_opening_locked_unavailable_when_no_discovery_winner(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.chdir(repo_root)
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
+
+    assert runtime.opening_locked_artifact.loaded is False
+    assert "dev discovery candidates checked" in runtime.opening_locked_artifact.detail
+
+
 def test_opening_transition_classification_states(tmp_path):
     sqlite_path = _write_opening_locked_artifact(tmp_path)
     provider = OpeningLockedProvider(sqlite_path)
@@ -177,3 +188,37 @@ def test_opening_exit_correction_uses_canonical_line(tmp_path):
     line = session.get_corrective_continuation(board, "d2d4", max_plies=4)
     assert line
     assert line[0][0] == "d2d4"
+
+
+def test_opening_locked_requested_without_selected_opening_stays_ordinary_mode(tmp_path):
+    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
+    session = TrainingSession(runtime_context=runtime)
+
+    session.update_settings(
+        TrainerSettings(
+            training_mode="manual",
+            smart_profile_enabled=False,
+            opening_locked_mode_enabled=True,
+            selected_opening_name=None,
+        )
+    )
+
+    assert session.settings.opening_locked_mode_enabled is True
+    assert session.opening_locked_state.enabled is False
+
+
+def test_selected_opening_persists_while_opening_locked_toggle_off(tmp_path):
+    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
+    session = TrainingSession(runtime_context=runtime)
+
+    session.update_settings(
+        TrainerSettings(
+            training_mode="manual",
+            smart_profile_enabled=False,
+            opening_locked_mode_enabled=False,
+            selected_opening_name="Italian Game",
+        )
+    )
+
+    assert session.settings.selected_opening_name == "Italian Game"
+    assert session.opening_locked_state.enabled is False
