@@ -24,8 +24,24 @@ def _write_opening_locked_artifact(content_root: Path) -> Path:
     (root / "manifest.json").write_text(json.dumps({"opening_count": 2}), encoding="utf-8")
     sqlite_path = root / "opening_locked_openings.sqlite"
     with sqlite3.connect(sqlite_path) as conn:
-        conn.execute("CREATE TABLE opening_membership(position_key TEXT, opening_name TEXT, is_exact INTEGER)")
-        conn.execute("CREATE TABLE canonical_continuation(opening_name TEXT, position_key TEXT, move_uci TEXT, ply_index INTEGER)")
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("CREATE TABLE source_files(source_file_id INTEGER PRIMARY KEY, file_path TEXT NOT NULL)")
+        conn.execute("CREATE TABLE opening_nodes(node_id INTEGER PRIMARY KEY, node_name TEXT NOT NULL, node_kind TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE node_closure(ancestor_node_id INTEGER NOT NULL, descendant_node_id INTEGER NOT NULL, depth INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE positions(position_id INTEGER PRIMARY KEY, position_key TEXT NOT NULL UNIQUE, side_to_move TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE exact_lines(exact_line_id INTEGER PRIMARY KEY, opening_node_id INTEGER NOT NULL, terminal_position_id INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE path_memberships(position_id INTEGER NOT NULL, node_id INTEGER NOT NULL, remaining_plies INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE node_moves(node_id INTEGER NOT NULL, from_position_id INTEGER NOT NULL, move_uci TEXT NOT NULL, to_position_id INTEGER, is_canonical INTEGER NOT NULL, support_count INTEGER NOT NULL)"
+        )
     return sqlite_path
 
 
@@ -54,13 +70,31 @@ def test_opening_transition_classification_states(tmp_path):
     sqlite_path = _write_opening_locked_artifact(tmp_path)
     provider = OpeningLockedProvider(sqlite_path)
     with sqlite3.connect(sqlite_path) as conn:
-        conn.execute("INSERT INTO opening_membership(position_key, opening_name, is_exact) VALUES (?, ?, 1)", ("k1", "Ruy Lopez"))
-        conn.execute("INSERT INTO opening_membership(position_key, opening_name, is_exact) VALUES (?, ?, 1)", ("k2", "Sicilian Defense"))
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'Ruy Lopez', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (2, 'Sicilian Defense', 'exact_opening')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (1, 'k1', 'black')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (2, 'k2', 'black')")
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (1, 1, 10)")
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (2, 2, 10)")
         conn.commit()
 
     assert provider.classify_transition("k1", "Ruy Lopez").classification == OpeningTransitionClassification.SELECTED_OPENING_PRESERVED
     assert provider.classify_transition("k2", "Ruy Lopez").classification == OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING
     assert provider.classify_transition("k3", "Ruy Lopez").classification == OpeningTransitionClassification.LEFT_TO_UNNAMED
+
+
+def test_opening_names_for_position_uses_positions_and_memberships(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'Italian Game', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (2, 'Open Games', 'synthetic_family')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (1, 'position-a', 'white')")
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (1, 2, 5)")
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (1, 1, 3)")
+        conn.commit()
+
+    assert provider.opening_names_for_position("position-a") == ("Italian Game", "Open Games")
 
 
 def test_opponent_filter_rejects_other_named_and_allows_unnamed(tmp_path):
@@ -75,8 +109,14 @@ def test_opponent_filter_rejects_other_named_and_allows_unnamed(tmp_path):
     with sqlite3.connect(sqlite_path) as conn:
         from opening_trainer.bundle_corpus import normalize_builder_position_key
 
-        conn.execute("INSERT INTO opening_membership(position_key, opening_name, is_exact) VALUES (?, ?, 1)", (normalize_builder_position_key(key_e5_board), "Ruy Lopez"))
-        conn.execute("INSERT INTO opening_membership(position_key, opening_name, is_exact) VALUES (?, ?, 1)", (normalize_builder_position_key(key_c5_board), "Sicilian Defense"))
+        key_e5 = normalize_builder_position_key(key_e5_board)
+        key_c5 = normalize_builder_position_key(key_c5_board)
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'Ruy Lopez', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (2, 'Sicilian Defense', 'exact_opening')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (1, ?, 'white')", (key_e5,))
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (2, ?, 'white')", (key_c5,))
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (1, 1, 10)")
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (2, 2, 10)")
         conn.commit()
 
     runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
@@ -114,7 +154,18 @@ def test_opponent_filter_rejects_other_named_and_allows_unnamed(tmp_path):
 def test_user_move_opening_exit_reason_and_release_behavior(tmp_path):
     sqlite_path = _write_opening_locked_artifact(tmp_path)
     with sqlite3.connect(sqlite_path) as conn:
-        conn.execute("INSERT INTO canonical_continuation(opening_name, position_key, move_uci, ply_index) VALUES (?, ?, ?, ?)", ("Queen's Gambit", chess.STARTING_FEN, "d2d4", 1))
+        from opening_trainer.bundle_corpus import normalize_builder_position_key
+
+        start_key = normalize_builder_position_key(chess.Board())
+        after_d4 = chess.Board()
+        after_d4.push(chess.Move.from_uci("d2d4"))
+        after_d4_key = normalize_builder_position_key(after_d4)
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, \"Queen's Gambit\", 'exact_opening')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (1, ?, 'white')", (start_key,))
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (2, ?, 'black')", (after_d4_key,))
+        conn.execute(
+            "INSERT INTO node_moves(node_id, from_position_id, move_uci, to_position_id, is_canonical, support_count) VALUES (1, 1, 'd2d4', 2, 1, 10)"
+        )
         conn.commit()
     runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
     session = TrainingSession(runtime_context=runtime)
@@ -165,7 +216,15 @@ def test_opening_exit_correction_uses_canonical_line(tmp_path):
 
     start_key = normalize_builder_position_key(board)
     with sqlite3.connect(sqlite_path) as conn:
-        conn.execute("INSERT INTO canonical_continuation(opening_name, position_key, move_uci, ply_index) VALUES (?, ?, ?, ?)", ("Queen's Gambit", start_key, "d2d4", 1))
+        after_d4 = board.copy(stack=True)
+        after_d4.push(chess.Move.from_uci("d2d4"))
+        after_d4_key = normalize_builder_position_key(after_d4)
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, \"Queen's Gambit\", 'exact_opening')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (1, ?, 'white')", (start_key,))
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (2, ?, 'black')", (after_d4_key,))
+        conn.execute(
+            "INSERT INTO node_moves(node_id, from_position_id, move_uci, to_position_id, is_canonical, support_count) VALUES (1, 1, 'd2d4', 2, 1, 10)"
+        )
         conn.commit()
 
     runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
@@ -222,3 +281,49 @@ def test_selected_opening_persists_while_opening_locked_toggle_off(tmp_path):
 
     assert session.settings.selected_opening_name == "Italian Game"
     assert session.opening_locked_state.enabled is False
+
+
+def test_list_exact_openings_excludes_synthetic_family_nodes(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'Italian Game', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (2, 'Open Games', 'synthetic_family')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (3, 'Ruy Lopez', 'exact_opening')")
+        conn.commit()
+
+    assert provider.list_exact_opening_names() == ["Italian Game", "Ruy Lopez"]
+
+
+def test_canonical_continuation_follows_builder_node_moves(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'Ruy Lopez', 'exact_opening')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (1, 'p1', 'white')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (2, 'p2', 'black')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (3, 'p3', 'white')")
+        conn.execute(
+            "INSERT INTO node_moves(node_id, from_position_id, move_uci, to_position_id, is_canonical, support_count) VALUES (1, 1, 'e2e4', 2, 1, 20)"
+        )
+        conn.execute(
+            "INSERT INTO node_moves(node_id, from_position_id, move_uci, to_position_id, is_canonical, support_count) VALUES (1, 2, 'e7e5', 3, 1, 15)"
+        )
+        conn.execute(
+            "INSERT INTO node_moves(node_id, from_position_id, move_uci, to_position_id, is_canonical, support_count) VALUES (1, 2, 'c7c5', 3, 0, 30)"
+        )
+        conn.commit()
+
+    canonical = provider.canonical_continuation(position_key="p1", selected_opening_name="Ruy Lopez", max_plies=4)
+    assert canonical.next_move_uci == "e2e4"
+    assert canonical.line == ("e2e4", "e7e5")
+
+
+def test_canonical_continuation_returns_empty_when_position_not_in_positions(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'Ruy Lopez', 'exact_opening')")
+        conn.commit()
+    canonical = provider.canonical_continuation(position_key="missing", selected_opening_name="Ruy Lopez", max_plies=4)
+    assert canonical.line == ()

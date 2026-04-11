@@ -62,18 +62,30 @@ class OpeningLockedProvider:
     def list_exact_opening_names(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT opening_name FROM opening_membership WHERE COALESCE(is_exact, 1) = 1 ORDER BY opening_name"
+                """
+                SELECT node_name
+                FROM opening_nodes
+                WHERE node_kind = 'exact_opening'
+                ORDER BY node_name ASC
+                """
             ).fetchall()
         return [str(row[0]) for row in rows if row and str(row[0]).strip()]
 
     def opening_names_for_position(self, position_key: str) -> tuple[str, ...]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT opening_name FROM opening_membership WHERE position_key = ?",
+                """
+                SELECT DISTINCT opening_nodes.node_name
+                FROM positions
+                JOIN path_memberships ON path_memberships.position_id = positions.position_id
+                JOIN opening_nodes ON opening_nodes.node_id = path_memberships.node_id
+                WHERE positions.position_key = ?
+                ORDER BY opening_nodes.node_name ASC
+                """,
                 (position_key,),
             ).fetchall()
         names = [str(row[0]) for row in rows if row and str(row[0]).strip()]
-        return tuple(sorted(set(names)))
+        return tuple(names)
 
     def position_preserves_selected_opening(self, position_key: str, selected_opening_name: str) -> bool:
         names = self.opening_names_for_position(position_key)
@@ -96,19 +108,46 @@ class OpeningLockedProvider:
     ) -> CanonicalContinuation:
         if max_plies <= 0:
             return CanonicalContinuation(next_move_uci=None, line=())
+        line: list[str] = []
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT move_uci
-                FROM canonical_continuation
-                WHERE opening_name = ? AND position_key = ?
-                ORDER BY COALESCE(ply_index, 0) ASC
-                LIMIT ?
-                """,
-                (selected_opening_name, position_key, int(max_plies)),
-            ).fetchall()
-        line = tuple(str(row[0]) for row in rows if row and str(row[0]).strip())
-        return CanonicalContinuation(next_move_uci=(line[0] if line else None), line=line)
+            row = conn.execute(
+                "SELECT node_id FROM opening_nodes WHERE node_name = ? AND node_kind = 'exact_opening' LIMIT 1",
+                (selected_opening_name,),
+            ).fetchone()
+            if not row:
+                return CanonicalContinuation(next_move_uci=None, line=())
+            node_id = int(row[0])
+            row = conn.execute(
+                "SELECT position_id FROM positions WHERE position_key = ? LIMIT 1",
+                (position_key,),
+            ).fetchone()
+            if not row:
+                return CanonicalContinuation(next_move_uci=None, line=())
+            current_position_id = int(row[0])
+            for _ in range(int(max_plies)):
+                move_row = conn.execute(
+                    """
+                    SELECT move_uci, to_position_id
+                    FROM node_moves
+                    WHERE node_id = ?
+                      AND from_position_id = ?
+                      AND COALESCE(is_canonical, 0) = 1
+                    ORDER BY COALESCE(support_count, 0) DESC, move_uci ASC
+                    LIMIT 1
+                    """,
+                    (node_id, current_position_id),
+                ).fetchone()
+                if not move_row:
+                    break
+                move_uci = str(move_row[0]).strip() if move_row[0] is not None else ""
+                if not move_uci:
+                    break
+                line.append(move_uci)
+                if move_row[1] is None:
+                    break
+                current_position_id = int(move_row[1])
+        line_tuple = tuple(line)
+        return CanonicalContinuation(next_move_uci=(line_tuple[0] if line_tuple else None), line=line_tuple)
 
 
 def discover_opening_locked_artifact(content_root: Path, *, artifact_root_override: Path | None = None) -> OpeningLockedArtifactStatus:
