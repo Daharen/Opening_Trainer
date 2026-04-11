@@ -69,6 +69,7 @@ ENV_ENGINE_TIME_LIMIT = "OPENING_TRAINER_ENGINE_TIME_LIMIT"
 ENV_OPPONENT_FALLBACK_MODE = "OPENING_TRAINER_OPPONENT_FALLBACK_MODE"
 ENV_PREDECESSOR_MASTER_DB_PATH = "OPENING_TRAINER_PREDECESSOR_MASTER_DB_PATH"
 ENV_PRACTICAL_RISK_RECONCILED_PATH = "OPENING_TRAINER_PRACTICAL_RISK_RECONCILED_PATH"
+ENV_OPENING_LOCKED_ARTIFACT_ROOT = "OPENING_TRAINER_OPENING_LOCKED_ARTIFACT_ROOT"
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ class RuntimeConfig:
     strict_assets: bool = False
     opponent_fallback_mode: str = "current_bundle_only"
     practical_risk_reconciled_path: str | None = None
+    opening_locked_artifact_root: str | None = None
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "RuntimeConfig":
@@ -106,6 +108,7 @@ class RuntimeConfig:
             strict_assets=bool(payload.get("strict_assets", False)),
             opponent_fallback_mode=str(payload.get("opponent_fallback_mode", "current_bundle_only")),
             practical_risk_reconciled_path=payload.get("practical_risk_reconciled_path"),
+            opening_locked_artifact_root=payload.get("opening_locked_artifact_root"),
         )
 
 
@@ -123,6 +126,7 @@ class RuntimeOverrides:
     strict_assets: bool | None = None
     opponent_fallback_mode: str | None = None
     practical_risk_reconciled_path: str | None = None
+    opening_locked_artifact_root: str | None = None
 
 
 @dataclass(frozen=True)
@@ -277,6 +281,12 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
             env_value=os.getenv(ENV_PRACTICAL_RISK_RECONCILED_PATH),
             runtime_paths=resolved_runtime_paths.paths,
         ),
+        opening_locked_artifact_root=_pick_asset_value(
+            override_value=overrides.opening_locked_artifact_root,
+            file_value=file_config.opening_locked_artifact_root,
+            env_value=os.getenv(ENV_OPENING_LOCKED_ARTIFACT_ROOT),
+            prefer_file_value=config_prefers_file_assets,
+        ),
     )
 
     evaluator_base = EvaluatorConfig()
@@ -345,7 +355,18 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         label="opening book",
     )
 
-    opening_locked_artifact = discover_opening_locked_artifact(resolved_runtime_paths.paths.content_root)
+    opening_locked_artifact = _resolve_opening_locked_artifact(
+        runtime_mode=runtime_mode,
+        runtime_paths=resolved_runtime_paths.paths,
+        configured_root=config.opening_locked_artifact_root,
+        configured_source=_configured_asset_source(
+            override_value=overrides.opening_locked_artifact_root,
+            file_value=file_config.opening_locked_artifact_root,
+            env_name=ENV_OPENING_LOCKED_ARTIFACT_ROOT,
+            prefer_file_value=config_prefers_file_assets,
+            file_source=config_resolution.asset_source,
+        ),
+    )
 
     return RuntimeContext(
         runtime_mode=runtime_mode,
@@ -379,6 +400,39 @@ def _resolve_practical_risk_reconciled_path(
         return str(env_value).strip()
     default_path = runtime_paths.content_root / "practical_risk" / "reconciled" / "default" / "practical_risk_reconciled.sqlite"
     return str(default_path)
+
+
+def _resolve_opening_locked_artifact(
+    *,
+    runtime_mode: RuntimeMode,
+    runtime_paths: RuntimePaths,
+    configured_root: str | None,
+    configured_source: str,
+) -> OpeningLockedArtifactStatus:
+    candidate_roots: list[Path] = []
+    source = configured_source
+    if configured_root and str(configured_root).strip():
+        candidate_roots.append(Path(str(configured_root).strip()))
+    if runtime_mode is RuntimeMode.CONSUMER:
+        candidate_roots.append(runtime_paths.content_root / "opening_locked_mode")
+        source = source if source != "auto-discovery" else "consumer content root"
+    else:
+        candidate_roots.extend(
+            [
+                runtime_paths.workspace_root / "runtime_assets" / "opening_locked_mode",
+                runtime_paths.workspace_root / "runtime" / "opening_locked_mode",
+                runtime_paths.repo_root / "runtime_assets" / "opening_locked_mode",
+                runtime_paths.repo_root / "runtime" / "opening_locked_mode",
+                runtime_paths.content_root / "opening_locked_mode",
+            ]
+        )
+        if source == "auto-discovery":
+            source = "dev conventional discovery"
+    return discover_opening_locked_artifact(
+        runtime_paths.content_root,
+        candidate_roots=tuple(candidate_roots),
+        source=source,
+    )
 
 
 def corpus_status_detail(path: str | Path | None) -> str:
