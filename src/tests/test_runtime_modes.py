@@ -15,8 +15,24 @@ def _write_opening_locked_artifact(root: Path) -> Path:
     (artifact_root / "manifest.json").write_text(json.dumps({"opening_count": 1}), encoding="utf-8")
     sqlite_path = artifact_root / "opening_locked_openings.sqlite"
     with sqlite3.connect(sqlite_path) as conn:
-        conn.execute("CREATE TABLE opening_membership(position_key TEXT, opening_name TEXT, is_exact INTEGER)")
-        conn.execute("CREATE TABLE canonical_continuation(opening_name TEXT, position_key TEXT, move_uci TEXT, ply_index INTEGER)")
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("CREATE TABLE source_files(source_file_id INTEGER PRIMARY KEY, file_path TEXT NOT NULL)")
+        conn.execute("CREATE TABLE opening_nodes(node_id INTEGER PRIMARY KEY, node_name TEXT NOT NULL, node_kind TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE node_closure(ancestor_node_id INTEGER NOT NULL, descendant_node_id INTEGER NOT NULL, depth INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE positions(position_id INTEGER PRIMARY KEY, position_key TEXT NOT NULL UNIQUE, side_to_move TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE exact_lines(exact_line_id INTEGER PRIMARY KEY, opening_node_id INTEGER NOT NULL, terminal_position_id INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE path_memberships(position_id INTEGER NOT NULL, node_id INTEGER NOT NULL, remaining_plies INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE node_moves(node_id INTEGER NOT NULL, from_position_id INTEGER NOT NULL, move_uci TEXT NOT NULL, to_position_id INTEGER, is_canonical INTEGER NOT NULL, support_count INTEGER NOT NULL)"
+        )
     return artifact_root
 
 
