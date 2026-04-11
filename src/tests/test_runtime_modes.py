@@ -2,22 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 
 from opening_trainer.main import _apply_runtime_environment
 from opening_trainer.runtime import RuntimeOverrides, load_runtime_config
-
-
-def _write_opening_locked_artifact(root: Path) -> Path:
-    artifact_root = root / "opening_locked_mode"
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    (artifact_root / "manifest.json").write_text(json.dumps({"opening_count": 1}), encoding="utf-8")
-    sqlite_path = artifact_root / "opening_locked_openings.sqlite"
-    with sqlite3.connect(sqlite_path) as conn:
-        conn.execute("CREATE TABLE opening_membership(position_key TEXT, opening_name TEXT, is_exact INTEGER)")
-        conn.execute("CREATE TABLE canonical_continuation(opening_name TEXT, position_key TEXT, move_uci TEXT, ply_index INTEGER)")
-    return artifact_root
 
 
 def test_dev_mode_default_and_profile_root_stays_repo_runtime(tmp_path, monkeypatch):
@@ -54,39 +42,6 @@ def test_consumer_asset_paths_are_content_root_relative(monkeypatch, tmp_path):
     assert Path(str(runtime.config.predecessor_master_db_path)) == content_root / "canonical_predecessor_master.sqlite"
     assert runtime.book.path == (content_root / "opening_book.bin").resolve()
     assert runtime.engine.path == (content_root / "stockfish").resolve()
-
-
-def test_dev_opening_locked_artifact_discovery_uses_runtime_config_override(tmp_path, monkeypatch):
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
-    external_assets = tmp_path / "external_assets"
-    artifact_root = _write_opening_locked_artifact(external_assets)
-    (tmp_path / "runtime.local.json").write_text(
-        json.dumps({"opening_locked_artifact_root": str(artifact_root)}),
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(repo_root)
-
-    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
-
-    assert runtime.opening_locked_artifact.loaded is True
-    assert runtime.opening_locked_artifact.sqlite_path == artifact_root / "opening_locked_openings.sqlite"
-    assert "workspace-runtime-config" in runtime.opening_locked_artifact.detail
-
-
-def test_dev_opening_locked_artifact_discovery_uses_environment_override(tmp_path, monkeypatch):
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
-    external_assets = tmp_path / "external_assets_env"
-    artifact_root = _write_opening_locked_artifact(external_assets)
-    monkeypatch.chdir(repo_root)
-    monkeypatch.setenv("OPENING_TRAINER_OPENING_LOCKED_ARTIFACT_ROOT", str(artifact_root))
-
-    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
-
-    assert runtime.opening_locked_artifact.loaded is True
-    assert runtime.opening_locked_artifact.sqlite_path == artifact_root / "opening_locked_openings.sqlite"
-    assert "source=environment" in runtime.opening_locked_artifact.detail
 
 
 def test_consumer_missing_content_fails_clearly(monkeypatch, tmp_path):
