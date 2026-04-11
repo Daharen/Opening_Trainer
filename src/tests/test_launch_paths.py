@@ -191,6 +191,16 @@ def test_apply_update_flag_uses_updater_helper(monkeypatch, runtime_context_fact
     assert helper_calls[0]["manifest"] == "https://example.invalid/manifest.json"
 
 
+def test_check_for_update_in_dev_runtime_reports_unavailable_instead_of_install_corruption(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: None)
+
+    run(["--runtime-mode", "dev", "--check-for-update", "https://example.invalid/manifest.json"])
+
+    captured = capsys.readouterr()
+    assert "UPDATE_CHECK_UNAVAILABLE reason=Updater is only available for installed consumer builds." in captured.out
+
+
 def test_startup_failure_path_uses_local_app_data(monkeypatch, tmp_path):
     runtime_context = type("RuntimeContext", (), {})()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))

@@ -260,6 +260,15 @@ def test_start_button_uses_action_bar_parent_in_shell_layout_source():
     assert "toolbar," not in source
 
 
+def test_gui_updater_menu_is_runtime_gated_in_source():
+    init_source = inspect.getsource(OpeningTrainerGUI.__init__)
+    menu_source = inspect.getsource(OpeningTrainerGUI._refresh_updater_action_state)
+
+    assert "self._refresh_updater_action_state()" in init_source
+    assert "Check for Updates (Installed builds only)" in menu_source
+    assert "evaluate_updater_runtime_support" in menu_source
+
+
 def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
     move_history = (
         MoveHistoryEntry(0, "white", "e2e4", "e4", "player"),

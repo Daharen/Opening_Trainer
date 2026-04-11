@@ -10,7 +10,9 @@ import pytest
 from opening_trainer.updater import (
     INSTALL_DIAGNOSTIC_MARKER,
     UpdaterInstallStateError,
+    UpdaterUnsupportedInRuntimeError,
     check_for_update,
+    evaluate_updater_runtime_support,
     launch_updater_helper,
     log_install_runtime_diagnostics,
     resolve_manifest_path_or_url,
@@ -122,6 +124,60 @@ def test_update_manifest_comparison(tmp_path):
     assert manifest.app_version == "2.0.0"
     assert manifest.build_id == "commit-abc"
     assert installed is not None
+
+
+def test_dev_runtime_without_installed_manifest_reports_updater_unavailable(tmp_path):
+    app_state = tmp_path / "OpeningTrainer"
+    supported, reason = evaluate_updater_runtime_support(app_state_root=app_state, runtime_mode="dev")
+
+    assert supported is False
+    assert reason == "Updater is only available for installed consumer builds."
+
+
+def test_check_for_update_in_dev_runtime_missing_installed_manifest_is_non_install_corruption_error(tmp_path):
+    manifest_path = tmp_path / "app_update_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "channel": "dev",
+                "app_version": "2.0.0",
+                "build_id": "commit-abc",
+                "payload_filename": "OpeningTrainer-app.zip",
+                "payload_url": "https://example.invalid/dev/OpeningTrainer-app.zip",
+                "payload_sha256": "abc",
+                "published_at_utc": "2026-03-31T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app_state = tmp_path / "OpeningTrainer"
+
+    with pytest.raises(UpdaterUnsupportedInRuntimeError, match="installed consumer builds"):
+        check_for_update(str(manifest_path), app_state_root=app_state, runtime_mode="dev")
+
+
+def test_check_for_update_in_consumer_runtime_missing_installed_manifest_still_fails_strictly(tmp_path):
+    manifest_path = tmp_path / "app_update_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "channel": "dev",
+                "app_version": "2.0.0",
+                "build_id": "commit-abc",
+                "payload_filename": "OpeningTrainer-app.zip",
+                "payload_url": "https://example.invalid/dev/OpeningTrainer-app.zip",
+                "payload_sha256": "abc",
+                "published_at_utc": "2026-03-31T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app_state = tmp_path / "OpeningTrainer"
+
+    with pytest.raises(UpdaterInstallStateError, match="missing required updater metadata"):
+        check_for_update(str(manifest_path), app_state_root=app_state, runtime_mode="consumer")
 
 
 def test_update_available_when_version_equal_but_build_id_differs(tmp_path):
