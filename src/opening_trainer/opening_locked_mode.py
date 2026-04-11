@@ -27,19 +27,14 @@ class OpeningLockedArtifactStatus:
     sqlite_path: Path | None
     opening_count: int
     detail: str
-    source: str | None = None
-    candidate_roots: tuple[Path, ...] = ()
 
 
 @dataclass
 class OpeningLockedSessionState:
     enabled: bool = False
-    requested: bool = False
-    artifact_available: bool = False
     selected_opening_name: str | None = None
     lock_released_by_opponent: bool = False
     current_transition_state: OpeningLockedModeState = OpeningLockedModeState.OPENING_LOCKED
-    ineffective_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -116,63 +111,34 @@ class OpeningLockedProvider:
         return CanonicalContinuation(next_move_uci=(line[0] if line else None), line=line)
 
 
-def discover_opening_locked_artifact(
-    content_root: Path,
-    *,
-    artifact_root: Path | None = None,
-    candidate_roots: tuple[Path, ...] = (),
-    source: str | None = None,
-) -> OpeningLockedArtifactStatus:
-    unique_candidates: list[Path] = []
-
-    def _append_candidate(path: Path | None) -> None:
-        if path is None:
-            return
-        normalized = path.expanduser()
-        if normalized not in unique_candidates:
-            unique_candidates.append(normalized)
-
-    _append_candidate(artifact_root)
-    for candidate in candidate_roots:
-        _append_candidate(candidate)
-    if not unique_candidates:
-        _append_candidate(content_root / "opening_locked_mode")
-
-    missing_by_candidate: list[str] = []
-    for candidate_root in unique_candidates:
-        manifest_path = candidate_root / "manifest.json"
-        sqlite_path = candidate_root / "opening_locked_openings.sqlite"
-        if not manifest_path.exists() or not sqlite_path.exists():
-            missing: list[str] = []
-            if not manifest_path.exists():
-                missing.append(str(manifest_path))
-            if not sqlite_path.exists():
-                missing.append(str(sqlite_path))
-            missing_by_candidate.append(f"{candidate_root} -> missing: {', '.join(missing)}")
-            continue
-        opening_count = 0
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                opening_count = int(payload.get("opening_count") or payload.get("exact_opening_count") or 0)
-        except Exception:
-            opening_count = 0
-        resolved_source = source or "discovery"
+def discover_opening_locked_artifact(content_root: Path) -> OpeningLockedArtifactStatus:
+    artifact_root = content_root / "opening_locked_mode"
+    manifest_path = artifact_root / "manifest.json"
+    sqlite_path = artifact_root / "opening_locked_openings.sqlite"
+    if not manifest_path.exists() or not sqlite_path.exists():
+        missing: list[str] = []
+        if not manifest_path.exists():
+            missing.append(str(manifest_path))
+        if not sqlite_path.exists():
+            missing.append(str(sqlite_path))
         return OpeningLockedArtifactStatus(
-            loaded=True,
+            loaded=False,
             manifest_path=manifest_path,
             sqlite_path=sqlite_path,
-            opening_count=max(0, opening_count),
-            detail=f"opening-locked artifact loaded from {candidate_root} ({resolved_source})",
-            source=resolved_source,
-            candidate_roots=tuple(unique_candidates),
+            opening_count=0,
+            detail=f"opening-locked artifact unavailable (missing: {', '.join(missing)})",
         )
+    opening_count = 0
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            opening_count = int(payload.get("opening_count") or payload.get("exact_opening_count") or 0)
+    except Exception:
+        opening_count = 0
     return OpeningLockedArtifactStatus(
-        loaded=False,
-        manifest_path=None,
-        sqlite_path=None,
-        opening_count=0,
-        detail=f"opening-locked artifact unavailable (tried: {'; '.join(missing_by_candidate)})",
-        source=source or "discovery",
-        candidate_roots=tuple(unique_candidates),
+        loaded=True,
+        manifest_path=manifest_path,
+        sqlite_path=sqlite_path,
+        opening_count=max(0, opening_count),
+        detail=f"opening-locked artifact loaded from {artifact_root}",
     )

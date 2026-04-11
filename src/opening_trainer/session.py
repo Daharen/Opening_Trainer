@@ -424,26 +424,12 @@ class TrainingSession:
             self.evaluator.engine_authority.config = self.config
         self._refresh_practical_risk_reconciled()
         self.opponent.set_fallback_mode(self.settings.opponent_fallback_mode)
-        artifact_ready = bool(self.opening_locked_provider is not None)
-        requested = bool(self.settings.opening_locked_mode_enabled)
-        selected_opening_name = self.settings.selected_opening_name
-        effective = bool(artifact_ready and requested and selected_opening_name)
-        ineffective_reason = None
-        if not effective:
-            if not artifact_ready:
-                ineffective_reason = "artifact unavailable"
-            elif not requested:
-                ineffective_reason = "mode toggle off"
-            elif not selected_opening_name:
-                ineffective_reason = "no opening selected"
+        artifact_ready = bool(self.opening_locked_provider is not None and getattr(self.runtime_context, "opening_locked_artifact", None) and self.runtime_context.opening_locked_artifact.loaded)
         self.opening_locked_state = OpeningLockedSessionState(
-            enabled=effective,
-            requested=requested,
-            artifact_available=artifact_ready,
-            selected_opening_name=selected_opening_name,
+            enabled=bool(self.settings.opening_locked_mode_enabled and artifact_ready and self.settings.selected_opening_name),
+            selected_opening_name=self.settings.selected_opening_name,
             lock_released_by_opponent=False,
             current_transition_state=OpeningLockedModeState.OPENING_LOCKED,
-            ineffective_reason=ineffective_reason,
         )
 
     def _refresh_practical_risk_reconciled(self) -> None:
@@ -2009,18 +1995,6 @@ class TrainingSession:
         color_name = 'WHITE' if self.player_color == chess.WHITE else 'BLACK'
         for line in self.runtime_context.startup_status(mode=self.mode.upper(), user_color=color_name).lines:
             log_line(line, tag='evaluation')
-        log_line(
-            "Opening-locked requested="
-            f"{'yes' if self.opening_locked_state.requested else 'no'} "
-            f"selected={self.opening_locked_state.selected_opening_name or 'none'} "
-            f"effective={'yes' if self.opening_locked_state.enabled else 'no'}",
-            tag='evaluation',
-        )
-        if not self.opening_locked_state.enabled and self.opening_locked_state.ineffective_reason:
-            log_line(
-                f"Opening-locked inactive reason: {self.opening_locked_state.ineffective_reason}",
-                tag='evaluation',
-            )
 
     def _print_evaluation_feedback(self, evaluation: EvaluationResult) -> None:
         for line in format_evaluation_feedback(evaluation):
