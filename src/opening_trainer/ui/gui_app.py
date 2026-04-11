@@ -43,7 +43,9 @@ from ..single_instance import (
 )
 from ..updater import (
     UpdaterInstallStateError,
+    UpdaterUnsupportedInRuntimeError,
     check_for_update,
+    evaluate_updater_runtime_support,
     launch_updater_helper,
     log_install_runtime_diagnostics,
     resolve_manifest_path_or_url,
@@ -234,6 +236,7 @@ class OpeningTrainerGUI:
         self.root.rowconfigure(3, weight=1)
 
         self._build_menubar()
+        self._refresh_updater_action_state()
 
         self.summary_strip = ttk.Frame(self.root)
         self.summary_strip.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 2))
@@ -2387,6 +2390,8 @@ class OpeningTrainerGUI:
 
         update_menu = tk.Menu(menubar, tearoff=0)
         update_menu.add_command(label='Check for Updates', command=self._check_for_updates_from_gui)
+        self._update_menu = update_menu
+        self._update_menu_index = 0
         menubar.add_cascade(label='Update', menu=update_menu)
 
         report_menu = tk.Menu(menubar, tearoff=0)
@@ -2406,6 +2411,31 @@ class OpeningTrainerGUI:
         dev_menu.add_command(label='Set Smart Profile Level…', command=self._set_smart_profile_level)
         menubar.add_cascade(label='Developer', menu=dev_menu)
         self.root.config(menu=menubar)
+
+    def _runtime_mode_value(self) -> str | None:
+        runtime_mode = getattr(getattr(self.session, "runtime_context", None), "runtime_mode", None)
+        if runtime_mode is None:
+            return None
+        return str(getattr(runtime_mode, "value", runtime_mode))
+
+    def _refresh_updater_action_state(self) -> None:
+        update_menu = getattr(self, "_update_menu", None)
+        if update_menu is None:
+            return
+        supported, reason = evaluate_updater_runtime_support(
+            app_state_root=self._app_state_root(),
+            runtime_mode=self._runtime_mode_value(),
+        )
+        if supported:
+            update_menu.entryconfigure(self._update_menu_index, label="Check for Updates", state=tk.NORMAL)
+            return
+        update_menu.entryconfigure(
+            self._update_menu_index,
+            label="Check for Updates (Installed builds only)",
+            state=tk.DISABLED,
+        )
+        if reason:
+            log_line(f"GUI_UPDATE_ACTION_DISABLED: {reason}", tag="startup")
 
     def _open_review_deck_inspector(self) -> None:
         if self.review_deck_inspector_window is not None:
@@ -2436,9 +2466,21 @@ class OpeningTrainerGUI:
             return
         try:
             app_state_root = self._app_state_root()
+            runtime_mode = self._runtime_mode_value()
+            supported, reason = evaluate_updater_runtime_support(
+                app_state_root=app_state_root,
+                runtime_mode=runtime_mode,
+            )
+            if not supported:
+                messagebox.showinfo("Updater Unavailable", reason or "Updater is unavailable in this runtime.", parent=self.root)
+                return
             log_install_runtime_diagnostics(app_state_root=app_state_root, phase="update_preflight")
             manifest_ref = resolve_manifest_path_or_url(None, app_state_root=app_state_root)
-            has_update, manifest, installed = check_for_update(manifest_ref, app_state_root=app_state_root)
+            has_update, manifest, installed = check_for_update(
+                manifest_ref,
+                app_state_root=app_state_root,
+                runtime_mode=runtime_mode,
+            )
             installed_version = "unknown" if not installed else str(installed.get("app_version") or "unknown")
             installed_build = "unknown" if not installed else str(installed.get("build_id") or "unknown")
             latest = f"{manifest.app_version} ({manifest.build_id or 'no-build-id'})"
@@ -2465,6 +2507,7 @@ class OpeningTrainerGUI:
                 wait_for_pid=os.getpid(),
                 relaunch_exe_path=Path(sys.executable),
                 relaunch_args=["--runtime-mode", "consumer"],
+                runtime_mode=runtime_mode,
             )
             if not launch_result.helper_bootstrap_proven:
                 log_line(
@@ -2492,6 +2535,10 @@ class OpeningTrainerGUI:
                 f"Update cannot continue because this installation is missing updater components or metadata.\n\n{exc}\n\nPlease run installer repair/reinstall.",
                 parent=self.root,
             )
+        except UpdaterUnsupportedInRuntimeError as exc:
+            self._exit_updater_mode()
+            log_line(f"GUI_UPDATE_UNSUPPORTED_RUNTIME: {exc}", tag="startup")
+            messagebox.showinfo("Updater Unavailable", str(exc), parent=self.root)
         except Exception as exc:  # noqa: BLE001
             self._exit_updater_mode()
             log_line(f"GUI_UPDATE_FAILED: {exc}", tag="error")

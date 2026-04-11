@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .install_layout import read_installed_app_manifest
+from .runtime_mode import RuntimeMode
 from .session_logging import log_line
 
 DEFAULT_UPDATE_CHANNEL = "dev"
@@ -38,6 +39,10 @@ class HelperLaunchResult:
 
 class UpdaterInstallStateError(RuntimeError):
     """Raised when updater prerequisites are missing and cannot be recovered."""
+
+
+class UpdaterUnsupportedInRuntimeError(RuntimeError):
+    """Raised when updater actions are invoked in a runtime where updater is intentionally unavailable."""
 
 
 @dataclass(frozen=True)
@@ -306,6 +311,14 @@ def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
     return installed_manifest, helper_script
 
 
+def evaluate_updater_runtime_support(*, app_state_root: Path, runtime_mode: RuntimeMode | str | None) -> tuple[bool, str | None]:
+    parsed_mode = runtime_mode if isinstance(runtime_mode, RuntimeMode) else RuntimeMode.parse(runtime_mode)
+    installed_manifest = read_installed_app_manifest(app_state_root)
+    if parsed_mode is RuntimeMode.DEV and installed_manifest is None:
+        return False, "Updater is only available for installed consumer builds."
+    return True, None
+
+
 def _has_newer_build(installed: dict, manifest: AppUpdateManifest) -> bool:
     installed_channel = str(installed.get("channel") or "").strip().lower()
     if installed_channel and installed_channel != manifest.channel.strip().lower():
@@ -346,7 +359,15 @@ def _log_installed_manifest_stale(*, app_state_root: Path, installed_manifest: d
     )
 
 
-def check_for_update(manifest_path_or_url: str, *, app_state_root: Path) -> tuple[bool, AppUpdateManifest, dict | None]:
+def check_for_update(
+    manifest_path_or_url: str,
+    *,
+    app_state_root: Path,
+    runtime_mode: RuntimeMode | str | None = None,
+) -> tuple[bool, AppUpdateManifest, dict | None]:
+    supported, reason = evaluate_updater_runtime_support(app_state_root=app_state_root, runtime_mode=runtime_mode)
+    if not supported:
+        raise UpdaterUnsupportedInRuntimeError(reason or "Updater is unavailable in the current runtime.")
     manifest = load_update_manifest(manifest_path_or_url)
     installed, _helper_script = ensure_updater_prerequisites(app_state_root)
     return _has_newer_build(installed, manifest), manifest, installed
@@ -483,7 +504,11 @@ def launch_updater_helper(
     wait_for_pid: int,
     relaunch_exe_path: Path | None = None,
     relaunch_args: list[str] | None = None,
+    runtime_mode: RuntimeMode | str | None = None,
 ) -> HelperLaunchResult:
+    supported, reason = evaluate_updater_runtime_support(app_state_root=app_state_root, runtime_mode=runtime_mode)
+    if not supported:
+        raise UpdaterUnsupportedInRuntimeError(reason or "Updater is unavailable in the current runtime.")
     _installed, helper_script = ensure_updater_prerequisites(app_state_root)
     helper_wrapper_script = helper_script.parent / HELPER_WRAPPER_SCRIPT_NAME
     manifest_ref = resolve_manifest_path_or_url(manifest_path_or_url, app_state_root=app_state_root)
