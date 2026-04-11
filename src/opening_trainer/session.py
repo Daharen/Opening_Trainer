@@ -425,28 +425,11 @@ class TrainingSession:
         self._refresh_practical_risk_reconciled()
         self.opponent.set_fallback_mode(self.settings.opponent_fallback_mode)
         artifact_ready = bool(self.opening_locked_provider is not None and getattr(self.runtime_context, "opening_locked_artifact", None) and self.runtime_context.opening_locked_artifact.loaded)
-        requested = bool(self.settings.opening_locked_mode_enabled)
-        selected_name = self.settings.selected_opening_name
-        effective = bool(artifact_ready and requested and selected_name)
         self.opening_locked_state = OpeningLockedSessionState(
-            enabled=effective,
-            selected_opening_name=selected_name,
+            enabled=bool(self.settings.opening_locked_mode_enabled and artifact_ready and self.settings.selected_opening_name),
+            selected_opening_name=self.settings.selected_opening_name,
             lock_released_by_opponent=False,
             current_transition_state=OpeningLockedModeState.OPENING_LOCKED,
-        )
-        ineffective_reason = (
-            "active"
-            if effective
-            else ("artifact unavailable" if not artifact_ready else ("mode toggle off" if not requested else "no opening selected"))
-        )
-        log_line(
-            "OPENING_LOCKED_ACTIVATION "
-            f"artifact_available={'yes' if artifact_ready else 'no'}; "
-            f"requested={'yes' if requested else 'no'}; "
-            f"selected_opening={selected_name or 'none'}; "
-            f"effective={'yes' if effective else 'no'}; "
-            f"reason={ineffective_reason}",
-            tag='session',
         )
 
     def _refresh_practical_risk_reconciled(self) -> None:

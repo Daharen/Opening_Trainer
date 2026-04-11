@@ -283,13 +283,7 @@ class OpeningTrainerGUI:
             width=28,
         )
         self.fallback_mode_combo.grid(row=0, column=15, sticky='w', padx=(0, 8))
-        self.opening_locked_enabled_checkbutton = ttk.Checkbutton(
-            self.control_strip,
-            text='Opening-locked',
-            variable=self.opening_locked_enabled_var,
-            command=self._on_manual_contract_changed,
-        )
-        self.opening_locked_enabled_checkbutton.grid(row=0, column=16, sticky='w', padx=(0, 8))
+        ttk.Checkbutton(self.control_strip, text='Opening-locked', variable=self.opening_locked_enabled_var, command=self._on_manual_contract_changed).grid(row=0, column=16, sticky='w', padx=(0, 8))
         ttk.Label(self.control_strip, text='Opening').grid(row=0, column=17, sticky='w')
         self.opening_locked_opening_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.opening_locked_opening_var, width=24)
         self.opening_locked_opening_combo.grid(row=0, column=18, sticky='w', padx=(0, 8))
@@ -676,6 +670,10 @@ class OpeningTrainerGUI:
             self._prepend_recent_status("Opening-locked mode unavailable: opening_locked_mode artifact is not available in the runtime content root.")
             self.opening_locked_enabled_var.set(False)
             opening_lock_requested = False
+        if opening_lock_requested and not opening_lock_name:
+            self._prepend_recent_status("Opening-locked mode unavailable: select an exact opening name first.")
+            self.opening_locked_enabled_var.set(False)
+            opening_lock_requested = False
         selected_time_control_id = self.top_time_control_var.get().strip() or settings.selected_time_control_id
         selected_track = self._derive_track_label(selected_time_control_id).lower()
         if selected_track not in {'rapid', 'blitz', 'bullet'}:
@@ -789,17 +787,14 @@ class OpeningTrainerGUI:
         self.smart_mode_var.set(status.active)
         opening_names = self.session.opening_locked_opening_names() if hasattr(self.session, "opening_locked_opening_names") else []
         artifact_status = self.session.opening_locked_artifact_status() if hasattr(self.session, "opening_locked_artifact_status") else None
-        artifact_available = bool(artifact_status is not None and bool(getattr(artifact_status, "loaded", False)))
-        selected_name = self.session.settings.selected_opening_name or ''
-        if hasattr(self, "opening_locked_enabled_var"):
-            self.opening_locked_enabled_var.set(bool(self.session.settings.opening_locked_mode_enabled))
         if hasattr(self, "opening_locked_opening_combo"):
             self.opening_locked_opening_combo.configure(values=opening_names)
-            self.opening_locked_opening_var.set(selected_name)
-            combo_state = 'readonly' if artifact_available and opening_names else 'disabled'
+            if self.opening_locked_opening_var.get().strip() not in opening_names:
+                self.opening_locked_opening_var.set(opening_names[0] if opening_names else '')
+            combo_state = 'readonly' if opening_names else 'disabled'
             self.opening_locked_opening_combo.configure(state=combo_state)
-        if hasattr(self, "opening_locked_enabled_checkbutton"):
-            self.opening_locked_enabled_checkbutton.configure(state=('normal' if artifact_available else 'disabled'))
+        if hasattr(self, "opening_locked_enabled_var") and artifact_status is not None and not bool(getattr(artifact_status, "loaded", False)):
+            self.opening_locked_enabled_var.set(False)
         bands = sorted(
             {entry.target_rating_band for entry in (self.catalog.entries if self.catalog else ()) if entry.time_control_id == self.top_time_control_var.get().strip()},
             key=sort_key_rating_band,
@@ -1422,27 +1417,9 @@ class OpeningTrainerGUI:
         opening_lock_text = ""
         artifact_status = self.session.opening_locked_artifact_status() if hasattr(self.session, "opening_locked_artifact_status") else None
         if artifact_status is not None:
-            requested = bool(self.session.settings.opening_locked_mode_enabled)
-            selected_name = self.session.settings.selected_opening_name
-            effective = (
-                bool(getattr(artifact_status, "loaded", False))
-                and requested
-                and bool(selected_name)
-            )
-            if not getattr(artifact_status, "loaded", False):
-                reason = "artifact unavailable"
-            elif not requested:
-                reason = "mode toggle off"
-            elif not selected_name:
-                reason = "no opening selected"
-            else:
-                reason = "active"
             opening_lock_text = (
                 f' | Opening-lock artifact={"yes" if artifact_status.loaded else "no"}'
-                f' requested={"yes" if requested else "no"}'
-                f' effective={"yes" if effective else "no"}'
                 f' selected={self.session.settings.selected_opening_name or "n/a"}'
-                f' reason={reason}'
                 f' state={getattr(getattr(self.session, "opening_locked_state", None), "current_transition_state", "n/a")}'
             )
         return (
