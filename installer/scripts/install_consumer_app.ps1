@@ -29,10 +29,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:LogFilePath = $null
-$processHelperPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'process_hygiene.ps1'
-if (Test-Path -LiteralPath $processHelperPath -PathType Leaf) {
-    . $processHelperPath
-}
 
 function Initialize-AppInstallLog {
     if ([string]::IsNullOrWhiteSpace($LogPath)) {
@@ -196,40 +192,7 @@ try {
 
     if (Test-Path -LiteralPath $targetRoot) {
         Write-AppInstallLog "Removing existing mutable app root: $targetRoot"
-        if (Get-Command Invoke-ProcessCleanupForRoot -ErrorAction SilentlyContinue) {
-            $cleanupResult = Invoke-ProcessCleanupForRoot -Root $targetRoot -ExcludeProcessIds @($PID) -Log ${function:Write-AppInstallLog}
-            if ($cleanupResult.Remaining.Count -gt 0) {
-                $remainingSummary = ($cleanupResult.Remaining | ForEach-Object { "pid=$($_.pid);name=$($_.name);exe=$($_.executable)" }) -join " | "
-                Write-AppInstallLog "INSTALL_ROOT_PREDELETE_BLOCKED target_root=$targetRoot remaining=$remainingSummary"
-            }
-        }
-        $removed = $false
-        for ($attempt = 1; $attempt -le 5; $attempt++) {
-            try {
-                Remove-Item -LiteralPath $targetRoot -Recurse -Force
-                Write-AppInstallLog "INSTALL_ROOT_REMOVE_ATTEMPT_OK attempt=$attempt target_root=$targetRoot"
-                $removed = $true
-                break
-            }
-            catch {
-                Write-AppInstallLog "INSTALL_ROOT_REMOVE_ATTEMPT_FAILED attempt=$attempt target_root=$targetRoot error=$($_.Exception.Message)"
-                if (-not (Get-Command Invoke-ProcessCleanupForRoot -ErrorAction SilentlyContinue)) {
-                    if ($attempt -ge 5) { throw }
-                    Start-Sleep -Milliseconds 300
-                    continue
-                }
-                $retryCleanup = Invoke-ProcessCleanupForRoot -Root $targetRoot -ExcludeProcessIds @($PID) -Log ${function:Write-AppInstallLog}
-                if ($retryCleanup.Remaining.Count -gt 0) {
-                    $remainingSummary = ($retryCleanup.Remaining | ForEach-Object { "pid=$($_.pid);name=$($_.name);exe=$($_.executable)" }) -join " | "
-                    Write-AppInstallLog "INSTALL_ROOT_REMOVE_RETRY_BLOCKERS attempt=$attempt target_root=$targetRoot remaining=$remainingSummary"
-                }
-                if ($attempt -ge 5) { throw }
-                Start-Sleep -Milliseconds 300
-            }
-        }
-        if (-not $removed) {
-            throw "Failed to remove mutable app root after retries: $targetRoot"
-        }
+        Remove-Item -LiteralPath $targetRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
 

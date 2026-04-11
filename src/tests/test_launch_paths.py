@@ -321,8 +321,6 @@ def test_powershell_ordinary_launch_includes_splash_and_single_instance_guards()
     assert 'GUI_READY:' in script
     assert 'GUI_STARTUP_FAILED:' in script
     assert 'APP_DUPLICATE_OWNER_INFO_AVAILABLE:' in script
-    assert 'ORDINARY_PRELAUNCH_PROCESS_SCAN' in script
-    assert 'Ordinary launch refused: stale repo trainer process(es) still running' in script
 
 
 def test_powershell_ordinary_failure_message_points_to_session_log_and_dev_launcher():

@@ -191,9 +191,6 @@ def test_install_consumer_app_has_probe_and_fallback_policy() -> None:
     assert "helperSourceCandidates" in script
     assert "Provisioned updater helper to app state" in script
     assert "HELPER_SOURCE_CANDIDATES" in script
-    assert "Invoke-ProcessCleanupForRoot" in script
-    assert "INSTALL_ROOT_REMOVE_ATTEMPT_FAILED" in script
-    assert "INSTALL_ROOT_PREDELETE_BLOCKED" in script
 
 
 def test_updater_helper_and_publish_script_exist() -> None:
@@ -210,8 +207,6 @@ def test_updater_helper_and_publish_script_exist() -> None:
     wrapper_text = wrapper_script.read_text(encoding="utf-8")
     publish_text = publish_script.read_text(encoding="utf-8")
     assert "Wait-ForProcessExit" in helper_text
-    assert "MUTABLE_ROOT_PROCESS_CLEANUP_BEGIN" in helper_text
-    assert "UPDATER_FAILURE_BLOCKERS" in helper_text
     assert "payload_sha256" in helper_text
     assert "mutable_app_root" in helper_text
     assert "build_id" in helper_text
@@ -221,16 +216,6 @@ def test_updater_helper_and_publish_script_exist() -> None:
     assert "build_consumer_app_payload.ps1" in publish_text
     assert "Get-FileHash" in publish_text
     assert "build_id" in publish_text
-
-
-def test_process_hygiene_helper_exists_and_defines_shared_cleanup_functions() -> None:
-    helper_path = _repo_root() / "installer" / "scripts" / "process_hygiene.ps1"
-    helper = helper_path.read_text(encoding="utf-8")
-
-    assert "function Get-ProcessesByExecutableRoot" in helper
-    assert "function Invoke-ProcessCleanupForRoot" in helper
-    assert "PROCESS_CLEANUP_BEGIN" in helper
-    assert "PROCESS_CLEANUP_COMPLETE" in helper
 
 
 def test_updater_lane_files_do_not_contain_merge_conflict_markers() -> None:

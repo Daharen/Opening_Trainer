@@ -515,62 +515,6 @@ function Invoke-PythonEntrypointDetached {
     $launcherExe = if (Test-Path $pythonwPath) { $pythonwPath } else { $VenvPython }
     $usesPythonw = [System.StringComparer]::OrdinalIgnoreCase.Equals([System.IO.Path]::GetFileName($launcherExe), "pythonw.exe")
 
-    function Get-RepoTrainerPythonProcesses {
-        param([string]$RepoRootPath, [int]$ExcludePid = 0)
-        $rows = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
-        if (-not $rows) { return @() }
-        $normalizedRepoRoot = [System.IO.Path]::GetFullPath($RepoRootPath).TrimEnd('\')
-        $matches = @()
-        foreach ($row in $rows) {
-            $pid = [int]$row.ProcessId
-            if ($ExcludePid -gt 0 -and $pid -eq $ExcludePid) { continue }
-            $name = [string]$row.Name
-            if ($name -notin @('python.exe', 'pythonw.exe')) { continue }
-            $commandLine = [string]$row.CommandLine
-            if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
-            if ($commandLine.IndexOf($normalizedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
-            if (
-                ($commandLine.IndexOf('run_trainer.py', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) -and
-                ($commandLine.IndexOf('main.py', [System.StringComparison]::OrdinalIgnoreCase) -lt 0)
-            ) {
-                continue
-            }
-            $matches += [pscustomobject]@{
-                pid = $pid
-                name = $name
-                command_line = $commandLine
-            }
-        }
-        return $matches | Sort-Object pid
-    }
-
-    function Stop-StaleRepoTrainerProcesses {
-        param([string]$RepoRootPath)
-        $matches = @(Get-RepoTrainerPythonProcesses -RepoRootPath $RepoRootPath -ExcludePid $PID)
-        if ($matches.Count -eq 0) {
-            Write-SessionLogLine -Tag "startup" -Message "ORDINARY_PRELAUNCH_PROCESS_SCAN state=clean repo_root=$RepoRootPath"
-            return
-        }
-        $summary = ($matches | ForEach-Object { "pid=$($_.pid);name=$($_.name)" }) -join " | "
-        Write-SessionLogLine -Tag "startup" -Message "ORDINARY_PRELAUNCH_PROCESS_SCAN state=found repo_root=$RepoRootPath matches=$summary"
-        foreach ($proc in $matches) {
-            try {
-                Stop-Process -Id $proc.pid -Force -ErrorAction Stop
-                Write-SessionLogLine -Tag "startup" -Message "ORDINARY_PRELAUNCH_PROCESS_STOP pid=$($proc.pid) result=issued"
-            }
-            catch {
-                Write-SessionLogLine -Tag "error" -Message "ORDINARY_PRELAUNCH_PROCESS_STOP pid=$($proc.pid) result=failed error=$($_.Exception.Message)"
-            }
-        }
-        Start-Sleep -Milliseconds 350
-        $remaining = @(Get-RepoTrainerPythonProcesses -RepoRootPath $RepoRootPath -ExcludePid $PID)
-        if ($remaining.Count -gt 0) {
-            $remainingSummary = ($remaining | ForEach-Object { "pid=$($_.pid);name=$($_.name)" }) -join " | "
-            throw "Ordinary launch refused: stale repo trainer process(es) still running ($remainingSummary)."
-        }
-    }
-
-    Stop-StaleRepoTrainerProcesses -RepoRootPath $RepoRoot
     $env:PYTHONUNBUFFERED = "1"
     $env:PYTHONIOENCODING = "utf-8"
     $env:OPENING_TRAINER_CONSOLE_MIRROR = "0"
