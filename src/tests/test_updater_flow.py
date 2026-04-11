@@ -716,6 +716,8 @@ def test_apply_helper_logs_cwd_relocation_and_swap_retries():
     assert "SWAP_TARGETS mutable_root=" in script
     assert "SWAP_MOVE_ATTEMPT attempt=" in script
     assert "SWAP_MOVE_ATTEMPT_FAILED attempt=" in script
+    assert "MUTABLE_ROOT_PROCESS_CLEANUP_SUMMARY" in script
+    assert "MUTABLE_ROOT_FINAL_BLOCKER_SCAN" in script
 
 
 def test_apply_helper_rejects_manifest_and_staged_identity_drift_before_swap():

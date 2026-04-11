@@ -29,6 +29,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:LogFilePath = $null
+$processHygieneHelperPath = Join-Path (Split-Path -Parent $PSCommandPath) 'process_hygiene.ps1'
+if (Test-Path -LiteralPath $processHygieneHelperPath) {
+    . $processHygieneHelperPath
+}
 
 function Initialize-AppInstallLog {
     if ([string]::IsNullOrWhiteSpace($LogPath)) {
@@ -46,6 +50,48 @@ function Write-AppInstallLog {
     $line = "[$timestamp] $Message"
     Add-Content -LiteralPath $script:LogFilePath -Value $line -Encoding utf8
     Write-Host $line
+}
+
+function Remove-AppRootWithProcessCleanup {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetRoot,
+        [int]$MaxAttempts = 4
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        if (-not (Test-Path -LiteralPath $TargetRoot)) {
+            Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_SKIPPED root=$TargetRoot reason=missing"
+            return
+        }
+        Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_BEGIN root=$TargetRoot attempt=$attempt max_attempts=$MaxAttempts"
+        if (-not (Get-Command Stop-TrainerProcessesForRoot -ErrorAction SilentlyContinue)) {
+            Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_SKIPPED root=$TargetRoot reason=process_hygiene_helper_unavailable helper_path=$processHygieneHelperPath"
+            $cleanupResult = [pscustomobject]@{ found = @(); terminated = @(); remaining = @() }
+        } else {
+            $cleanupResult = Stop-TrainerProcessesForRoot -PathPrefix $TargetRoot -Label 'install_mutable_root' -ExcludeCurrentProcess -Logger { param($m) Write-AppInstallLog $m }
+        }
+        Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_SUMMARY root=$TargetRoot attempt=$attempt found=$($cleanupResult.found.Count) terminated=$($cleanupResult.terminated.Count) remaining=$($cleanupResult.remaining.Count)"
+        try {
+            Remove-Item -LiteralPath $TargetRoot -Recurse -Force -ErrorAction Stop
+            Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_RESULT root=$TargetRoot attempt=$attempt result=removed"
+            return
+        }
+        catch {
+            Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_RESULT root=$TargetRoot attempt=$attempt result=remove_failed error=$($_.Exception.Message)"
+            if ($attempt -eq $MaxAttempts) {
+                if (Get-Command Get-TrainerProcessCandidates -ErrorAction SilentlyContinue) {
+                    $postScan = Get-TrainerProcessCandidates -PathPrefix $TargetRoot
+                    Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_FINAL_BLOCKERS root=$TargetRoot blockers=$($postScan.Count)"
+                    foreach ($proc in $postScan) {
+                        Write-AppInstallLog "PROCESS_HYGIENE_DELETE_ROOT_BLOCKER $(Format-TrainerProcessCandidate -Candidate $proc)"
+                    }
+                }
+                throw
+            }
+            Start-Sleep -Milliseconds (250 * $attempt)
+        }
+    }
 }
 
 function Get-DirectoryTreeSummary {
@@ -192,7 +238,7 @@ try {
 
     if (Test-Path -LiteralPath $targetRoot) {
         Write-AppInstallLog "Removing existing mutable app root: $targetRoot"
-        Remove-Item -LiteralPath $targetRoot -Recurse -Force
+        Remove-AppRootWithProcessCleanup -TargetRoot $targetRoot
     }
     New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
 
@@ -227,6 +273,13 @@ try {
     if ($null -eq $resolvedHelperSource) {
         throw "Updater helper source was not found. Candidates: $($helperSourceCandidates -join '; ')"
     }
+    $processHelperCandidates = @(
+        (Join-Path (Split-Path -Parent $resolvedHelperSource) 'process_hygiene.ps1'),
+        (Join-Path $bootstrapUpdaterDir 'process_hygiene.ps1'),
+        (Join-Path $BootstrapRoot 'process_hygiene.ps1'),
+        $processHygieneHelperPath
+    )
+    Write-AppInstallLog "PROCESS_HYGIENE_HELPER_SOURCE_CANDIDATES=$($processHelperCandidates -join '; ')"
     $wrapperSourceCandidates = @()
     if (-not [string]::IsNullOrWhiteSpace($updaterWrapperScriptPath)) {
         $wrapperSourceCandidates += $updaterWrapperScriptPath
@@ -252,6 +305,8 @@ try {
     $mutableHelper = Join-Path $mutableUpdaterRoot 'apply_app_update.ps1'
     $appStateWrapper = Join-Path $updaterRoot 'invoke_apply_app_update.ps1'
     $mutableWrapper = Join-Path $mutableUpdaterRoot 'invoke_apply_app_update.ps1'
+    $appStateProcessHelper = Join-Path $updaterRoot 'process_hygiene.ps1'
+    $mutableProcessHelper = Join-Path $mutableUpdaterRoot 'process_hygiene.ps1'
     Copy-Item -LiteralPath $resolvedHelperSource -Destination $appStateHelper -Force
     Write-AppInstallLog "Provisioned updater helper to app state: $appStateHelper source=$resolvedHelperSource"
     Copy-Item -LiteralPath $resolvedHelperSource -Destination $mutableHelper -Force
@@ -260,6 +315,21 @@ try {
     Write-AppInstallLog "Provisioned updater wrapper to app state: $appStateWrapper source=$resolvedWrapperSource"
     Copy-Item -LiteralPath $resolvedWrapperSource -Destination $mutableWrapper -Force
     Write-AppInstallLog "Provisioned updater wrapper to mutable app payload: $mutableWrapper source=$resolvedWrapperSource"
+    $resolvedProcessHelperSource = $null
+    foreach ($candidate in $processHelperCandidates) {
+        $exists = Test-Path -LiteralPath $candidate -PathType Leaf
+        Write-AppInstallLog "PROCESS_HYGIENE_HELPER_SOURCE_CHECK path=$candidate exists=$exists"
+        if ($exists) {
+            $resolvedProcessHelperSource = $candidate
+            break
+        }
+    }
+    if ($null -eq $resolvedProcessHelperSource) {
+        throw "process_hygiene.ps1 source was not found. Candidates: $($processHelperCandidates -join '; ')"
+    }
+    Copy-Item -LiteralPath $resolvedProcessHelperSource -Destination $appStateProcessHelper -Force
+    Copy-Item -LiteralPath $resolvedProcessHelperSource -Destination $mutableProcessHelper -Force
+    Write-AppInstallLog "Provisioned process hygiene helper to app state and mutable payload: source=$resolvedProcessHelperSource app_state=$appStateProcessHelper mutable=$mutableProcessHelper"
 
     $mutablePayloadIdentity = Join-Path $targetRoot 'payload_identity.json'
     Assert-PathExists -Path $mutablePayloadIdentity -Label 'mutable_payload_identity_marker' -Phase 'post-copy'

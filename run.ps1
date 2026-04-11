@@ -519,6 +519,7 @@ function Invoke-PythonEntrypointDetached {
     $env:PYTHONIOENCODING = "utf-8"
     $env:OPENING_TRAINER_CONSOLE_MIRROR = "0"
     Write-SessionLogLine -Tag "startup" -Message "Ordinary launch handoff prepared (detached executable=$launcherExe)"
+    Assert-NoDetachedTrainerDuplicates -RepoRoot $RepoRoot -EntrypointPath $fullPath
 
     try {
         $startInfo = @{
@@ -545,6 +546,34 @@ function Invoke-PythonEntrypointDetached {
     Write-SessionLogLine -Tag "startup" -Message "Ordinary launch handoff complete (pid=$($process.Id))."
     Log "Detached ordinary launch started (pid=$($process.Id)) via $([System.IO.Path]::GetFileName($launcherExe))."
     return $process
+}
+
+function Assert-NoDetachedTrainerDuplicates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$EntrypointPath
+    )
+
+    $normalizedRepoRoot = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\').ToLowerInvariant()
+    $normalizedEntrypoint = [System.IO.Path]::GetFullPath($EntrypointPath).ToLowerInvariant()
+    $candidates = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessId -ne $PID -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.ExecutablePath) -and
+            [System.IO.Path]::GetFileName([string]$_.ExecutablePath).ToLowerInvariant() -in @('python.exe', 'pythonw.exe') -and
+            [string]$_.CommandLine -like "*$normalizedEntrypoint*"
+        } |
+        Sort-Object ProcessId
+    if (-not $candidates) {
+        return
+    }
+    Write-SessionLogLine -Tag "error" -Message "Detached launch blocked: stale trainer runtime candidate(s) found for entrypoint path."
+    foreach ($candidate in $candidates) {
+        Write-SessionLogLine -Tag "error" -Message "Detached launch blocker pid=$($candidate.ProcessId) exe=$($candidate.ExecutablePath) cmd=$($candidate.CommandLine)"
+    }
+    throw "Detached launch blocked because an existing trainer runtime process is already active for $normalizedEntrypoint."
 }
 
 function Show-StartupSplash {

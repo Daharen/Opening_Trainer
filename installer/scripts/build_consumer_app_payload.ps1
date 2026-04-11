@@ -13,6 +13,7 @@ $payloadZip = Join-Path $appPayloadDist 'OpeningTrainer-app.zip'
 $stagingRoot = Join-Path $appPayloadDist 'staging'
 $updaterHelperSource = Join-Path $repoRoot 'installer\scripts\apply_app_update.ps1'
 $updaterWrapperSource = Join-Path $repoRoot 'installer\scripts\invoke_apply_app_update.ps1'
+$processHygieneSource = Join-Path $repoRoot 'installer\scripts\process_hygiene.ps1'
 
 $appUpdateManifestPath = Join-Path $repoRoot 'installer\app_update_manifest.json'
 $payloadIdentityFilename = 'payload_identity.json'
@@ -54,6 +55,9 @@ if (-not (Test-Path -LiteralPath $updaterHelperSource -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $updaterWrapperSource -PathType Leaf)) {
     throw "Updater wrapper script missing: $updaterWrapperSource"
 }
+if (-not (Test-Path -LiteralPath $processHygieneSource -PathType Leaf)) {
+    throw "Process hygiene script missing: $processHygieneSource"
+}
 if (-not (Test-Path -LiteralPath $appUpdateManifestPath -PathType Leaf)) {
     throw "App update manifest missing: $appUpdateManifestPath"
 }
@@ -82,6 +86,7 @@ $consumerUpdaterRoot = Join-Path $consumerDist 'updater'
 New-Item -ItemType Directory -Path $consumerUpdaterRoot -Force | Out-Null
 Copy-Item -LiteralPath $updaterHelperSource -Destination (Join-Path $consumerUpdaterRoot 'apply_app_update.ps1') -Force
 Copy-Item -LiteralPath $updaterWrapperSource -Destination (Join-Path $consumerUpdaterRoot 'invoke_apply_app_update.ps1') -Force
+Copy-Item -LiteralPath $processHygieneSource -Destination (Join-Path $consumerUpdaterRoot 'process_hygiene.ps1') -Force
 
 New-Item -ItemType Directory -Path $appPayloadDist -Force | Out-Null
 if (Test-Path -LiteralPath $payloadZip) {

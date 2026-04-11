@@ -25,6 +25,7 @@ PAYLOAD_IDENTITY_FILENAME = "payload_identity.json"
 INSTALL_DIAGNOSTIC_MARKER = "lane_installer_observability_v1"
 HELPER_SCRIPT_NAME = "apply_app_update.ps1"
 HELPER_WRAPPER_SCRIPT_NAME = "invoke_apply_app_update.ps1"
+PROCESS_HYGIENE_SCRIPT_NAME = "process_hygiene.ps1"
 BOOTSTRAP_ENTER_MARKER = "encoded_bootstrap_v1_entered"
 
 
@@ -194,6 +195,7 @@ def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: di
     mutable_root = Path(str((installed_manifest or {}).get("mutable_app_root") or app_state_root / "App")).expanduser()
     helper_target = _updater_runtime_root(app_state_root) / HELPER_SCRIPT_NAME
     wrapper_target = _updater_runtime_root(app_state_root) / HELPER_WRAPPER_SCRIPT_NAME
+    process_hygiene_target = _updater_runtime_root(app_state_root) / PROCESS_HYGIENE_SCRIPT_NAME
     helper_candidates = _candidate_helper_sources(
         app_state_root=app_state_root,
         mutable_root=mutable_root,
@@ -203,6 +205,11 @@ def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: di
         app_state_root=app_state_root,
         mutable_root=mutable_root,
         script_name=HELPER_WRAPPER_SCRIPT_NAME,
+    )
+    process_hygiene_candidates = _candidate_helper_sources(
+        app_state_root=app_state_root,
+        mutable_root=mutable_root,
+        script_name=PROCESS_HYGIENE_SCRIPT_NAME,
     )
     config_path = updater_config_path(app_state_root)
     log_line(
@@ -214,6 +221,7 @@ def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: di
         f"installed_manifest_exists={(app_state_root / 'installed_app_manifest.json').exists()} "
         f"helper_target={helper_target} helper_target_exists={helper_target.exists()} "
         f"wrapper_target={wrapper_target} wrapper_target_exists={wrapper_target.exists()} "
+        f"process_hygiene_target={process_hygiene_target} process_hygiene_target_exists={process_hygiene_target.exists()} "
         f"updater_config_path={config_path} updater_config_exists={config_path.exists()}",
         tag="startup",
     )
@@ -225,6 +233,11 @@ def _audit_updater_prerequisites(*, app_state_root: Path, installed_manifest: di
     for index, candidate in enumerate(wrapper_candidates, start=1):
         log_line(
             f"UPDATER_PREREQ_AUDIT wrapper_candidate_index={index} path={candidate} exists={candidate.exists()}",
+            tag="startup",
+        )
+    for index, candidate in enumerate(process_hygiene_candidates, start=1):
+        log_line(
+            f"UPDATER_PREREQ_AUDIT process_hygiene_candidate_index={index} path={candidate} exists={candidate.exists()}",
             tag="startup",
         )
 
@@ -263,7 +276,8 @@ def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
         "UPDATER_PREREQ_STATE "
         f"installed_manifest_present={installed_manifest is not None} "
         f"helper_present={(updater_root / HELPER_SCRIPT_NAME).exists()} "
-        f"wrapper_present={(updater_root / HELPER_WRAPPER_SCRIPT_NAME).exists()}",
+        f"wrapper_present={(updater_root / HELPER_WRAPPER_SCRIPT_NAME).exists()} "
+        f"process_hygiene_present={(updater_root / PROCESS_HYGIENE_SCRIPT_NAME).exists()}",
         tag="startup",
     )
     if installed_manifest is None:
@@ -291,6 +305,17 @@ def ensure_updater_prerequisites(app_state_root: Path) -> tuple[dict, Path]:
     if wrapper_script is None or not wrapper_script.exists():
         raise UpdaterInstallStateError(
             f"Installation is missing required updater helper components: {updater_root / HELPER_WRAPPER_SCRIPT_NAME}"
+        )
+    process_hygiene_script = _resolve_updater_script(
+        app_state_root=app_state_root,
+        installed_manifest=installed_manifest,
+        script_name=PROCESS_HYGIENE_SCRIPT_NAME,
+        prerequisite="process_hygiene",
+    )
+    if process_hygiene_script is None or not process_hygiene_script.exists():
+        log_line(
+            f"UPDATER_PREREQ_OPTIONAL_MISSING prerequisite=process_hygiene path={updater_root / PROCESS_HYGIENE_SCRIPT_NAME}",
+            tag="error",
         )
 
     updater_config = updater_config_path(app_state_root)
