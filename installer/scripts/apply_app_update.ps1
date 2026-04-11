@@ -14,6 +14,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$processHelperPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'process_hygiene.ps1'
+if (Test-Path -LiteralPath $processHelperPath -PathType Leaf) {
+    . $processHelperPath
+}
 
 $bootstrapUpdaterRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'OpeningTrainer\updater'
 if ([string]::IsNullOrWhiteSpace($bootstrapUpdaterRoot)) {
@@ -171,7 +175,7 @@ function Wait-ForProcessExit {
     Write-Log "PROCESS_FORCE_TERMINATE_RESULT result=confirmed_stopped wait_pid=$WaitForProcessId forced_wait_seconds=$ForcedWaitSeconds"
 }
 
-    function Wait-ForMutableRootSwapReady {
+function Wait-ForMutableRootSwapReady {
     param(
         [Parameter(Mandatory = $true)]
         [string]$MutableRoot,
@@ -207,6 +211,26 @@ function Wait-ForProcessExit {
             }
             Start-Sleep -Milliseconds 400
         }
+    }
+}
+
+    function Invoke-MutableRootProcessCleanup {
+    param([Parameter(Mandatory = $true)][string]$MutableRoot)
+    if (-not (Get-Command Invoke-ProcessCleanupForRoot -ErrorAction SilentlyContinue)) {
+        Write-Log "MUTABLE_ROOT_PROCESS_CLEANUP_SKIPPED reason=helper_missing mutable_root=$MutableRoot"
+        return
+    }
+    $excludePids = @($PID)
+    if ($WaitForPid -gt 0) {
+        $excludePids += $WaitForPid
+    }
+    Write-Log "MUTABLE_ROOT_PROCESS_CLEANUP_BEGIN mutable_root=$MutableRoot exclude_pids=$($excludePids -join ',')"
+    $cleanupResult = Invoke-ProcessCleanupForRoot -Root $MutableRoot -ExcludeProcessIds $excludePids -Log ${function:Write-Log}
+    if ($cleanupResult.Remaining.Count -gt 0) {
+        $remainingSummary = ($cleanupResult.Remaining | ForEach-Object { "pid=$($_.pid);name=$($_.name);exe=$($_.executable)" }) -join " | "
+        Write-Log "MUTABLE_ROOT_PROCESS_CLEANUP_REMAINING mutable_root=$MutableRoot remaining=$remainingSummary"
+    } else {
+        Write-Log "MUTABLE_ROOT_PROCESS_CLEANUP_CLEAN mutable_root=$MutableRoot"
     }
 }
 
@@ -443,6 +467,7 @@ public static class PopupSuppressorNative {
     Write-Log "HELPER_WAITING_FOR_APP_RELEASE wait_pid=$WaitForPid"
     Ensure-ProcessStopped -WaitForProcessId $WaitForPid
     Write-Log "HELPER_WAIT_FOR_APP_RELEASE_COMPLETE wait_pid=$WaitForPid strategy=polite_then_forceful"
+    Invoke-MutableRootProcessCleanup -MutableRoot $mutableRoot
     $phase = 'wait_for_mutable_root_release'
     Wait-ForMutableRootSwapReady -MutableRoot $mutableRoot
     $phase = 'swap_begin'
@@ -539,6 +564,15 @@ public static class OpeningTrainerNativeMethods {
         Write-Log "UPDATER_FINAL_RESULT result=success"
     }
     catch {
+        if (Get-Command Get-ProcessesByExecutableRoot -ErrorAction SilentlyContinue) {
+            $remaining = @(Get-ProcessesByExecutableRoot -Root $mutableRoot -ExcludeProcessIds @($PID))
+            if ($remaining.Count -gt 0) {
+                $remainingSummary = ($remaining | ForEach-Object { "pid=$($_.pid);name=$($_.name);exe=$($_.executable)" }) -join " | "
+                Write-Log "UPDATER_FAILURE_BLOCKERS mutable_root=$mutableRoot remaining=$remainingSummary"
+            } else {
+                Write-Log "UPDATER_FAILURE_BLOCKERS mutable_root=$mutableRoot remaining=none_detected"
+            }
+        }
         Write-Log "UPDATER_FINAL_RESULT result=failure phase=$phase app_state_root=$AppStateRoot updater_root=$updaterRoot log_path=$logPath manifest_ref=$ManifestPathOrUrl error=$($_.Exception.Message)"
         throw
     }

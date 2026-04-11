@@ -29,6 +29,7 @@ from ..opponent import (
     OPPONENT_FALLBACK_CURRENT_BUNDLE_ONLY,
     OPPONENT_FALLBACK_NEARBY_HUMAN_BUNDLES,
 )
+from ..process_hygiene import ProcessCleanupCoordinator
 from ..runtime import RuntimeContext, RuntimeOverrides, inspect_corpus_bundle, load_runtime_config
 from ..settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from ..session import TrainingSession
@@ -207,6 +208,7 @@ class OpeningTrainerGUI:
         self._loading_thread = None
         self._loading_job_active = False
         self.session_logger = get_session_logger()
+        self._process_cleanup = ProcessCleanupCoordinator(log_line)
         self.dev_console = DevConsoleWindow(self.root, self.session_logger)
         self.timing_override_dialog = TimingOverrideDialog(self.root, self.session)
         self.review_deck_inspector_window: ReviewDeckInspectorWindow | None = None
@@ -2654,9 +2656,11 @@ class OpeningTrainerGUI:
             if os.name == 'nt':
                 os.startfile(logs_folder)
             elif os.uname().sysname == 'Darwin':
-                subprocess.Popen(['open', logs_folder])
+                process = subprocess.Popen(['open', logs_folder])
+                self._process_cleanup.register(process, label='open_logs_folder')
             else:
-                subprocess.Popen(['xdg-open', logs_folder])
+                process = subprocess.Popen(['xdg-open', logs_folder])
+                self._process_cleanup.register(process, label='open_logs_folder')
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror('Logs Folder', f'Could not open logs folder.\n{exc}', parent=self.root)
 
@@ -3100,6 +3104,9 @@ class OpeningTrainerGUI:
         self._cancel_pending_opponent_callback()
         self._clear_board_transients(reason='shutdown')
         self._cancel_after_handles()
+        process_cleanup = getattr(self, '_process_cleanup', None)
+        if process_cleanup is not None:
+            process_cleanup.cleanup()
 
     def _shutdown_dialogs_phase(self) -> None:
         self._close_optional_component('dev_console')
