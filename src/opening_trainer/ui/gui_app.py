@@ -377,7 +377,7 @@ class OpeningTrainerGUI:
         self.action_bar.grid(row=4, column=0, sticky='ew', padx=12, pady=(0, 12))
         self.start_button = tk.Button(
             toolbar,
-            text='Start drill',
+            text='Start Drill',
             command=self._start_game,
             bg='#00c853',
             fg='white',
