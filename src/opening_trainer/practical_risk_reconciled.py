@@ -55,6 +55,15 @@ class ReconciledBandResolution:
     provenance: str
 
 
+@dataclass(frozen=True)
+class MoveFamilyPolicy:
+    family_label: str | None
+    is_sharp_gambit_family: bool | None
+    toggle_state_required: str | None
+    source: str
+    supporting_reason_codes: tuple[str, ...] = ()
+
+
 class PracticalRiskReconciledService:
     def __init__(
         self,
@@ -72,6 +81,7 @@ class PracticalRiskReconciledService:
         self.band_order: tuple[str, ...] = ()
         self._admissions: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._failure_explanations: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        self._failure_explanations_by_move: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._root_summaries: dict[tuple[str, str], dict[str, Any]] = {}
         self.root_summary_status: str = "not_loaded"
         self.root_summary_activation_warning: str | None = None
@@ -261,6 +271,8 @@ class PracticalRiskReconciledService:
                 "toggle_state_required": _as_text(row["toggle_state_required"]),
                 "rendered_preview": _as_text(row["rendered_preview"]),
             }
+            move_key = (key[0], key[2])
+            self._failure_explanations_by_move.setdefault(move_key, []).append(self._failure_explanations[key])
 
     def _load_root_summaries(self, conn: sqlite3.Connection, tables: set[str]) -> None:
         if "reconciled_root_summaries" not in tables:
@@ -336,6 +348,80 @@ class PracticalRiskReconciledService:
 
     def get_root_summary(self, position_key: str, band_id: str) -> dict[str, Any] | None:
         return self._root_summaries.get((position_key, band_id))
+
+    def get_move_family_policy(
+        self,
+        *,
+        position_key: str,
+        move_uci: str,
+        band_id: str,
+        mode_id: str,
+        admission: dict[str, Any] | None = None,
+        current_band_explanation: dict[str, Any] | None = None,
+    ) -> MoveFamilyPolicy:
+        local_admission = admission or self.get_move_admission(position_key, band_id, move_uci)
+        if local_admission:
+            sharp_local = self.admission_is_sharp_gambit_family(local_admission)
+            if sharp_local:
+                return MoveFamilyPolicy(
+                    family_label=_as_text(local_admission.get("family_label")) or "sharp/gambit",
+                    is_sharp_gambit_family=True,
+                    toggle_state_required="sharp_on" if str(local_admission.get("failure_reason_code") or "").strip().lower() == "would_pass_if_sharp_toggle_enabled" else None,
+                    source="admission_metadata",
+                    supporting_reason_codes=tuple(
+                        code for code in (str(local_admission.get("failure_reason_code") or "").strip(),) if code
+                    ),
+                )
+
+        explanation = current_band_explanation or self.get_failure_explanation(position_key, band_id, move_uci, mode_id)
+        if explanation is not None:
+            sharp_explanation = self.explanation_is_sharp_gambit_family(explanation)
+            if sharp_explanation:
+                return MoveFamilyPolicy(
+                    family_label=_as_text(explanation.get("family_label")) or "sharp/gambit",
+                    is_sharp_gambit_family=True,
+                    toggle_state_required=_as_text(explanation.get("toggle_state_required")),
+                    source="current_band_failure_explanation",
+                    supporting_reason_codes=tuple(
+                        code for code in (str(explanation.get("reason_code") or "").strip(),) if code
+                    ),
+                )
+
+        global_candidates = self._failure_explanations_by_move.get((position_key, move_uci), [])
+        for candidate in global_candidates:
+            if self.explanation_is_sharp_gambit_family(candidate):
+                return MoveFamilyPolicy(
+                    family_label=_as_text(candidate.get("family_label")) or "sharp/gambit",
+                    is_sharp_gambit_family=True,
+                    toggle_state_required=_as_text(candidate.get("toggle_state_required")),
+                    source="global_failure_explanations",
+                    supporting_reason_codes=tuple(
+                        sorted(
+                            {
+                                str(row.get("reason_code") or "").strip()
+                                for row in global_candidates
+                                if str(row.get("reason_code") or "").strip()
+                            }
+                        )
+                    ),
+                )
+
+        if local_admission:
+            return MoveFamilyPolicy(
+                family_label=_as_text(local_admission.get("family_label")),
+                is_sharp_gambit_family=False,
+                toggle_state_required=None,
+                source="admission_metadata_non_sharp",
+                supporting_reason_codes=(),
+            )
+
+        return MoveFamilyPolicy(
+            family_label=None,
+            is_sharp_gambit_family=None,
+            toggle_state_required=None,
+            source="unknown_family",
+            supporting_reason_codes=(),
+        )
 
     @staticmethod
     def admission_is_sharp_gambit_family(admission: dict[str, Any] | None) -> bool:

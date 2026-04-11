@@ -413,7 +413,7 @@ class TrainingSession:
         self.opponent.set_fallback_mode(self.settings.opponent_fallback_mode)
 
     def _refresh_practical_risk_reconciled(self) -> None:
-        time_control_id, _rating_band = self._timing_contract_metadata()
+        time_control_id, _rating_band, _source = self._effective_training_contract_metadata(source_context="refresh_reconciled_service")
         self.practical_risk_reconciled = PracticalRiskReconciledService(
             self.runtime_context.config.practical_risk_reconciled_path,
             expected_time_control_id=time_control_id,
@@ -561,6 +561,21 @@ class TrainingSession:
             self.board.board = chess.Board(self.active_review_plan.root_fen)
         self._apply_manual_forced_color(items)
         self._print_new_game_banner()
+        effective_time_control_id, effective_rating_band, contract_source = self._effective_training_contract_metadata(
+            source_context="start_new_game"
+        )
+        log_line(
+            "TRAINING_CONTRACT_RESOLVED "
+            f"requested_band={effective_rating_band or 'unknown'} source={contract_source} "
+            f"time_control={effective_time_control_id or 'unknown'}",
+            tag="startup",
+        )
+        log_line(
+            "TRAINING_BUNDLE_BIND_REUSED "
+            f"bundle={self.runtime_context.config.corpus_bundle_dir or 'none'} "
+            f"band={effective_rating_band or 'unknown'} source={contract_source}",
+            tag="startup",
+        )
         log_line(self.opponent.status_message, tag='startup')
         self._print_startup_summary()
         log_line(f'Routing: {self.current_routing.selection_explanation}', tag='review')
@@ -770,6 +785,24 @@ class TrainingSession:
         return name.replace('_', ' ')
 
     def _timing_contract_metadata(self) -> tuple[str | None, str | None]:
+        time_control_id, rating_band, _source = self._effective_training_contract_metadata(source_context="legacy_call")
+        return time_control_id, rating_band
+
+    def _effective_training_contract_metadata(self, *, source_context: str) -> tuple[str | None, str | None, str]:
+        settings = getattr(self, "settings", None)
+        if settings is not None and settings.training_mode == SMART_PROFILE_MODE:
+            status = self.smart_profile.status(
+                routing_source=RoutingSource.CORPUS.value,
+                bundle_available=bool(self.runtime_context.config.corpus_bundle_dir),
+                time_control_id=settings.selected_time_control_id,
+                bundle_rating_band=None,
+                required_turns=getattr(self, "required_player_moves", self.config.active_envelope_player_moves),
+                good_accepted=self.config.good_moves_acceptable,
+                catalog_root=settings.last_corpus_catalog_root,
+            )
+            if status.category_id and status.expected_rating_band:
+                return status.category_id, status.expected_rating_band, "smart_profile_level"
+
         provider = getattr(self.opponent, "bundle_provider", None)
         bundle = getattr(provider, "bundle", None)
         manifest = getattr(bundle, "manifest", None)
@@ -789,7 +822,10 @@ class TrainingSession:
             time_control_id = getattr(bundle, "bundle_invariant_time_control_id", None)
         if not rating_band:
             rating_band = getattr(bundle, "bundle_invariant_rating_band", None)
-        return time_control_id, rating_band
+        if time_control_id or rating_band:
+            return time_control_id, rating_band, "bundle_manifest"
+        selected_time_control = getattr(settings, "selected_time_control_id", None) if settings is not None else None
+        return selected_time_control, None, f"fallback_settings_{source_context}"
 
     def _canonical_corpus_contract(self) -> dict[str, object]:
         provider = getattr(self.opponent, "bundle_provider", None)
@@ -875,7 +911,13 @@ class TrainingSession:
             return self.get_view()
         if self._resolve_terminal_board_state():
             return self.get_view()
-        _time_control_id, rating_band = self._timing_contract_metadata()
+        _time_control_id, rating_band, contract_source = self._effective_training_contract_metadata(source_context="submit_user_move")
+        log_line(
+            "TRAINING_CONTRACT_RESOLVED "
+            f"requested_band={rating_band or 'unknown'} source={contract_source} "
+            f"time_control={_time_control_id or 'unknown'}",
+            tag="evaluation",
+        )
         try:
             evaluation = self.evaluator.evaluate(
                 board_before_move,

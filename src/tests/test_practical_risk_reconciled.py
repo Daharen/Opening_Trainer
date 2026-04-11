@@ -213,7 +213,7 @@ def test_engine_fail_reconciled_admitted_rescues_on_real_schema(tmp_path):
     _create_real_schema_db(
         db,
         admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "stafford line", "1400-1600")
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", None, "1400-1600")
         ],
     )
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
@@ -224,14 +224,17 @@ def test_engine_fail_reconciled_admitted_rescues_on_real_schema(tmp_path):
     assert passed.reason_text == "Accepted via practical-risk reconciliation for the current training band."
 
 
-def test_sharp_family_admission_toggle_off_is_policy_rejected(tmp_path):
+def test_sparse_admission_global_sharp_evidence_toggle_off_is_policy_rejected(tmp_path):
     board = chess.Board()
     position_key = _position_key(board)
     db = tmp_path / "sharp_admission.sqlite"
     _create_real_schema_db(
         db,
         admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", None, "1400-1600")
+        ],
+        explanations=[
+            (position_key, "1000-1200", "e2e4", "good_exclusive", "would_pass_if_sharp_toggle_enabled", "tmpl", "sharp/gambit", "1400-1600", "1800-2000", "sharp_on", None)
         ],
     )
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
@@ -239,18 +242,47 @@ def test_sharp_family_admission_toggle_off_is_policy_rejected(tmp_path):
     failed = _eval(service, requested_band_id="1200-1400", sharp=False)
     assert failed.accepted is False
     assert failed.metadata["reconciled"]["decision_source"] == "reconciled_policy_reject_sharp_toggle_off"
+    assert failed.metadata["reconciled"]["admission_is_sharp_gambit_family_local"] is False
+    assert failed.metadata["reconciled"]["admission_is_sharp_gambit_family_global"] is True
+    assert failed.metadata["reconciled"]["sharp_gambit_family_inference_source"] == "global_failure_explanations"
     assert "Enable sharp/gambit lines" in failed.reason_text
     assert "Rejected by engine" not in failed.reason_text
 
 
-def test_sharp_family_admission_toggle_on_rescues(tmp_path):
+def test_toggle_off_global_sharp_block_does_not_log_reason_admitted(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENING_TRAINER_SESSION_LOG_DIR", str(tmp_path / "logs"))
+    reset_logger_for_tests()
+    board = chess.Board()
+    position_key = _position_key(board)
+    db = tmp_path / "sharp_logging.sqlite"
+    _create_real_schema_db(
+        db,
+        admissions=[
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", None, "1400-1600")
+        ],
+        explanations=[
+            (position_key, "1000-1200", "e2e4", "good_exclusive", "would_pass_if_sharp_toggle_enabled", "tmpl", "sharp/gambit", "1400-1600", "1800-2000", "sharp_on", None)
+        ],
+    )
+    service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
+
+    _eval(service, requested_band_id="1400-1600", sharp=False)
+    lines = get_session_logger().visible_lines()
+    assert any("source=global_failure_explanations" in line for line in lines)
+    assert not any("PRACTICAL_RISK_FAIL_RESCUED" in line and "reason=admitted" in line for line in lines)
+
+
+def test_sparse_admission_global_sharp_evidence_toggle_on_rescues(tmp_path):
     board = chess.Board()
     position_key = _position_key(board)
     db = tmp_path / "sharp_admission_on.sqlite"
     _create_real_schema_db(
         db,
         admissions=[
-            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", "sharp line", "1400-1600")
+            (position_key, "1400-1600", "e2e4", 0, 0, 1, 1, "local", "local", "reconciled", "reconciled", "good", None, "1400-1600")
+        ],
+        explanations=[
+            (position_key, "1000-1200", "e2e4", "good_exclusive", "would_pass_if_sharp_toggle_enabled", "tmpl", "sharp/gambit", "1400-1600", "1800-2000", "sharp_on", None)
         ],
     )
     service = PracticalRiskReconciledService(db, expected_time_control_id="600+0")
@@ -275,6 +307,7 @@ def test_non_sharp_admission_still_rescues_with_toggle_off(tmp_path):
     passed = _eval(service, requested_band_id="1200-1400", sharp=False)
     assert passed.accepted is True
     assert passed.metadata["reconciled"]["decision_source"] == "reconciled_admission"
+    assert passed.metadata["reconciled"]["admission_is_sharp_gambit_family_global"] is False
 
 
 def test_strict_mode_sharp_override_only_when_enabled(tmp_path):

@@ -230,22 +230,38 @@ class MoveEvaluator:
         metadata["family_label"] = admission.get("family_label")
 
         admission_is_sharp_family = service.admission_is_sharp_gambit_family(admission)
+        metadata["admission_is_sharp_gambit_family_local"] = admission_is_sharp_family
         metadata["admission_is_sharp_gambit_family"] = admission_is_sharp_family
+        current_band_explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
+        family_policy = service.get_move_family_policy(
+            position_key=position_key,
+            move_uci=move_uci,
+            band_id=resolution.resolved_band_id,
+            mode_id=mode_id,
+            admission=admission,
+            current_band_explanation=current_band_explanation,
+        )
+        metadata["admission_is_sharp_gambit_family_global"] = family_policy.is_sharp_gambit_family
+        metadata["sharp_gambit_family_inference_source"] = family_policy.source
+        metadata["sharp_gambit_family_label"] = family_policy.family_label
+        metadata["sharp_gambit_family_supporting_reason_codes"] = list(family_policy.supporting_reason_codes)
+        metadata["effective_policy_gate_result"] = "not_applicable"
 
-        if admitted and admission_is_sharp_family and not allow_sharp_gambit_lines:
-            explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
+        if admitted and family_policy.is_sharp_gambit_family is True and not allow_sharp_gambit_lines:
+            explanation = current_band_explanation
             if explanation is None:
                 explanation = {
                     "reason_code": "would_pass_if_sharp_toggle_enabled",
                     "template_id": "runtime_policy_gate",
-                    "family_label": admission.get("family_label") or "sharp/gambit line",
+                    "family_label": family_policy.family_label or admission.get("family_label") or "sharp/gambit line",
                     "max_practical_band_id": admission.get("practical_ceiling_band_id"),
                     "first_failure_band_id": None,
                     "toggle_state_required": "sharp_on",
                     "rendered_preview": None,
-                }
+            }
             metadata["failure_explanation"] = explanation
             metadata["decision_source"] = "reconciled_policy_reject_sharp_toggle_off"
+            metadata["effective_policy_gate_result"] = "blocked_toggle_off"
             rendered = ReconciledFailureRenderer.render(
                 explanation,
                 requested_band_id=requested_band_id,
@@ -257,13 +273,16 @@ class MoveEvaluator:
                 f"template_id={explanation.get('template_id') or 'runtime_policy_gate'} "
                 f"max_practical_band={explanation.get('max_practical_band_id') or 'unknown'} "
                 f"first_failure_band={explanation.get('first_failure_band_id') or 'unknown'} "
-                f"toggle_state_required=sharp_on",
+                f"toggle_state_required=sharp_on source={family_policy.source}",
                 tag="evaluation",
             )
             return False, CanonicalJudgment.FAIL, rendered, metadata
 
         if admitted:
             metadata["decision_source"] = "reconciled_admission"
+            metadata["effective_policy_gate_result"] = (
+                "allow_toggle_on" if family_policy.is_sharp_gambit_family is True else "allow_admitted_non_sharp_or_unknown"
+            )
             rescue_reason_text = "Accepted via practical-risk reconciliation for the current training band."
             log_line(
                 "PRACTICAL_RISK_FAIL_RESCUED "
@@ -274,7 +293,15 @@ class MoveEvaluator:
             )
             return True, CanonicalJudgment.BETTER, rescue_reason_text, metadata
 
-        explanation = service.get_failure_explanation(position_key, resolution.resolved_band_id, move_uci, mode_id)
+        if family_policy.is_sharp_gambit_family is None:
+            metadata["effective_policy_gate_result"] = "family_unknown"
+            log_line(
+                "PRACTICAL_RISK_FAMILY_INFERENCE_UNKNOWN "
+                f"position_key={position_key} move_uci={move_uci} source={family_policy.source}",
+                tag="evaluation",
+            )
+
+        explanation = current_band_explanation
         if explanation is None:
             metadata["decision_source"] = "reconciled_reject_no_explanation"
             log_line(
