@@ -191,20 +191,26 @@ def test_install_consumer_app_has_probe_and_fallback_policy() -> None:
     assert "helperSourceCandidates" in script
     assert "Provisioned updater helper to app state" in script
     assert "HELPER_SOURCE_CANDIDATES" in script
+    assert "Remove-AppRootWithProcessCleanup" in script
+    assert "PROCESS_HYGIENE_DELETE_ROOT_BEGIN" in script
+    assert "PROCESS_HYGIENE_HELPER_SOURCE_CANDIDATES" in script
 
 
 def test_updater_helper_and_publish_script_exist() -> None:
     repo_root = _repo_root()
     helper_script = repo_root / "installer" / "scripts" / "apply_app_update.ps1"
     wrapper_script = repo_root / "installer" / "scripts" / "invoke_apply_app_update.ps1"
+    process_hygiene_script = repo_root / "installer" / "scripts" / "process_hygiene.ps1"
     publish_script = repo_root / "installer" / "scripts" / "publish_dev_update.ps1"
 
     assert helper_script.exists()
     assert wrapper_script.exists()
+    assert process_hygiene_script.exists()
     assert publish_script.exists()
 
     helper_text = helper_script.read_text(encoding="utf-8")
     wrapper_text = wrapper_script.read_text(encoding="utf-8")
+    process_hygiene_text = process_hygiene_script.read_text(encoding="utf-8")
     publish_text = publish_script.read_text(encoding="utf-8")
     assert "Wait-ForProcessExit" in helper_text
     assert "payload_sha256" in helper_text
@@ -213,6 +219,8 @@ def test_updater_helper_and_publish_script_exist() -> None:
     assert "WRAPPER_ENTERED" in wrapper_text
     assert "WRAPPER_REAL_HELPER_EXCEPTION" in wrapper_text
     assert "WRAPPER_RELAUNCH_ARGS_PARSE_FAILED" in wrapper_text
+    assert "Get-TrainerProcessCandidates" in process_hygiene_text
+    assert "Stop-TrainerProcessesForRoot" in process_hygiene_text
     assert "build_consumer_app_payload.ps1" in publish_text
     assert "Get-FileHash" in publish_text
     assert "build_id" in publish_text

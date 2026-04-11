@@ -14,6 +14,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$processHygieneHelperPath = Join-Path (Split-Path -Parent $PSCommandPath) 'process_hygiene.ps1'
+if (Test-Path -LiteralPath $processHygieneHelperPath) {
+    . $processHygieneHelperPath
+}
 
 $bootstrapUpdaterRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'OpeningTrainer\updater'
 if ([string]::IsNullOrWhiteSpace($bootstrapUpdaterRoot)) {
@@ -171,7 +175,7 @@ function Wait-ForProcessExit {
     Write-Log "PROCESS_FORCE_TERMINATE_RESULT result=confirmed_stopped wait_pid=$WaitForProcessId forced_wait_seconds=$ForcedWaitSeconds"
 }
 
-    function Wait-ForMutableRootSwapReady {
+function Wait-ForMutableRootSwapReady {
     param(
         [Parameter(Mandatory = $true)]
         [string]$MutableRoot,
@@ -208,6 +212,20 @@ function Wait-ForProcessExit {
             Start-Sleep -Milliseconds 400
         }
     }
+}
+
+    function Ensure-MutableRootProcessesStopped {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$MutableRoot
+    )
+    if (-not (Get-Command Stop-TrainerProcessesForRoot -ErrorAction SilentlyContinue)) {
+        Write-Log "MUTABLE_ROOT_PROCESS_CLEANUP_SKIPPED mutable_root=$MutableRoot reason=process_hygiene_helper_unavailable helper_path=$processHygieneHelperPath"
+        return [pscustomobject]@{ found = @(); terminated = @(); remaining = @() }
+    }
+    $result = Stop-TrainerProcessesForRoot -PathPrefix $MutableRoot -ExcludeCurrentProcess -Label 'updater_mutable_root' -Logger { param($m) Write-Log $m }
+    Write-Log "MUTABLE_ROOT_PROCESS_CLEANUP_SUMMARY mutable_root=$MutableRoot found=$($result.found.Count) terminated=$($result.terminated.Count) remaining=$($result.remaining.Count)"
+    return $result
 }
 
     function Relocate-HelperWorkingDirectory {
@@ -443,6 +461,8 @@ public static class PopupSuppressorNative {
     Write-Log "HELPER_WAITING_FOR_APP_RELEASE wait_pid=$WaitForPid"
     Ensure-ProcessStopped -WaitForProcessId $WaitForPid
     Write-Log "HELPER_WAIT_FOR_APP_RELEASE_COMPLETE wait_pid=$WaitForPid strategy=polite_then_forceful"
+    $phase = 'pre_swap_process_cleanup'
+    Ensure-MutableRootProcessesStopped -MutableRoot $mutableRoot | Out-Null
     $phase = 'wait_for_mutable_root_release'
     Wait-ForMutableRootSwapReady -MutableRoot $mutableRoot
     $phase = 'swap_begin'
@@ -539,6 +559,17 @@ public static class OpeningTrainerNativeMethods {
         Write-Log "UPDATER_FINAL_RESULT result=success"
     }
     catch {
+        if ($phase -eq 'wait_for_mutable_root_release' -or $phase -eq 'swap_begin' -or $phase -eq 'swap_move_app_to_prev') {
+            try {
+                $blockers = Get-TrainerProcessCandidates -PathPrefix $mutableRoot
+                Write-Log "MUTABLE_ROOT_FINAL_BLOCKER_SCAN mutable_root=$mutableRoot blockers=$($blockers.Count) phase=$phase"
+                foreach ($proc in $blockers) {
+                    Write-Log "MUTABLE_ROOT_FINAL_BLOCKER $(Format-TrainerProcessCandidate -Candidate $proc)"
+                }
+            } catch {
+                Write-Log "MUTABLE_ROOT_FINAL_BLOCKER_SCAN_FAILED mutable_root=$mutableRoot phase=$phase error=$($_.Exception.Message)"
+            }
+        }
         Write-Log "UPDATER_FINAL_RESULT result=failure phase=$phase app_state_root=$AppStateRoot updater_root=$updaterRoot log_path=$logPath manifest_ref=$ManifestPathOrUrl error=$($_.Exception.Message)"
         throw
     }

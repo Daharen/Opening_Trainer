@@ -317,6 +317,8 @@ def test_powershell_ordinary_launch_includes_splash_and_single_instance_guards()
     assert 'Opening GUI' in script
     assert 'Try-OpenExistingMutex -Name $BootMutexName' in script
     assert 'Try-OpenExistingMutex -Name $AppMutexName' in script
+    assert 'function Assert-NoDetachedTrainerDuplicates' in script
+    assert 'Detached launch blocked: stale trainer runtime candidate(s) found for entrypoint path.' in script
     assert 'Wait-ForStartupHandoff' in script
     assert 'GUI_READY:' in script
     assert 'GUI_STARTUP_FAILED:' in script

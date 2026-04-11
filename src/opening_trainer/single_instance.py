@@ -143,8 +143,28 @@ def read_instance_diagnostics() -> InstanceDiagnostics | None:
 
 
 def cleanup_stale_instance_diagnostics() -> bool:
-    path = _diagnostics_path()
-    if not path.exists():
+    diagnostics = read_instance_diagnostics()
+    if diagnostics is None:
+        path = _diagnostics_path()
+        if not path.exists():
+            return False
+        remove_instance_diagnostics()
+        return True
+    if _pid_is_running(diagnostics.pid):
         return False
     remove_instance_diagnostics()
+    return True
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
     return True
