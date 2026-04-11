@@ -30,6 +30,7 @@ from .bundle_contract import (
 )
 from .corpus import DEFAULT_ARTIFACT_PATH, load_artifact
 from .evaluation import EvaluatorConfig
+from .opening_locked_mode import OpeningLockedArtifactStatus, discover_opening_locked_artifact
 
 DEFAULT_RUNTIME_CONFIG_PATH = Path("runtime/runtime_config.json")
 WORKSPACE_RUNTIME_CONFIG_PATH = Path("runtime.local.json")
@@ -147,6 +148,7 @@ class RuntimeContext:
     book: ResolvedAssetPath
     engine: ResolvedAssetPath
     config_source: str
+    opening_locked_artifact: OpeningLockedArtifactStatus
 
     def startup_status(self, mode: str, user_color: str) -> RuntimeStartupStatus:
         fully_capable = self.corpus.available and self.engine.available
@@ -158,6 +160,7 @@ class RuntimeContext:
         opponent_order = (
             "corpus aggregate bundle or legacy corpus artifact -> Stockfish fallback -> random legal last-ditch fallback"
         )
+        opening_locked_status = self.opening_locked_artifact.detail
         lines = (
             f"Mode: {mode}",
             f"User color: {user_color}",
@@ -169,6 +172,7 @@ class RuntimeContext:
             f"Stockfish fallback available: {'yes' if self.engine.available else 'no'}",
             "Random fallback remains enabled only as the last-ditch opponent source.",
             doctrine_status,
+            f"Opening-locked artifact: {opening_locked_status}",
         )
         return RuntimeStartupStatus(
             mode=mode,
@@ -341,6 +345,8 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         label="opening book",
     )
 
+    opening_locked_artifact = discover_opening_locked_artifact(resolved_runtime_paths.paths.content_root)
+
     return RuntimeContext(
         runtime_mode=runtime_mode,
         runtime_mode_source=runtime_mode_resolution.source,
@@ -354,6 +360,7 @@ def load_runtime_config(overrides: RuntimeOverrides | None = None) -> RuntimeCon
         book=book,
         engine=engine,
         config_source=config_resolution.description,
+        opening_locked_artifact=opening_locked_artifact,
     )
 
 

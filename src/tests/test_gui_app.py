@@ -92,6 +92,7 @@ class FakeSession:
         self.state = SessionState.IDLE
         self.smart_profile = type('SmartProfile', (), {'reset_all': lambda self: None, 'set_level_for_current_track': lambda self, **kwargs: True, 'resolve_expected_bundle': lambda self, _root: type('R', (), {'resolved_entry': None})()})()
         self._pending_level_change = None
+        self._opening_locked_status = type("OpeningLockedStatus", (), {"loaded": False, "detail": "unavailable"})()
 
     def start_new_game(self):
         self.start_calls += 1
@@ -144,6 +145,12 @@ class FakeSession:
         pending = self._pending_level_change
         self._pending_level_change = None
         return pending
+
+    def opening_locked_opening_names(self):
+        return []
+
+    def opening_locked_artifact_status(self):
+        return self._opening_locked_status
 
 
 class RecordingModal:

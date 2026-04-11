@@ -193,6 +193,8 @@ class OpeningTrainerGUI:
         self.manual_good_var = tk.StringVar(value='Yes' if self.session.settings.good_moves_acceptable else 'No')
         self.allow_sharp_gambit_var = tk.BooleanVar(value=self.session.settings.allow_sharp_gambit_lines)
         self.opponent_fallback_mode_var = tk.StringVar(value=self.session.settings.opponent_fallback_mode)
+        self.opening_locked_enabled_var = tk.BooleanVar(value=self.session.settings.opening_locked_mode_enabled)
+        self.opening_locked_opening_var = tk.StringVar(value=self.session.settings.selected_opening_name or '')
         self.catalog_root_var = tk.StringVar()
         self.catalog_category_combo = None
         self.catalog_time_control_combo = None
@@ -281,11 +283,16 @@ class OpeningTrainerGUI:
             width=28,
         )
         self.fallback_mode_combo.grid(row=0, column=15, sticky='w', padx=(0, 8))
+        ttk.Checkbutton(self.control_strip, text='Opening-locked', variable=self.opening_locked_enabled_var, command=self._on_manual_contract_changed).grid(row=0, column=16, sticky='w', padx=(0, 8))
+        ttk.Label(self.control_strip, text='Opening').grid(row=0, column=17, sticky='w')
+        self.opening_locked_opening_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.opening_locked_opening_var, width=24)
+        self.opening_locked_opening_combo.grid(row=0, column=18, sticky='w', padx=(0, 8))
         self.top_time_control_combo.bind('<<ComboboxSelected>>', self._on_top_time_control_selected)
         self.top_elo_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_depth_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_good_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.fallback_mode_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
+        self.opening_locked_opening_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
 
         self.root_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bd=0)
         self.root_pane.grid(row=3, column=0, sticky='nsew', padx=12, pady=(6, 12))
@@ -455,6 +462,8 @@ class OpeningTrainerGUI:
                 active_training_ply_depth=settings.active_training_ply_depth,
                 smart_profile_enabled=settings.smart_profile_enabled,
                 training_mode=settings.training_mode,
+                opening_locked_mode_enabled=settings.opening_locked_mode_enabled,
+                selected_opening_name=settings.selected_opening_name,
                 selected_smart_track=settings.selected_smart_track,
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
@@ -478,6 +487,8 @@ class OpeningTrainerGUI:
                 active_training_ply_depth=settings.active_training_ply_depth,
                 smart_profile_enabled=settings.smart_profile_enabled,
                 training_mode=settings.training_mode,
+                opening_locked_mode_enabled=settings.opening_locked_mode_enabled,
+                selected_opening_name=settings.selected_opening_name,
                 selected_smart_track=settings.selected_smart_track,
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
@@ -505,6 +516,8 @@ class OpeningTrainerGUI:
                 active_training_ply_depth=settings.active_training_ply_depth,
                 smart_profile_enabled=settings.smart_profile_enabled,
                 training_mode=settings.training_mode,
+                opening_locked_mode_enabled=settings.opening_locked_mode_enabled,
+                selected_opening_name=settings.selected_opening_name,
                 selected_smart_track=settings.selected_smart_track,
                 selected_time_control_id=settings.selected_time_control_id,
                 side_panel_visible=self.panel_visible,
@@ -635,6 +648,8 @@ class OpeningTrainerGUI:
             self.smart_mode_var.get()
             and current_fallback_mode == self.session.settings.opponent_fallback_mode
             and selected_sharp_toggle == self.session.settings.allow_sharp_gambit_lines
+            and bool(self.opening_locked_enabled_var.get()) == bool(self.session.settings.opening_locked_mode_enabled)
+            and (self.opening_locked_opening_var.get().strip() or None) == self.session.settings.selected_opening_name
         ):
             return
         self._apply_top_contract_change(reason='manual contract changed')
@@ -648,6 +663,17 @@ class OpeningTrainerGUI:
 
     def _apply_top_contract_change(self, *, reason: str) -> None:
         settings = self.session.settings
+        opening_lock_requested = bool(self.opening_locked_enabled_var.get()) if hasattr(self, "opening_locked_enabled_var") else False
+        opening_lock_name = self.opening_locked_opening_var.get().strip() if hasattr(self, "opening_locked_opening_var") else ""
+        artifact_status = self.session.opening_locked_artifact_status() if hasattr(self.session, "opening_locked_artifact_status") else None
+        if opening_lock_requested and (artifact_status is None or not artifact_status.loaded):
+            self._prepend_recent_status("Opening-locked mode unavailable: opening_locked_mode artifact is not available in the runtime content root.")
+            self.opening_locked_enabled_var.set(False)
+            opening_lock_requested = False
+        if opening_lock_requested and not opening_lock_name:
+            self._prepend_recent_status("Opening-locked mode unavailable: select an exact opening name first.")
+            self.opening_locked_enabled_var.set(False)
+            opening_lock_requested = False
         selected_time_control_id = self.top_time_control_var.get().strip() or settings.selected_time_control_id
         selected_track = self._derive_track_label(selected_time_control_id).lower()
         if selected_track not in {'rapid', 'blitz', 'bullet'}:
@@ -659,6 +685,8 @@ class OpeningTrainerGUI:
                 active_training_ply_depth=int(self.manual_depth_var.get()) if mode == 'manual' else settings.active_training_ply_depth,
                 smart_profile_enabled=mode == 'smart_profile',
                 training_mode=mode,
+                opening_locked_mode_enabled=opening_lock_requested,
+                selected_opening_name=(opening_lock_name or None),
                 selected_smart_track=selected_track,
                 selected_time_control_id=selected_time_control_id,
                 side_panel_visible=self.panel_visible,
@@ -757,6 +785,16 @@ class OpeningTrainerGUI:
         self.top_track_var.set(track)
         status = self.session.smart_profile_status()
         self.smart_mode_var.set(status.active)
+        opening_names = self.session.opening_locked_opening_names() if hasattr(self.session, "opening_locked_opening_names") else []
+        artifact_status = self.session.opening_locked_artifact_status() if hasattr(self.session, "opening_locked_artifact_status") else None
+        if hasattr(self, "opening_locked_opening_combo"):
+            self.opening_locked_opening_combo.configure(values=opening_names)
+            if self.opening_locked_opening_var.get().strip() not in opening_names:
+                self.opening_locked_opening_var.set(opening_names[0] if opening_names else '')
+            combo_state = 'readonly' if opening_names else 'disabled'
+            self.opening_locked_opening_combo.configure(state=combo_state)
+        if hasattr(self, "opening_locked_enabled_var") and artifact_status is not None and not bool(getattr(artifact_status, "loaded", False)):
+            self.opening_locked_enabled_var.set(False)
         bands = sorted(
             {entry.target_rating_band for entry in (self.catalog.entries if self.catalog else ()) if entry.time_control_id == self.top_time_control_var.get().strip()},
             key=sort_key_rating_band,
@@ -1066,6 +1104,8 @@ class OpeningTrainerGUI:
                     active_training_ply_depth=settings.active_training_ply_depth,
                     smart_profile_enabled=settings.smart_profile_enabled,
                     training_mode=settings.training_mode,
+                opening_locked_mode_enabled=settings.opening_locked_mode_enabled,
+                selected_opening_name=settings.selected_opening_name,
                     selected_smart_track=settings.selected_smart_track,
                     selected_time_control_id=settings.selected_time_control_id,
                     side_panel_visible=settings.side_panel_visible,
@@ -1374,10 +1414,18 @@ class OpeningTrainerGUI:
             f' resolved={resolved_band or "n/a"}'
             f' sharp={"on" if self.session.settings.allow_sharp_gambit_lines else "off"}'
         )
+        opening_lock_text = ""
+        artifact_status = self.session.opening_locked_artifact_status() if hasattr(self.session, "opening_locked_artifact_status") else None
+        if artifact_status is not None:
+            opening_lock_text = (
+                f' | Opening-lock artifact={"yes" if artifact_status.loaded else "no"}'
+                f' selected={self.session.settings.selected_opening_name or "n/a"}'
+                f' state={getattr(getattr(self.session, "opening_locked_state", None), "current_transition_state", "n/a")}'
+            )
         return (
             f'Training depth: {self.session.required_player_moves} player moves | '
             f'Good accepted: {"yes" if self.session.config.good_moves_acceptable else "no"} | '
-            f'App max: {cap} player moves{retained_text}{reconciled_text}'
+            f'App max: {cap} player moves{retained_text}{reconciled_text}{opening_lock_text}'
         )
 
     def _smart_profile_summary_text(self) -> str:
@@ -1502,6 +1550,8 @@ class OpeningTrainerGUI:
                     active_training_ply_depth=self.session.settings.active_training_ply_depth,
                     smart_profile_enabled=self.session.settings.smart_profile_enabled,
                     training_mode=self.session.settings.training_mode,
+                    opening_locked_mode_enabled=self.session.settings.opening_locked_mode_enabled,
+                    selected_opening_name=self.session.settings.selected_opening_name,
                     selected_smart_track=self.session.settings.selected_smart_track,
                     selected_time_control_id=self.session.settings.selected_time_control_id,
                     side_panel_visible=self.panel_visible,
