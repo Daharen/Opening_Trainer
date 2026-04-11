@@ -205,14 +205,21 @@ class FakeStringVar:
 class FakeCombo:
     def __init__(self, values=()):
         self._values = tuple(values)
+        self._state = "readonly"
+        self._last_config = {}
 
     def configure(self, **kwargs):
+        self._last_config.update(kwargs)
         if "values" in kwargs:
             self._values = tuple(kwargs["values"])
+        if "state" in kwargs:
+            self._state = kwargs["state"]
 
     def cget(self, name):
         if name == "values":
             return self._values
+        if name == "state":
+            return self._state
         raise KeyError(name)
 
 
@@ -225,6 +232,15 @@ class FakeBoolVar:
 
     def set(self, value):
         self._value = bool(value)
+
+
+class FakeCheckbutton:
+    def __init__(self):
+        self.state = "normal"
+
+    def configure(self, **kwargs):
+        if "state" in kwargs:
+            self.state = kwargs["state"]
 
 
 class FakeThemeRoot:
@@ -1776,6 +1792,98 @@ def test_manual_contract_change_persists_sharp_toggle_outside_smart_mode():
     gui._apply_top_contract_change(reason="manual contract changed")
 
     assert captured["updated"].allow_sharp_gambit_lines is True
+
+
+def test_opening_locked_requested_persists_when_selected_opening_missing():
+    gui = _build_control_strip_gui()
+    gui.smart_mode_var = FakeBoolVar(False)
+    gui.opening_locked_enabled_var = FakeBoolVar(True)
+    gui.opening_locked_opening_var = FakeStringVar("")
+    gui.opening_locked_opening_combo = FakeCombo(values=("Italian Game",))
+    gui.top_time_control_var = FakeStringVar("600+0")
+    gui.manual_elo_var = FakeStringVar("1200-1400")
+    gui.catalog = type("Catalog", (), {"entries": ()})()
+    manual_entry = type("Entry", (), {"bundle_dir": "/tmp/manual_600_0_1200_1400"})()
+    gui.catalog.grouped = lambda: {"Rapid": {"600+0": {"1200-1400": (manual_entry,)}}}
+    gui.catalog_grouped = gui.catalog.grouped()
+    captured = {}
+
+    class _Session:
+        settings = TrainerSettings(training_mode="manual", selected_time_control_id="600+0", smart_profile_enabled=False)
+
+        def update_settings(self, settings):
+            captured["updated"] = settings
+            self.settings = settings
+            return settings
+
+        def smart_profile_status(self):
+            return type("Status", (), {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None})()
+
+        def max_supported_training_depth(self):
+            return 6
+
+        def opening_locked_artifact_status(self):
+            return type("S", (), {"loaded": True, "detail": "loaded"})()
+
+        def opening_locked_opening_names(self):
+            return ["Italian Game"]
+
+    gui.session = _Session()
+    gui._load_selected_bundle = lambda _path: None
+    gui._remembered_bundle_path = lambda: "/tmp/old_bundle"
+
+    gui._apply_top_contract_change(reason="manual contract changed")
+
+    assert captured["updated"].opening_locked_mode_enabled is True
+    assert captured["updated"].selected_opening_name is None
+
+
+def test_opening_locked_dropdown_enabled_when_artifact_available_even_if_toggle_off():
+    gui = _build_control_strip_gui()
+    gui.opening_locked_enabled_var = FakeBoolVar(False)
+    gui.opening_locked_opening_var = FakeStringVar("Italian Game")
+    gui.opening_locked_opening_combo = FakeCombo()
+    gui.opening_locked_enabled_checkbutton = FakeCheckbutton()
+    gui.session.settings = TrainerSettings(
+        training_mode="manual",
+        smart_profile_enabled=False,
+        opening_locked_mode_enabled=False,
+        selected_opening_name="Italian Game",
+    )
+    gui.session.opening_locked_artifact_status = lambda: type("S", (), {"loaded": True, "detail": "loaded"})()
+    gui.session.opening_locked_opening_names = lambda: ["Italian Game", "Ruy Lopez"]
+    gui.session.smart_profile_status = lambda: type(
+        "Status",
+        (),
+        {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None},
+    )()
+
+    gui._refresh_top_control_strip()
+
+    assert gui.opening_locked_opening_combo.cget("state") == "readonly"
+    assert gui.opening_locked_enabled_checkbutton.state == "normal"
+    assert gui.opening_locked_opening_var.get() == "Italian Game"
+
+
+def test_opening_locked_controls_disabled_when_artifact_unavailable():
+    gui = _build_control_strip_gui()
+    gui.opening_locked_enabled_var = FakeBoolVar(True)
+    gui.opening_locked_opening_var = FakeStringVar("")
+    gui.opening_locked_opening_combo = FakeCombo()
+    gui.opening_locked_enabled_checkbutton = FakeCheckbutton()
+    gui.session.settings = TrainerSettings(training_mode="manual", smart_profile_enabled=False, opening_locked_mode_enabled=True)
+    gui.session.opening_locked_artifact_status = lambda: type("S", (), {"loaded": False, "detail": "missing"})()
+    gui.session.opening_locked_opening_names = lambda: []
+    gui.session.smart_profile_status = lambda: type(
+        "Status",
+        (),
+        {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None},
+    )()
+
+    gui._refresh_top_control_strip()
+
+    assert gui.opening_locked_opening_combo.cget("state") == "disabled"
+    assert gui.opening_locked_enabled_checkbutton.state == "disabled"
 
 
 def test_load_selected_bundle_invokes_loading_state(monkeypatch, tmp_path):
