@@ -20,6 +20,7 @@ from opening_trainer.review.scheduler import sync_due_cycle_transition
 from opening_trainer.review.storage import ReviewStorage
 from opening_trainer.settings import TrainerSettingsStore
 from opening_trainer.session import TrainingSession
+from opening_trainer.session_logging import get_session_logger, reset_logger_for_tests
 from opening_trainer.session_contracts import OutcomeModalContract
 from opening_trainer.zstd_compat import compress as zstd_compress
 
@@ -84,7 +85,8 @@ def _write_reconciled_db_for_position(
     position_key: str,
     move_uci: str,
     band_id: str = "1000-1200",
-    local_reason: str = "manual_target_test",
+    local_reason: str | None = None,
+    global_sharp_explanation_band: str | None = None,
 ) -> None:
     connection = sqlite3.connect(path)
     try:
@@ -110,6 +112,23 @@ def _write_reconciled_db_for_position(
             "INSERT INTO reconciled_move_admissions VALUES(?,?, ?,1,1,1,1,'local','local','reconciled','reconciled','good',?,?)",
             (position_key, band_id, move_uci, local_reason, band_id),
         )
+        if global_sharp_explanation_band:
+            connection.execute(
+                "INSERT INTO failure_explanations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    position_key,
+                    global_sharp_explanation_band,
+                    move_uci,
+                    "good_exclusive",
+                    "would_pass_if_sharp_toggle_enabled",
+                    "tmpl",
+                    "sharp/gambit",
+                    band_id,
+                    None,
+                    "sharp_on",
+                    None,
+                ),
+            )
         connection.execute("INSERT INTO reconciled_root_summaries VALUES(?,?,?,?,?,?)", (position_key, band_id, 1, 1, 1, 1))
         connection.commit()
     finally:
@@ -805,7 +824,7 @@ def test_manual_target_play_to_position_tested_move_uses_reconciled_fail_interce
     session.board.reset()
     session.state = session.state.PLAYER_TURN
     session.player_color = chess.WHITE
-    session._timing_contract_metadata = lambda: ("600+0", "1000-1200")
+    session._effective_training_contract_metadata = lambda source_context: ("600+0", "1000-1200", "test_override")
 
     session.submit_user_move_uci('g1f3')
 
@@ -822,7 +841,7 @@ def test_manual_target_play_to_position_sharp_admission_honors_toggle(tmp_path):
         reconciled_db,
         position_key=normalize_builder_position_key(chess.Board()),
         move_uci="g1f3",
-        local_reason="sharp line",
+        global_sharp_explanation_band="400-600",
     )
     reconciled_service = PracticalRiskReconciledService(reconciled_db, expected_time_control_id="600+0")
 
@@ -860,9 +879,58 @@ def test_manual_target_play_to_position_sharp_admission_honors_toggle(tmp_path):
         session.board.reset()
         session.state = session.state.PLAYER_TURN
         session.player_color = chess.WHITE
-        session._timing_contract_metadata = lambda: ("600+0", "1000-1200")
+        session._effective_training_contract_metadata = lambda source_context: ("600+0", "1000-1200", "test_override")
         session.submit_user_move_uci('g1f3')
         return bool(session.last_evaluation.accepted)
 
     assert _run_case(False) is False
     assert _run_case(True) is True
+
+
+def test_smart_profile_band_persists_across_new_game_and_manual_target_reentry(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENING_TRAINER_SESSION_LOG_DIR", str(tmp_path / "logs"))
+    reset_logger_for_tests()
+    session = _session(tmp_path)
+    session.settings = replace(session.settings, training_mode='smart_profile', selected_time_control_id='600+0')
+
+    class _SmartStatus:
+        category_id = "600+0"
+        expected_rating_band = "1600-1800"
+
+    session.smart_profile.status = lambda **kwargs: _SmartStatus()
+    session._timing_contract_metadata = lambda: ("600+0", "400-600")
+    session.start_new_game()
+    assert session._effective_training_contract_metadata(source_context="test_after_start")[1] == "1600-1800"
+
+    session.evaluator = MoveEvaluator(
+        book_authority=StubBookAuthority(
+            BookAuthorityResult(
+                accepted=True,
+                available=True,
+                reason_code=ReasonCode.BOOK_HIT,
+                reason_text='Accepted via book membership.',
+                candidate_move_uci='e2e4',
+                metadata={'book_available': True},
+            )
+        ),
+        engine_authority=StubEngineAuthority(
+            EngineAuthorityResult(
+                accepted=True,
+                available=True,
+                reason_code=ReasonCode.ENGINE_PASS,
+                reason_text='Accepted by engine.',
+                best_move_uci='e2e4',
+                best_move_san='e4',
+                played_move_uci='e2e4',
+                played_move_san='e4',
+                cp_loss=0,
+                metadata={'engine_available': True},
+            )
+        ),
+    )
+    session.board.reset()
+    session.state = session.state.PLAYER_TURN
+    session.player_color = chess.WHITE
+    session.submit_user_move_uci('e2e4')
+    assert session.last_evaluation.metadata["reconciled"]["requested_band_id"] == "1600-1800"
+    assert any("TRAINING_CONTRACT_RESOLVED requested_band=1600-1800 source=smart_profile_level" in line for line in get_session_logger().visible_lines())
