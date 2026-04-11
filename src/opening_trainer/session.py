@@ -14,11 +14,17 @@ from .board import GameBoard
 from .bundle_corpus import normalize_builder_position_key
 from .corpus import load_artifact
 from .developer_timing import DeveloperTimingOverrideState, DeveloperTimingOverrideStore, LiveTimingDebugState, parse_overlay_key_dimensions
-from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, format_evaluation_feedback
+from .evaluation import CanonicalJudgment, EngineAuthority, EvaluatorConfig, OpeningBookAuthority, ReasonCode, format_evaluation_feedback
 from .practical_risk_reconciled import PracticalRiskReconciledService
 from .evaluator import MoveEvaluator
 from .models import EvaluationResult, MoveHistoryEntry, SessionOutcome, SessionState, SessionView
 from .opening_names import OpeningNameDataset
+from .opening_locked_mode import (
+    OpeningLockedModeState,
+    OpeningLockedProvider,
+    OpeningLockedSessionState,
+    OpeningTransitionClassification,
+)
 from .opponent import OpponentProvider
 from .review.models import (
     ManualForcedPlayerColor,
@@ -139,6 +145,8 @@ class TrainingSession:
                 active_training_ply_depth=self.settings.active_training_ply_depth,
                 smart_profile_enabled=self.settings.smart_profile_enabled,
                 training_mode=self.settings.training_mode,
+                opening_locked_mode_enabled=self.settings.opening_locked_mode_enabled,
+                selected_opening_name=self.settings.selected_opening_name,
                 selected_smart_track=self.settings.selected_smart_track,
                 selected_time_control_id=self.settings.selected_time_control_id,
                 side_panel_visible=self.settings.side_panel_visible,
@@ -152,6 +160,11 @@ class TrainingSession:
                 last_seen_installed_app_version=self.settings.last_seen_installed_app_version,
                 last_seen_installed_build_id=self.settings.last_seen_installed_build_id,
             )
+        opening_locked_status = getattr(self.runtime_context, "opening_locked_artifact", None)
+        self.opening_locked_provider: OpeningLockedProvider | None = None
+        if opening_locked_status is not None and opening_locked_status.loaded and opening_locked_status.sqlite_path is not None:
+            self.opening_locked_provider = OpeningLockedProvider(opening_locked_status.sqlite_path)
+        self.opening_locked_state = OpeningLockedSessionState()
         self.developer_timing_overrides = self.developer_timing_store.load()
         self.live_timing_debug_state = self._initial_timing_debug_state()
         self._apply_settings(self.settings)
@@ -411,6 +424,13 @@ class TrainingSession:
             self.evaluator.engine_authority.config = self.config
         self._refresh_practical_risk_reconciled()
         self.opponent.set_fallback_mode(self.settings.opponent_fallback_mode)
+        artifact_ready = bool(self.opening_locked_provider is not None and getattr(self.runtime_context, "opening_locked_artifact", None) and self.runtime_context.opening_locked_artifact.loaded)
+        self.opening_locked_state = OpeningLockedSessionState(
+            enabled=bool(self.settings.opening_locked_mode_enabled and artifact_ready and self.settings.selected_opening_name),
+            selected_opening_name=self.settings.selected_opening_name,
+            lock_released_by_opponent=False,
+            current_transition_state=OpeningLockedModeState.OPENING_LOCKED,
+        )
 
     def _refresh_practical_risk_reconciled(self) -> None:
         time_control_id, _rating_band, _source = self._effective_training_contract_metadata(source_context="refresh_reconciled_service")
@@ -544,6 +564,9 @@ class TrainingSession:
         self.last_evaluation = None
         self.last_outcome = None
         self.last_opponent_choice = None
+        if self.opening_locked_state.enabled:
+            self.opening_locked_state.lock_released_by_opponent = False
+            self.opening_locked_state.current_transition_state = OpeningLockedModeState.OPENING_LOCKED
         self.timed_state = self._build_timed_state_from_bundle()
         self._player_turn_started_at = None
         self.run_path = []
@@ -603,6 +626,8 @@ class TrainingSession:
             self.corpus_summary_text(),
             self.opening_name,
             self.opening_name_frozen,
+            self.opening_locked_state.current_transition_state.value if self.opening_locked_state.enabled else None,
+            self.opening_locked_state.selected_opening_name if self.opening_locked_state.enabled else None,
         )
 
     def _apply_manual_forced_color(self, items: list[ReviewItem]) -> None:
@@ -878,6 +903,24 @@ class TrainingSession:
             )
         )
 
+    def _opening_lock_active(self) -> bool:
+        return bool(
+            self.opening_locked_state.enabled
+            and not self.opening_locked_state.lock_released_by_opponent
+            and self.opening_locked_provider is not None
+            and self.opening_locked_state.selected_opening_name
+        )
+
+    def _classify_opening_transition(self, board_after_move: chess.Board) -> OpeningTransitionClassification:
+        if not self._opening_lock_active():
+            return OpeningTransitionClassification.UNKNOWN
+        position_key = normalize_builder_position_key(board_after_move)
+        transition = self.opening_locked_provider.classify_transition(
+            successor_position_key=position_key,
+            selected_opening_name=str(self.opening_locked_state.selected_opening_name),
+        )
+        return transition.classification
+
     def _submit_user_move(self, move_str: str, *, premove_executed: bool = False) -> SessionView:
         if self.state != SessionState.PLAYER_TURN:
             raise RuntimeError('Cannot submit a user move when the session is not awaiting player input.')
@@ -928,6 +971,37 @@ class TrainingSession:
             )
         except TypeError:
             evaluation = self.evaluator.evaluate(board_before_move, move, self.player_move_count)
+        transition_classification = self._classify_opening_transition(self.board.board)
+        if (
+            evaluation.accepted
+            and self._opening_lock_active()
+            and transition_classification in {
+                OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING,
+                OpeningTransitionClassification.LEFT_TO_UNNAMED,
+            }
+        ):
+            canonical = self.opening_locked_provider.canonical_continuation(
+                position_key=normalize_builder_position_key(board_before_move),
+                selected_opening_name=str(self.opening_locked_state.selected_opening_name),
+                max_plies=8,
+            )
+            evaluation = replace(
+                evaluation,
+                accepted=False,
+                canonical_judgment=CanonicalJudgment.FAIL,
+                reason_code=ReasonCode.OPENING_EXIT_BEFORE_OPPONENT,
+                reason_text="This move may be acceptable under ordinary policy, but it failed because it left the selected opening before the opponent did.",
+                preferred_move_uci=canonical.next_move_uci or evaluation.preferred_move_uci,
+                metadata={
+                    **(evaluation.metadata if isinstance(evaluation.metadata, dict) else {}),
+                    "opening_locked": {
+                        "selected_opening_name": self.opening_locked_state.selected_opening_name,
+                        "transition_classification": transition_classification.value,
+                        "ordinary_policy_would_accept": True,
+                        "canonical_line": list(canonical.line),
+                    },
+                },
+            )
         self.last_evaluation = evaluation
         self._refresh_opening_name_state(reason='position_refresh')
         self._print_evaluation_feedback(evaluation)
@@ -1036,6 +1110,17 @@ class TrainingSession:
             catalog_root=self.settings.last_corpus_catalog_root,
         )
 
+    def opening_locked_artifact_status(self):
+        return getattr(self.runtime_context, "opening_locked_artifact", None)
+
+    def opening_locked_opening_names(self) -> list[str]:
+        if self.opening_locked_provider is None:
+            return []
+        try:
+            return self.opening_locked_provider.list_exact_opening_names()
+        except Exception:
+            return []
+
     def _record_smart_profile_outcome(self, passed: bool) -> None:
         if self.settings.training_mode != SMART_PROFILE_MODE:
             return
@@ -1126,6 +1211,31 @@ class TrainingSession:
         preferred_move_uci: str | None,
         max_plies: int = 15,
     ) -> list[tuple[str, str, str]]:
+        if (
+            self.last_evaluation is not None
+            and self.last_evaluation.reason_code == ReasonCode.OPENING_EXIT_BEFORE_OPPONENT
+            and self.opening_locked_provider is not None
+            and self.opening_locked_state.selected_opening_name
+        ):
+            canonical = self.opening_locked_provider.canonical_continuation(
+                position_key=normalize_builder_position_key(board_before_fail),
+                selected_opening_name=str(self.opening_locked_state.selected_opening_name),
+                max_plies=max_plies,
+            )
+            board_for_line = board_before_fail.copy(stack=True)
+            line: list[tuple[str, str, str]] = []
+            for move_uci in canonical.line:
+                try:
+                    move = chess.Move.from_uci(move_uci)
+                except ValueError:
+                    break
+                if move not in board_for_line.legal_moves:
+                    break
+                san = board_for_line.san(move)
+                board_for_line.push(move)
+                line.append((move_uci, san, board_for_line.fen()))
+            if line:
+                return line
         if max_plies <= 0 or not preferred_move_uci:
             return []
         board_after_correction = board_before_fail.copy(stack=True)
@@ -1242,8 +1352,9 @@ class TrainingSession:
         metadata = evaluation.metadata if isinstance(evaluation.metadata, dict) else {}
         reconciled = metadata.get("reconciled") if isinstance(metadata.get("reconciled"), dict) else {}
         failure = reconciled.get("failure_explanation") if isinstance(reconciled.get("failure_explanation"), dict) else {}
+        opening_locked = metadata.get("opening_locked") if isinstance(metadata.get("opening_locked"), dict) else {}
         return {
-            "reason_code": failure.get("reason_code"),
+            "reason_code": failure.get("reason_code") or getattr(evaluation.reason_code, "value", str(evaluation.reason_code)),
             "template_id": failure.get("template_id"),
             "family_label": failure.get("family_label"),
             "max_practical_band_id": failure.get("max_practical_band_id"),
@@ -1251,6 +1362,8 @@ class TrainingSession:
             "toggle_state_required": failure.get("toggle_state_required"),
             "resolved_band_id": reconciled.get("resolved_band_id"),
             "would_pass_with_sharp_enabled": bool(reconciled.get("would_pass_with_sharp_enabled", False)),
+            "opening_transition_classification": opening_locked.get("transition_classification"),
+            "opening_selected_name": opening_locked.get("selected_opening_name"),
         }
 
     def _manual_inherited_failure_metadata(self, board_before_move: chess.Board, items: list[ReviewItem]) -> dict[str, object] | None:
@@ -1387,6 +1500,7 @@ class TrainingSession:
             choice = self.opponent.choose_move_with_context(self.board.board)
         else:
             choice = self.opponent.choose_move_with_runtime_context(self.board.board, timing_context=timing_context)
+        choice = self._opening_locked_filter_opponent_choice(board_before, choice)
         visible_delay_seconds, visible_delay_reason = self._visible_opponent_delay_seconds(choice.sampled_think_time_seconds, choice=choice)
         choice = replace(
             choice,
@@ -1417,6 +1531,11 @@ class TrainingSession:
         self.last_opponent_choice = choice
         san = self.board.board.san(move)
         self.board.board.push(move)
+        if self._opening_lock_active():
+            transition = self._classify_opening_transition(self.board.board)
+            if transition == OpeningTransitionClassification.LEFT_TO_UNNAMED:
+                self.opening_locked_state.lock_released_by_opponent = True
+                self.opening_locked_state.current_transition_state = OpeningLockedModeState.RELEASED_BY_OPPONENT
         self._record_path_move(pending.board_before, move)
         self._refresh_opening_name_state(reason='position_refresh')
         self._update_timing_diagnostics(
@@ -1454,6 +1573,65 @@ class TrainingSession:
         if self.state == SessionState.PLAYER_TURN:
             self._player_turn_started_at = time.monotonic()
         return True
+
+    def _opening_locked_filter_opponent_choice(self, board_before: chess.Board, choice):
+        if not self._opening_lock_active():
+            return choice
+        move = choice.move
+        test_board = board_before.copy(stack=True)
+        test_board.push(move)
+        move_classification = self._classify_opening_transition(test_board)
+        if move_classification != OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING:
+            return choice
+        valid_moves: list[tuple[chess.Move, float]] = []
+        for candidate in getattr(choice, "candidate_summaries", ()) or ():
+            uci = str(candidate.get("uci") or "").strip()
+            if not uci:
+                continue
+            try:
+                candidate_move = chess.Move.from_uci(uci)
+            except ValueError:
+                continue
+            if candidate_move not in board_before.legal_moves:
+                continue
+            board_after = board_before.copy(stack=True)
+            board_after.push(candidate_move)
+            candidate_classification = self._classify_opening_transition(board_after)
+            if candidate_classification == OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING:
+                continue
+            valid_moves.append((candidate_move, float(candidate.get("effective_weight") or candidate.get("raw_count") or 1.0)))
+        if not valid_moves:
+            if self.opening_locked_provider is not None and self.opening_locked_state.selected_opening_name:
+                canonical = self.opening_locked_provider.canonical_continuation(
+                    position_key=normalize_builder_position_key(board_before),
+                    selected_opening_name=str(self.opening_locked_state.selected_opening_name),
+                    max_plies=1,
+                )
+                if canonical.next_move_uci:
+                    try:
+                        fallback_move = chess.Move.from_uci(canonical.next_move_uci)
+                    except ValueError:
+                        fallback_move = None
+                    if fallback_move is not None and fallback_move in board_before.legal_moves:
+                        board_after = board_before.copy(stack=True)
+                        board_after.push(fallback_move)
+                        if self._classify_opening_transition(board_after) != OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING:
+                            return replace(
+                                choice,
+                                move=fallback_move,
+                                selected_via="opening_locked_canonical_fallback",
+                                corpus_lookup_reason_code="opening_locked_filtered_to_canonical",
+                            )
+            return choice
+        legal_moves = [entry[0] for entry in valid_moves]
+        weights = [max(0.0, entry[1]) for entry in valid_moves]
+        filtered_move = random.choices(legal_moves, weights=weights, k=1)[0]
+        return replace(
+            choice,
+            move=filtered_move,
+            selected_via="opening_locked_filtered_candidate",
+            corpus_lookup_reason_code="opening_locked_filtered_out_other_named",
+        )
 
     def cancel_pending_opponent_action(self) -> None:
         self.pending_opponent_action = None

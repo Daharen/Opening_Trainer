@@ -25,6 +25,8 @@ class TrainerSettings:
     active_training_ply_depth: int = CONSERVATIVE_FALLBACK_MAX_DEPTH
     smart_profile_enabled: bool = True
     training_mode: str = ''
+    opening_locked_mode_enabled: bool = False
+    selected_opening_name: str | None = None
     selected_smart_track: str = 'rapid'
     selected_time_control_id: str = '600+0'
     side_panel_visible: bool = False
@@ -57,11 +59,14 @@ class TrainerSettings:
             for column in self.training_panel_visible_columns
             if isinstance(column, str) and column.strip()
         ) or DEFAULT_TRAINING_PANEL_COLUMNS
+        selected_opening_name = str(self.selected_opening_name).strip() if self.selected_opening_name is not None and str(self.selected_opening_name).strip() else None
         return TrainerSettings(
             good_moves_acceptable=bool(self.good_moves_acceptable),
             active_training_ply_depth=clamped_depth,
             smart_profile_enabled=bool(mode == SMART_PROFILE_MODE),
             training_mode=mode,
+            opening_locked_mode_enabled=bool(self.opening_locked_mode_enabled),
+            selected_opening_name=selected_opening_name,
             selected_smart_track=selected_track,
             selected_time_control_id=selected_time_control,
             side_panel_visible=bool(self.side_panel_visible),
@@ -103,6 +108,8 @@ class TrainerSettingsStore:
             active_training_ply_depth=int(payload.get('active_training_ply_depth', CONSERVATIVE_FALLBACK_MAX_DEPTH)),
             smart_profile_enabled=bool(payload.get('smart_profile_enabled', True)),
             training_mode=str(payload.get('training_mode') or ('smart_profile' if bool(payload.get('smart_profile_enabled', True)) else 'manual')),
+            opening_locked_mode_enabled=bool(payload.get('opening_locked_mode_enabled', False)),
+            selected_opening_name=payload.get('selected_opening_name') or None,
             selected_smart_track=str(payload.get('selected_smart_track', 'rapid')),
             selected_time_control_id=str(payload.get('selected_time_control_id', '600+0')),
             side_panel_visible=bool(payload.get('side_panel_visible', False)),

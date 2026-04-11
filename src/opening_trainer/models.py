@@ -67,6 +67,8 @@ class SessionView:
     corpus_summary: str = ''
     opening_name: str | None = None
     opening_name_frozen: bool = False
+    opening_locked_state: str | None = None
+    selected_locked_opening_name: str | None = None
 
     @property
     def awaiting_user_input(self) -> bool:

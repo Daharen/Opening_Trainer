@@ -38,6 +38,7 @@ class ReasonCode(str, Enum):
     ENGINE_FAIL = "engine_fail"
     ENGINE_UNAVAILABLE = "engine_unavailable"
     MISSED_WIN = "missed_win"
+    OPENING_EXIT_BEFORE_OPPONENT = "opening_exit_before_opponent"
 
 
 @dataclass(frozen=True)
