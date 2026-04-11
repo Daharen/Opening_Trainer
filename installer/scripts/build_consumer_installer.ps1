@@ -20,6 +20,30 @@ $updaterHelperScript = Join-Path $repoRoot 'installer\scripts\apply_app_update.p
 $updaterWrapperScript = Join-Path $repoRoot 'installer\scripts\invoke_apply_app_update.ps1'
 $installerCopyHelperScript = Join-Path $repoRoot 'installer\apply_app_update.ps1'
 $installerCopyWrapperScript = Join-Path $repoRoot 'installer\invoke_apply_app_update.ps1'
+$installerStageRoot = Join-Path $repoRoot 'installer\staging\installer_assets'
+
+function Copy-InstallerAssetToStage {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$StageRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+        throw "Installer staging source is missing: $SourcePath"
+    }
+
+    New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
+    $destinationPath = Join-Path $StageRoot ([System.IO.Path]::GetFileName($SourcePath))
+    Copy-Item -LiteralPath $SourcePath -Destination $destinationPath -Force
+
+    $sourceHash = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stagedHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($sourceHash -ne $stagedHash) {
+        throw "Installer staging copy hash mismatch source=$SourcePath staged=$destinationPath source_sha256=$sourceHash staged_sha256=$stagedHash"
+    }
+    Write-Host "Installer staging copy verified: source=$SourcePath staged=$destinationPath sha256=$sourceHash"
+    return $destinationPath
+}
 
 function Assert-PowerShellScriptParses {
     param([Parameter(Mandatory = $true)][string]$ScriptPath)
@@ -62,6 +86,16 @@ if (-not (Test-Path -LiteralPath $updaterWrapperScript -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $validateAppProvisioningScript -PathType Leaf)) {
     throw "App provisioning validation script is missing: $validateAppProvisioningScript"
 }
+
+if (Test-Path -LiteralPath $installerStageRoot) {
+    Remove-Item -LiteralPath $installerStageRoot -Recurse -Force
+}
+$stagedConsumerManifestPath = Copy-InstallerAssetToStage -SourcePath $manifestPath -StageRoot $installerStageRoot
+$stagedAppUpdateManifestPath = Copy-InstallerAssetToStage -SourcePath $appUpdateManifestPath -StageRoot $installerStageRoot
+$stagedInstallContentScriptPath = Copy-InstallerAssetToStage -SourcePath (Join-Path $repoRoot 'installer\scripts\install_consumer_content.ps1') -StageRoot $installerStageRoot
+$stagedInstallAppScriptPath = Copy-InstallerAssetToStage -SourcePath (Join-Path $repoRoot 'installer\scripts\install_consumer_app.ps1') -StageRoot $installerStageRoot
+$stagedApplyUpdateScriptPath = Copy-InstallerAssetToStage -SourcePath (Join-Path $repoRoot 'installer\scripts\apply_app_update.ps1') -StageRoot $installerStageRoot
+$stagedInvokeApplyUpdateScriptPath = Copy-InstallerAssetToStage -SourcePath (Join-Path $repoRoot 'installer\scripts\invoke_apply_app_update.ps1') -StageRoot $installerStageRoot
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace([string]$manifest.download_url)) {
@@ -123,7 +157,14 @@ try {
         Remove-Item -LiteralPath $outputInstaller -Force
     }
 
-    & $iscc.Source $issPath
+    & $iscc.Source `
+        "/DConsumerContentManifestSource=$stagedConsumerManifestPath" `
+        "/DAppUpdateManifestSource=$stagedAppUpdateManifestPath" `
+        "/DInstallConsumerContentScriptSource=$stagedInstallContentScriptPath" `
+        "/DInstallConsumerAppScriptSource=$stagedInstallAppScriptPath" `
+        "/DApplyAppUpdateScriptSource=$stagedApplyUpdateScriptPath" `
+        "/DInvokeApplyAppUpdateScriptSource=$stagedInvokeApplyUpdateScriptPath" `
+        $issPath
     $isccExitCode = $LASTEXITCODE
     if ($isccExitCode -ne 0) {
         throw "Installer build failed: ISCC exited with code $isccExitCode"
@@ -131,6 +172,9 @@ try {
 }
 finally {
     Pop-Location
+    if (Test-Path -LiteralPath $installerStageRoot) {
+        Remove-Item -LiteralPath $installerStageRoot -Recurse -Force
+    }
 }
 
 if (-not (Test-Path -LiteralPath $outputInstaller)) {

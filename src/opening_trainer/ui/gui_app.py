@@ -1083,14 +1083,24 @@ class OpeningTrainerGUI:
     def _discover_and_bind_authoritative_corpus(self, *, force_repair: bool) -> str | None:
         del force_repair
         settings = self.session.settings
+        runtime_mode = self.session.runtime_context.runtime_mode
         paths = self.session.runtime_context.runtime_paths
         remembered_catalog_root = settings.last_corpus_catalog_root
         canonical_catalog_root = str(paths.corpus_bundle_root)
         runtime_catalog_root = self._runtime_config_catalog_root()
+        remembered_catalog_allowed = (
+            runtime_mode.value != "consumer"
+            or self._is_consumer_safe_catalog_root(remembered_catalog_root)
+        )
+        if remembered_catalog_root and not remembered_catalog_allowed:
+            log_line(
+                f"CORPUS_DISCOVERY_REMEMBERED_REJECTED mode={runtime_mode.value} root={remembered_catalog_root} reason=outside_install_owned_content_root",
+                tag="startup",
+            )
         candidates: list[tuple[str, str | None]] = [
             ("install-owned installed_content_manifest", canonical_catalog_root if (paths.app_state_root / "installed_content_manifest.json").exists() else None),
             ("canonical LocalAppData corpus root", canonical_catalog_root),
-            ("remembered corpus catalog root", remembered_catalog_root),
+            ("remembered corpus catalog root", remembered_catalog_root if remembered_catalog_allowed else None),
             ("app-owned runtime config corpus root", runtime_catalog_root),
         ]
         valid: dict[str, tuple[str, int]] = {}
@@ -1122,6 +1132,18 @@ class OpeningTrainerGUI:
             return winner_bundle
         log_line("CORPUS_DISCOVERY_FALLBACK root valid but no bundle resolved", tag="startup")
         return None
+
+    def _is_consumer_safe_catalog_root(self, root: str | None) -> bool:
+        if root is None or not str(root).strip():
+            return False
+        runtime_paths = self.session.runtime_context.runtime_paths
+        try:
+            candidate_root = Path(root).expanduser().resolve()
+            install_owned_content_root = runtime_paths.content_root.resolve()
+            candidate_root.relative_to(install_owned_content_root)
+            return True
+        except Exception:
+            return False
 
     def _runtime_config_catalog_root(self) -> str | None:
         runtime_config_path = self.session.runtime_context.runtime_paths.runtime_config_path

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import time
+from pathlib import Path
 
 import chess
 
@@ -10,6 +11,7 @@ from opening_trainer.models import MoveHistoryEntry, SessionOutcome, SessionStat
 from opening_trainer.settings import DEFAULT_TRAINING_PANEL_COLUMNS, TrainerSettings
 from opening_trainer.session import TrainingSession
 from opening_trainer.session_contracts import OutcomeBoardContract, OutcomeModalContract
+from opening_trainer.runtime_mode import RuntimeMode
 from opening_trainer.ui.board_view import (
     ANIMATION_START_LEAD_SECONDS,
     BoardView,
@@ -1887,6 +1889,47 @@ def test_validate_catalog_root_uses_metadata_checks_without_sqlite_mount(monkeyp
     assert ok is True
     assert "validation_passed" in reason
     assert entries == 1
+
+
+def test_consumer_corpus_discovery_rejects_remembered_external_catalog_root(tmp_path):
+    gui = OpeningTrainerGUI.__new__(OpeningTrainerGUI)
+    canonical_root = tmp_path / "LocalAppData" / "OpeningTrainerContent" / "Timing Conditioned Corpus Bundles"
+    remembered_root = tmp_path / "external_corpus_catalog"
+    remembered_root.mkdir(parents=True, exist_ok=True)
+    gui.session = type(
+        "Session",
+        (),
+        {
+            "settings": TrainerSettings(last_corpus_catalog_root=str(remembered_root)),
+            "runtime_context": type(
+                "RuntimeContext",
+                (),
+                {
+                    "runtime_mode": RuntimeMode.CONSUMER,
+                    "runtime_paths": type(
+                        "RuntimePaths",
+                        (),
+                        {
+                            "app_state_root": tmp_path / "LocalAppData" / "OpeningTrainer",
+                            "corpus_bundle_root": canonical_root,
+                            "content_root": canonical_root.parent,
+                        },
+                    )(),
+                },
+            )(),
+            "smart_profile_expected_bundle_path": lambda self=None: None,
+        },
+    )()
+    gui.catalog_root_var = type("Var", (), {"set": lambda self, _v: None})()
+    gui._set_catalog_root_setting = lambda _value: None
+    gui._refresh_catalog = lambda: None
+    gui.catalog = type("Catalog", (), {"entries": ()})()
+    gui._runtime_config_catalog_root = lambda: None
+    gui._validate_catalog_root = lambda root: (Path(root) == remembered_root, "ok", 1) if root else (False, "unset", 0)
+
+    winning_bundle = gui._discover_and_bind_authoritative_corpus(force_repair=False)
+
+    assert winning_bundle is None
 
 
 class FakeRoot:

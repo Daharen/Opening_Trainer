@@ -2,6 +2,24 @@
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "Opening Trainer"
 #define MyAppExeName "OpeningTrainer.exe"
+#ifndef ConsumerContentManifestSource
+  #define ConsumerContentManifestSource "consumer_content_manifest.json"
+#endif
+#ifndef AppUpdateManifestSource
+  #define AppUpdateManifestSource "app_update_manifest.json"
+#endif
+#ifndef InstallConsumerContentScriptSource
+  #define InstallConsumerContentScriptSource "scripts\\install_consumer_content.ps1"
+#endif
+#ifndef InstallConsumerAppScriptSource
+  #define InstallConsumerAppScriptSource "scripts\\install_consumer_app.ps1"
+#endif
+#ifndef ApplyAppUpdateScriptSource
+  #define ApplyAppUpdateScriptSource "scripts\\apply_app_update.ps1"
+#endif
+#ifndef InvokeApplyAppUpdateScriptSource
+  #define InvokeApplyAppUpdateScriptSource "scripts\\invoke_apply_app_update.ps1"
+#endif
 
 [Setup]
 AppId={{88DAAB2D-10A2-4027-AE53-2BDF249A1902}
@@ -26,12 +44,12 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "..\dist\consumer\*"; DestDir: "{app}\bootstrap_payload"; Flags: recursesubdirs ignoreversion
 Source: "..\dist\consumer_app_payload\OpeningTrainer-app.zip"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "consumer_content_manifest.json"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "app_update_manifest.json"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "scripts\install_consumer_content.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "scripts\install_consumer_app.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "scripts\apply_app_update.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "scripts\invoke_apply_app_update.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "{#ConsumerContentManifestSource}"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "{#AppUpdateManifestSource}"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "{#InstallConsumerContentScriptSource}"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "{#InstallConsumerAppScriptSource}"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "{#ApplyAppUpdateScriptSource}"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "{#InvokeApplyAppUpdateScriptSource}"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Opening Trainer"; Filename: "{localappdata}\OpeningTrainer\App\{#MyAppExeName}"; Parameters: "--runtime-mode consumer"; WorkingDir: "{localappdata}\OpeningTrainer\App"
