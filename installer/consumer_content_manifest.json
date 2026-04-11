@@ -15,10 +15,12 @@
     ]
   },
   "required_entries": [
-    "canonical_predecessor_master.sqlite.zst",
-    "opening_book.bin",
-    "opening_book_names.zip",
-    "stockfish",
-    "Timing Conditioned Corpus Bundles"
+        "canonical_predecessor_master.sqlite.zst",
+        "opening_book.bin",
+        "opening_book_names.zip",
+        "stockfish",
+        "Timing Conditioned Corpus Bundles",
+        "practical_risk/reconciled/default/practical_risk_reconciled.sqlite",
+        "opening_locked_mode"
   ]
 }
