@@ -295,6 +295,7 @@ try {
     $requiredEntryAlternates = $manifest.required_entry_alternates
     $wrapperFolderName = [string]$manifest.wrapper_folder_name
     $installedManifestFileName = [string]$manifest.installed_manifest_filename
+    $expectedInstalledManifestFileName = 'installed_content_manifest.json'
 
     if ([string]::IsNullOrWhiteSpace($downloadUrl) -and [string]::IsNullOrWhiteSpace($LocalArchivePath)) {
         throw 'Manifest does not define a non-empty download_url and no -LocalArchivePath was supplied.'
@@ -310,7 +311,10 @@ try {
         throw 'Manifest required entry groups are empty.'
     }
     if ([string]::IsNullOrWhiteSpace($installedManifestFileName)) {
-        $installedManifestFileName = 'installed_content_manifest.json'
+        $installedManifestFileName = $expectedInstalledManifestFileName
+    }
+    elseif ($installedManifestFileName -ne $expectedInstalledManifestFileName) {
+        throw "Manifest installed_manifest_filename must be '$expectedInstalledManifestFileName' for runtime/install contract compatibility. Found: '$installedManifestFileName'"
     }
 
     $installedManifestPath = Join-Path -Path $AppStateRoot -ChildPath $installedManifestFileName

@@ -27,8 +27,8 @@ def test_consumer_content_manifest_has_required_fields() -> None:
     assert isinstance(payload["installed_manifest_filename"], str) and payload["installed_manifest_filename"]
     assert isinstance(payload["required_entries"], list) and payload["required_entries"]
     assert isinstance(payload.get("required_entry_alternates"), dict)
-    assert "canonical_predecessor_master.sqlite" in payload["required_entry_alternates"]
-    assert "canonical_predecessor_master.sqlite.zst" in payload["required_entry_alternates"]["canonical_predecessor_master.sqlite"]
+    assert "canonical_predecessor_master.sqlite.zst" in payload["required_entry_alternates"]
+    assert "canonical_predecessor_master.sqlite" in payload["required_entry_alternates"]["canonical_predecessor_master.sqlite.zst"]
 
 
 def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
@@ -39,12 +39,15 @@ def test_inno_script_anchors_consumer_roots_and_uninstall() -> None:
     assert "OutputDir=dist" in script
     assert 'Source: "..\\dist\\consumer\\*"; DestDir: "{app}\\bootstrap_payload"' in script
     assert 'Source: "..\\dist\\consumer_app_payload\\OpeningTrainer-app.zip"' in script
-    assert 'Source: "consumer_content_manifest.json"' in script
-    assert 'Source: "app_update_manifest.json"' in script
-    assert 'Source: "scripts\\install_consumer_content.ps1"' in script
-    assert 'Source: "scripts\\install_consumer_app.ps1"' in script
-    assert 'Source: "scripts\\apply_app_update.ps1"' in script
-    assert 'Source: "scripts\\invoke_apply_app_update.ps1"' in script
+    assert '#define ConsumerContentManifestSource "consumer_content_manifest.json"' in script
+    assert '#define AppUpdateManifestSource "app_update_manifest.json"' in script
+    assert '#define InstallConsumerContentScriptSource "scripts\\\\install_consumer_content.ps1"' in script
+    assert 'Source: "{#ConsumerContentManifestSource}"' in script
+    assert 'Source: "{#AppUpdateManifestSource}"' in script
+    assert 'Source: "{#InstallConsumerContentScriptSource}"' in script
+    assert 'Source: "{#InstallConsumerAppScriptSource}"' in script
+    assert 'Source: "{#ApplyAppUpdateScriptSource}"' in script
+    assert 'Source: "{#InvokeApplyAppUpdateScriptSource}"' in script
     assert "runhidden" not in script
     assert "SetupLogging=yes" in script
     assert "{localappdata}\\OpeningTrainer" in script
@@ -98,6 +101,8 @@ def test_content_bootstrap_writes_consumer_runtime_config_and_logging() -> None:
     assert "installed_manifest_matches=" in script
     assert "direct required-entry validation" in script
     assert "Reuse not accepted; proceeding to archive acquisition path." in script
+    assert "Manifest installed_manifest_filename must be '" in script
+    assert "runtime/install contract compatibility" in script
 
 
 def test_packaging_build_scripts_exist() -> None:
@@ -138,6 +143,11 @@ def test_packaging_build_scripts_exist() -> None:
     assert "SkipAppProvisioningValidation" in installer_text
     assert "validate_install_consumer_app.ps1" in installer_text
     assert "app_update_manifest.json" in installer_text
+    assert "Copy-InstallerAssetToStage" in installer_text
+    assert "Installer staging copy verified" in installer_text
+    assert "/DConsumerContentManifestSource=" in installer_text
+    assert "/DAppUpdateManifestSource=" in installer_text
+    assert "installer\\staging\\installer_assets" in installer_text
     assert "Assert-PowerShellScriptParses" in installer_text
     assert "error_id=$($_.ErrorId)" in installer_text
     assert "invoke_apply_app_update.ps1" in installer_text

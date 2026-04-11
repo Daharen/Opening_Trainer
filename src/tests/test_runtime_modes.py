@@ -174,3 +174,15 @@ def test_apply_runtime_environment_binds_session_log_dir_from_runtime_paths(monk
     assert Path(os.environ["OPENING_TRAINER_INSTANCE_DIAGNOSTICS_PATH"]) == (
         tmp_path / "app" / "logs" / "instance" / "opening_trainer_instance.json"
     )
+
+
+def test_installed_content_manifest_contract_is_shared_between_installer_and_runtime() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    content_bootstrap_script = (repo_root / "installer" / "scripts" / "install_consumer_content.ps1").read_text(encoding="utf-8")
+    runtime_mode_source = (repo_root / "src" / "opening_trainer" / "runtime_mode.py").read_text(encoding="utf-8")
+    installer_manifest = json.loads((repo_root / "installer" / "consumer_content_manifest.json").read_text(encoding="utf-8"))
+
+    assert installer_manifest["installed_manifest_filename"] == "installed_content_manifest.json"
+    assert "Manifest installed_manifest_filename must be '" in content_bootstrap_script
+    assert "runtime/install contract compatibility" in content_bootstrap_script
+    assert 'installed_manifest_exists = (state_root / "installed_content_manifest.json").exists()' in runtime_mode_source
