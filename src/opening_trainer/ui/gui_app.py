@@ -376,14 +376,14 @@ class OpeningTrainerGUI:
         self.action_bar = tk.Frame(self.root)
         self.action_bar.grid(row=4, column=0, sticky='ew', padx=12, pady=(0, 12))
         self.start_button = tk.Button(
-            self.action_bar,
-            text='Start Drill',
+            toolbar,
+            text='Start drill',
             command=self._start_game,
-            bg='#ffd600',
-            fg='black',
-            activebackground='#ffb300',
-            activeforeground='black',
-            disabledforeground='#fff1a8',
+            bg='#00c853',
+            fg='white',
+            activebackground='#009624',
+            activeforeground='white',
+            disabledforeground='#d9fbe3',
         )
         self.start_button.pack(side='left')
         self.pause_button = tk.Button(self.action_bar, text='Pause (P)', command=self._pause_from_button, state='disabled')
@@ -3253,3 +3253,4 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
+
