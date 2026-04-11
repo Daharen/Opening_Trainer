@@ -50,10 +50,17 @@ def resolve_runtime_mode_with_source(
     if parsed_env is not None:
         return ResolvedRuntimeMode(mode=parsed_env, source="environment", reason=f"environment variable {ENV_RUNTIME_MODE}={parsed_env.value}")
 
-    if _is_installed_consumer_host() and _has_consumer_install_artifacts(app_state_root, content_root):
+    if _is_installed_consumer_host():
         return ResolvedRuntimeMode(
             mode=RuntimeMode.CONSUMER,
             source="auto-consumer",
+            reason="inferred consumer mode from installed executable host",
+        )
+
+    if _has_consumer_install_artifacts(app_state_root, content_root):
+        return ResolvedRuntimeMode(
+            mode=RuntimeMode.CONSUMER,
+            source="auto-consumer-artifacts",
             reason="inferred consumer mode from installed app-state/content artifacts",
         )
 
@@ -69,8 +76,14 @@ def _is_installed_consumer_host() -> bool:
         return True
     if getattr(sys, "frozen", False):
         return True
-    executable_dir = Path(sys.executable).resolve().parent
-    return "program files" in str(executable_dir).lower()
+    executable_path = Path(sys.executable).resolve()
+    executable_dir = executable_path.parent
+    executable_lower = str(executable_path).lower().replace("/", "\\")
+    if "program files" in str(executable_dir).lower():
+        return True
+    if "\\appdata\\local\\openingtrainer\\app\\" in executable_lower:
+        return True
+    return executable_path.name.lower() == "openingtrainer.exe" and executable_dir.name.lower() == "app"
 
 
 def _has_consumer_install_artifacts(app_state_root: Path | None, content_root: Path | None) -> bool:

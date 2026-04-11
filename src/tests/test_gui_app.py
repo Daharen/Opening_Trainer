@@ -252,6 +252,14 @@ class FakeStyle:
         return self._theme
 
 
+def test_start_button_uses_action_bar_parent_in_shell_layout_source():
+    source = inspect.getsource(OpeningTrainerGUI.__init__)
+    assert "self.action_bar = tk.Frame(self.root)" in source
+    assert "self.start_button = tk.Button(" in source
+    assert "self.action_bar," in source
+    assert "toolbar," not in source
+
+
 def test_refresh_supporting_surfaces_wires_opening_name_into_move_list_header():
     move_history = (
         MoveHistoryEntry(0, "white", "e2e4", "e4", "player"),

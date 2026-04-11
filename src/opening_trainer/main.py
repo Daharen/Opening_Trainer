@@ -58,6 +58,11 @@ def _is_frozen_consumer_launch(runtime_context) -> bool:
     return bool(getattr(sys, "frozen", False)) and runtime_mode == "consumer"
 
 
+def _is_consumer_runtime(runtime_context) -> bool:
+    runtime_mode = getattr(getattr(runtime_context, "runtime_mode", None), "value", "")
+    return runtime_mode == "consumer"
+
+
 def _startup_failure_log_path(runtime_context) -> Path:
     runtime_paths = getattr(runtime_context, "runtime_paths", None)
     if runtime_paths is not None:
@@ -103,7 +108,7 @@ def _show_startup_failure_dialog(stage: str, exc: Exception, log_path: Path) -> 
     print(message, file=sys.stderr)
 
 
-def _handle_frozen_consumer_gui_failure(runtime_context, stage: str, exc: Exception) -> None:
+def _handle_consumer_gui_failure(runtime_context, stage: str, exc: Exception) -> None:
     log_path = _write_startup_failure_artifact(runtime_context, stage, exc)
     log_line(f"GUI_STARTUP_FATAL: stage={stage}; log_path={log_path}; error={exc}", tag="error")
     _show_startup_failure_dialog(stage, exc, log_path)
@@ -294,8 +299,8 @@ def run(argv: list[str] | None = None) -> None:
     try:
         from .ui.gui_app import DuplicateInstanceLaunchBlockedError, launch_gui
     except Exception as exc:
-        if _is_frozen_consumer_launch(runtime_context):
-            _handle_frozen_consumer_gui_failure(runtime_context, "gui_import", exc)
+        if _is_consumer_runtime(runtime_context):
+            _handle_consumer_gui_failure(runtime_context, "gui_import", exc)
         log_line(f"GUI unavailable ({exc}). Falling back to CLI.", tag="error")
         run_cli(runtime_overrides)
         return
@@ -306,7 +311,7 @@ def run(argv: list[str] | None = None) -> None:
         log_line(f"GUI launch blocked by duplicate instance ({exc}).", tag="error")
         raise SystemExit(1)
     except Exception as exc:
-        if _is_frozen_consumer_launch(runtime_context):
-            _handle_frozen_consumer_gui_failure(runtime_context, "gui_bootstrap", exc)
+        if _is_consumer_runtime(runtime_context):
+            _handle_consumer_gui_failure(runtime_context, "gui_bootstrap", exc)
         log_line(f"GUI launch failed ({exc}). Falling back to CLI.", tag="error")
         run_cli(runtime_overrides)

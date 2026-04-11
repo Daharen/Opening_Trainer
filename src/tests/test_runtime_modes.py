@@ -136,8 +136,27 @@ def test_no_artifacts_defaults_to_dev_even_when_installed_assumption_is_set(monk
 
     runtime = load_runtime_config(RuntimeOverrides())
 
-    assert runtime.runtime_mode.value == "dev"
-    assert runtime.runtime_mode_source == "default"
+    assert runtime.runtime_mode.value == "consumer"
+    assert runtime.runtime_mode_source == "auto-consumer"
+
+
+def test_installed_local_app_data_executable_path_infers_consumer_mode(monkeypatch, tmp_path):
+    local_app_data = tmp_path / "LocalAppData"
+    exe_path = local_app_data / "OpeningTrainer" / "App" / "OpeningTrainer.exe"
+    exe_path.parent.mkdir(parents=True)
+    exe_path.write_bytes(b"")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.delenv("OPENING_TRAINER_ASSUME_INSTALLED", raising=False)
+    monkeypatch.delenv("OPENING_TRAINER_RUNTIME_MODE", raising=False)
+    monkeypatch.setattr("opening_trainer.runtime_mode.sys.executable", str(exe_path))
+    monkeypatch.setattr("opening_trainer.runtime_mode.sys.frozen", False, raising=False)
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.runtime_mode.value == "consumer"
+    assert runtime.runtime_mode_source == "auto-consumer"
+    assert runtime.runtime_paths.app_state_root == local_app_data / "OpeningTrainer"
+    assert runtime.runtime_paths.app_payload_root == local_app_data / "OpeningTrainer" / "App"
 
 
 def test_apply_runtime_environment_binds_session_log_dir_from_runtime_paths(monkeypatch, tmp_path):

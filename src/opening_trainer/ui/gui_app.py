@@ -376,7 +376,7 @@ class OpeningTrainerGUI:
         self.action_bar = tk.Frame(self.root)
         self.action_bar.grid(row=4, column=0, sticky='ew', padx=12, pady=(0, 12))
         self.start_button = tk.Button(
-            toolbar,
+            self.action_bar,
             text='Start Drill',
             command=self._start_game,
             bg='#00c853',
@@ -3253,4 +3253,3 @@ def launch_gui(runtime_context: RuntimeContext | None = None, probe_real_startup
         remove_instance_diagnostics()
         release_single_instance_guard()
         raise
-

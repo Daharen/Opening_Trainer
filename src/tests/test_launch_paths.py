@@ -98,13 +98,12 @@ def test_probe_real_gui_startup_tolerates_temp_dir_cleanup_permission_error(monk
     assert "GUI_PROBE_REAL_STARTUP_OK" in log_messages
 
 
-def test_frozen_consumer_gui_import_failure_writes_artifact_and_exits(monkeypatch, runtime_context_factory):
+def test_consumer_gui_import_failure_writes_artifact_and_exits(monkeypatch, runtime_context_factory):
     runtime_context = runtime_context_factory(runtime_mode="consumer", runtime_mode_source="auto-consumer")
     monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
     monkeypatch.setattr("opening_trainer.main.run_cli", lambda overrides=None: (_ for _ in ()).throw(AssertionError("run_cli must not be used")))
     monkeypatch.setattr("opening_trainer.main.log_line", lambda *args, **kwargs: None)
     monkeypatch.setattr("opening_trainer.main._show_startup_failure_dialog", lambda stage, exc, path: None)
-    monkeypatch.setattr("opening_trainer.main.sys.frozen", True, raising=False)
     monkeypatch.setitem(sys.modules, "opening_trainer.ui.gui_app", None)
 
     try:
@@ -150,6 +149,29 @@ def test_duplicate_instance_launch_exits_without_cli_fallback(monkeypatch, runti
         assert exc.code == 1
     else:
         raise AssertionError("SystemExit expected on duplicate instance launch block.")
+
+    assert cli_calls == []
+
+
+def test_consumer_gui_bootstrap_failure_with_missing_stdin_never_falls_back_to_cli(monkeypatch, runtime_context_factory):
+    runtime_context = runtime_context_factory(runtime_mode="consumer", runtime_mode_source="auto-consumer")
+    cli_calls: list[str] = []
+    monkeypatch.setattr("opening_trainer.main.load_runtime_config", lambda overrides: runtime_context)
+    monkeypatch.setattr("opening_trainer.main.run_cli", lambda overrides=None: cli_calls.append("cli"))
+    monkeypatch.setattr("opening_trainer.main.log_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr("opening_trainer.main._show_startup_failure_dialog", lambda stage, exc, path: None)
+    monkeypatch.setattr(
+        "opening_trainer.ui.gui_app.launch_gui",
+        lambda runtime_context=None: (_ for _ in ()).throw(RuntimeError("lost sys.stdin")),
+    )
+    monkeypatch.setattr("opening_trainer.main.sys.stdin", None, raising=False)
+
+    try:
+        run([])
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("SystemExit expected")
 
     assert cli_calls == []
 
