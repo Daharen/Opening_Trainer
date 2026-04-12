@@ -64,30 +64,42 @@ class BoardSetupEditorDialog(tk.Toplevel):
         self.urgency_var = tk.StringVar(value=initial.get('urgency_tier', UrgencyTier.ORDINARY.value))
         self.note_var = tk.StringVar(value=initial.get('operator_note', ''))
         self.error_var = tk.StringVar(value='')
+        style = ttk.Style(self)
+        panel_bg = style.lookup('TFrame', 'background') or '#2a2a2a'
+        surface_bg = style.lookup('TEntry', 'fieldbackground') or '#303030'
+        text_fg = style.lookup('TLabel', 'foreground') or '#ffffff'
+        border_color = style.lookup('TLabelframe', 'bordercolor') or '#444444'
+        self.configure(bg=panel_bg)
+        style.configure('BoardSetup.TFrame', background=panel_bg)
+        style.configure('BoardSetupSurface.TFrame', background=surface_bg)
+        style.configure('BoardSetup.TLabelframe', background=panel_bg, foreground=text_fg, bordercolor=border_color)
+        style.configure('BoardSetup.TLabelframe.Label', background=panel_bg, foreground=text_fg)
+        style.configure('BoardSetup.TLabel', background=panel_bg, foreground=text_fg)
 
-        root = ttk.Frame(self, padding=12)
+        root = ttk.Frame(self, padding=12, style='BoardSetup.TFrame')
         root.pack(fill='both', expand=True)
         root.columnconfigure(0, weight=0)
         root.columnconfigure(1, weight=1)
         root.rowconfigure(0, weight=1)
 
-        board_frame = ttk.Frame(root)
+        board_frame = ttk.LabelFrame(root, text='Board preview', style='BoardSetup.TLabelframe', padding=8)
         board_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 16))
         self.board_view = BoardView(board_frame, board_size=520, min_board_size=360)
         self.board_view.pack(fill='both', expand=True)
+        self.board_view.apply_theme(gutter_color=surface_bg, coordinate_color=text_fg)
         self.board_view.bind('<Button-1>', self._on_board_click)
 
-        controls = ttk.Frame(root)
+        controls = ttk.Frame(root, style='BoardSetup.TFrame')
         controls.grid(row=0, column=1, sticky='nsew')
 
-        palette = ttk.LabelFrame(controls, text='Piece palette')
+        palette = ttk.LabelFrame(controls, text='Piece palette', style='BoardSetup.TLabelframe')
         palette.pack(fill='x')
         for idx, symbol in enumerate(PIECE_CHOICES):
             display = f"{PIECE_GLYPHS[symbol]} {symbol}"
             ttk.Radiobutton(palette, text=display, value=symbol, variable=self.selected_tool).grid(row=idx // 3, column=idx % 3, sticky='w', padx=6, pady=2)
         ttk.Radiobutton(palette, text='🧽 Erase', value='erase', variable=self.selected_tool).grid(row=4, column=0, sticky='w', padx=6, pady=4)
 
-        board_controls = ttk.Frame(controls)
+        board_controls = ttk.Frame(controls, style='BoardSetup.TFrame')
         board_controls.pack(fill='x', pady=(10, 0))
         ttk.Button(board_controls, text='Clear Board', command=self._clear_board).pack(side='left')
         ttk.Button(board_controls, text='Standard Start', command=self._load_start).pack(side='left', padx=(6, 0))
@@ -95,7 +107,7 @@ class BoardSetupEditorDialog(tk.Toplevel):
         ttk.Button(board_controls, text='Copy FEN', command=self._copy_fen).pack(side='left', padx=(6, 0))
         ttk.Button(board_controls, text='Paste FEN', command=self._paste_fen).pack(side='left', padx=(6, 0))
 
-        state_box = ttk.LabelFrame(controls, text='State')
+        state_box = ttk.LabelFrame(controls, text='State', style='BoardSetup.TLabelframe')
         state_box.pack(fill='x', pady=(12, 0))
         ttk.Label(state_box, text='Side to move').grid(row=0, column=0, sticky='w', padx=6, pady=4)
         ttk.Radiobutton(state_box, text='White', value='w', variable=self.turn_var).grid(row=0, column=1, sticky='w', padx=4)
@@ -106,7 +118,7 @@ class BoardSetupEditorDialog(tk.Toplevel):
         ttk.Checkbutton(state_box, text='k', variable=self.castle_k_black_var).grid(row=2, column=1, sticky='w')
         ttk.Checkbutton(state_box, text='q', variable=self.castle_q_black_var).grid(row=2, column=2, sticky='w')
 
-        meta_box = ttk.LabelFrame(controls, text='Manual setup metadata')
+        meta_box = ttk.LabelFrame(controls, text='Manual setup metadata', style='BoardSetup.TLabelframe')
         meta_box.pack(fill='x', pady=(12, 0))
         ttk.Label(meta_box, text='Forced player color').grid(row=0, column=0, sticky='w', padx=6, pady=4)
         ttk.Combobox(meta_box, state='readonly', textvariable=self.forced_color_var, values=[ManualForcedPlayerColor.AUTO.value, ManualForcedPlayerColor.WHITE.value, ManualForcedPlayerColor.BLACK.value], width=12).grid(row=0, column=1, sticky='w', padx=4, pady=4)
@@ -116,9 +128,9 @@ class BoardSetupEditorDialog(tk.Toplevel):
         ttk.Entry(meta_box, textvariable=self.note_var).grid(row=2, column=1, sticky='ew', padx=4, pady=4)
         meta_box.columnconfigure(1, weight=1)
 
-        ttk.Label(controls, textvariable=self.error_var, foreground='red', wraplength=340).pack(fill='x', pady=(10, 0))
+        ttk.Label(controls, textvariable=self.error_var, foreground='#ff8a80', wraplength=340, style='BoardSetup.TLabel').pack(fill='x', pady=(10, 0))
 
-        buttons = ttk.Frame(controls)
+        buttons = ttk.Frame(controls, style='BoardSetup.TFrame')
         buttons.pack(fill='x', pady=(10, 0))
         ttk.Button(buttons, text='Cancel', command=self.destroy).pack(side='right')
         ttk.Button(buttons, text=save_label, command=self._save).pack(side='right', padx=(0, 8))

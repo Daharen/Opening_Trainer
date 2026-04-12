@@ -5,17 +5,39 @@ from tkinter import messagebox, simpledialog
 
 
 class ProfileDialog:
-    def __init__(self, master, session, refresh_callback, switch_callback=None, reset_callback=None):
+    def __init__(self, master, session, refresh_callback, switch_callback=None, reset_callback=None, palette: dict[str, str] | None = None):
         self.master = master
         self.session = session
         self.refresh_callback = refresh_callback
         self.switch_callback = switch_callback
         self.reset_callback = reset_callback
+        self.palette = palette or {
+            'app_bg': '#f0f0f0',
+            'surface_bg': '#ffffff',
+            'text_fg': '#111111',
+            'button_bg': '#f0f0f0',
+            'button_active_bg': '#dfdfdf',
+            'border_color': '#cfcfcf',
+            'muted_fg': '#555555',
+            'select_bg': '#cde2ff',
+        }
 
     def open(self):
         top = tk.Toplevel(self.master)
         top.title('Profiles')
-        listbox = tk.Listbox(top, width=40)
+        top.configure(bg=self.palette['app_bg'])
+        listbox = tk.Listbox(
+            top,
+            width=40,
+            bg=self.palette['surface_bg'],
+            fg=self.palette['text_fg'],
+            selectbackground=self.palette['select_bg'],
+            selectforeground=self.palette['text_fg'],
+            disabledforeground=self.palette['muted_fg'],
+            highlightbackground=self.palette['border_color'],
+            highlightcolor=self.palette['border_color'],
+            relief='flat',
+        )
         profiles = self.session.profile_service.list_profiles()
         for profile in profiles:
             marker = ' (active)' if profile.profile_id == self.session.active_profile_id else ''
@@ -28,10 +50,17 @@ class ProfileDialog:
             index = listbox.curselection()[0]
             return profiles[index].profile_id
 
-        tk.Button(top, text='Create', command=lambda: self._create(top)).pack(fill='x', padx=12)
-        tk.Button(top, text='Switch', command=lambda: self._switch(selected_id(), top)).pack(fill='x', padx=12)
-        tk.Button(top, text='Reset', command=lambda: self._reset(selected_id())).pack(fill='x', padx=12)
-        tk.Button(top, text='Delete', command=lambda: self._delete(selected_id(), top)).pack(fill='x', padx=12, pady=(0, 12))
+        button_opts = {
+            'bg': self.palette['button_bg'],
+            'fg': self.palette['text_fg'],
+            'activebackground': self.palette['button_active_bg'],
+            'activeforeground': self.palette['text_fg'],
+            'highlightbackground': self.palette['border_color'],
+        }
+        tk.Button(top, text='Create', command=lambda: self._create(top), **button_opts).pack(fill='x', padx=12)
+        tk.Button(top, text='Switch', command=lambda: self._switch(selected_id(), top), **button_opts).pack(fill='x', padx=12)
+        tk.Button(top, text='Reset', command=lambda: self._reset(selected_id()), **button_opts).pack(fill='x', padx=12)
+        tk.Button(top, text='Delete', command=lambda: self._delete(selected_id(), top), **button_opts).pack(fill='x', padx=12, pady=(0, 12))
 
     def _create(self, top):
         name = simpledialog.askstring('Create profile', 'Profile display name:', parent=top)
