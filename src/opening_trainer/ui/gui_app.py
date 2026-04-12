@@ -1765,6 +1765,7 @@ class OpeningTrainerGUI:
             if combo is not None:
                 combo.configure(style='TopStrip.TCombobox')
         for widget in (
+            getattr(self, 'toolbar_row', None),
             getattr(self, 'summary_strip', None),
             getattr(self, 'control_strip', None),
             getattr(self, 'action_bar', None),
@@ -1776,9 +1777,15 @@ class OpeningTrainerGUI:
         ):
             if widget is not None:
                 try:
-                    widget.configure(bg=palette['app_bg'] if widget is self.action_bar else palette['panel_bg'])
+                    if widget is self.action_bar:
+                        widget.configure(bg=palette['app_bg'])
+                    elif widget is getattr(self, 'toolbar_row', None):
+                        widget.configure(bg=palette['header_bg'])
+                    else:
+                        widget.configure(bg=palette['panel_bg'])
                 except tk.TclError:
                     continue
+        self._apply_toolbar_theme(palette)
         for button in (getattr(self, 'pause_button', None), getattr(self, 'start_button', None)):
             if button is not None:
                 button.configure(
@@ -1819,7 +1826,7 @@ class OpeningTrainerGUI:
                 self._theme_toplevel(child, palette)
 
     def _apply_menu_theme(self, palette: dict[str, str]) -> None:
-        menus = [getattr(self, '_menubar', None), *getattr(self, '_submenu_widgets', ())]
+        menus = [*getattr(self, '_submenu_widgets', ())]
         for menu in menus:
             if menu is None:
                 continue
@@ -1851,6 +1858,26 @@ class OpeningTrainerGUI:
                     )
                 except tk.TclError:
                     continue
+
+    def _apply_toolbar_theme(self, palette: dict[str, str]) -> None:
+        toolbar = getattr(self, 'toolbar_row', None)
+        if toolbar is None:
+            return
+        for child in toolbar.winfo_children():
+            if not isinstance(child, tk.Menubutton):
+                continue
+            try:
+                child.configure(
+                    bg=palette['header_bg'],
+                    fg=palette['text_fg'],
+                    activebackground=palette['menu_active_bg'],
+                    activeforeground=palette['text_fg'],
+                    disabledforeground=palette['muted_fg'],
+                    highlightbackground=palette['header_bg'],
+                    highlightcolor=palette['accent_color'],
+                )
+            except tk.TclError:
+                continue
 
     def _ensure_live_flow_state(self) -> None:
         if not hasattr(self, 'paused'):
@@ -2549,35 +2576,27 @@ class OpeningTrainerGUI:
         return None
 
 
-    def _build_menubar(self) -> None:
-        menubar = tk.Menu(self.root)
-        file_menu = tk.Menu(menubar, tearoff=0)
+    def _populate_file_menu(self, file_menu: tk.Menu) -> None:
         file_menu.add_command(label='Exit', command=self._request_shutdown)
-        menubar.add_cascade(label='File', menu=file_menu)
 
-        options_menu = tk.Menu(menubar, tearoff=0)
+    def _populate_options_menu(self, options_menu: tk.Menu) -> None:
         options_menu.add_command(label='Open Options…', command=self._open_options)
-        menubar.add_cascade(label='Options', menu=options_menu)
 
-        profiles_menu = tk.Menu(menubar, tearoff=0)
+    def _populate_profiles_menu(self, profiles_menu: tk.Menu) -> None:
         profiles_menu.add_command(label='Manage Profiles…', command=self._open_profiles)
-        menubar.add_cascade(label='Profiles', menu=profiles_menu)
 
-        corpus_menu = tk.Menu(menubar, tearoff=0)
+    def _populate_corpus_menu(self, corpus_menu: tk.Menu) -> None:
         corpus_menu.add_command(label='Open Corpus Selection…', command=self._open_bundle_picker)
-        menubar.add_cascade(label='Corpus Selection', menu=corpus_menu)
 
-        update_menu = tk.Menu(menubar, tearoff=0)
+    def _populate_update_menu(self, update_menu: tk.Menu) -> None:
         update_menu.add_command(label='Check for Updates', command=self._check_for_updates_from_gui)
         self._update_menu = update_menu
         self._update_menu_index = 0
-        menubar.add_cascade(label='Update', menu=update_menu)
 
-        report_menu = tk.Menu(menubar, tearoff=0)
+    def _populate_report_menu(self, report_menu: tk.Menu) -> None:
         report_menu.add_command(label='Open Report', command=self._show_report_placeholder)
-        menubar.add_cascade(label='Report', menu=report_menu)
 
-        dev_menu = tk.Menu(menubar, tearoff=0)
+    def _populate_dev_menu(self, dev_menu: tk.Menu) -> None:
         dev_menu.add_command(label='Open Dev Console', command=self._open_dev_console)
         dev_menu.add_command(label='Review Deck Inspector', command=self._open_review_deck_inspector)
         dev_menu.add_command(label='Timing Override...', command=self._open_timing_override_dialog)
@@ -2588,18 +2607,43 @@ class OpeningTrainerGUI:
         dev_menu.add_command(label='Open Board Setup Editor', command=self._open_board_setup_editor)
         dev_menu.add_command(label='Reset Smart Profile State', command=self._reset_smart_profile_state)
         dev_menu.add_command(label='Set Smart Profile Level…', command=self._set_smart_profile_level)
-        menubar.add_cascade(label='Developer', menu=dev_menu)
-        self._menubar = menubar
-        self._submenu_widgets = (
-            file_menu,
-            options_menu,
-            profiles_menu,
-            corpus_menu,
-            update_menu,
-            report_menu,
-            dev_menu,
+
+    def _build_menubar(self) -> None:
+        toolbar = tk.Frame(self.root, borderwidth=0, highlightthickness=0)
+        toolbar.grid(row=0, column=0, sticky='ew')
+        self.toolbar_row = toolbar
+
+        menu_specs = (
+            (dict(label='File'), self._populate_file_menu),
+            (dict(label='Options'), self._populate_options_menu),
+            (dict(label='Profiles'), self._populate_profiles_menu),
+            (dict(label='Corpus Selection'), self._populate_corpus_menu),
+            (dict(label='Update'), self._populate_update_menu),
+            (dict(label='Report'), self._populate_report_menu),
+            (dict(label='Developer'), self._populate_dev_menu),
         )
-        self.root.config(menu=menubar)
+        menu_widgets: list[tk.Menu] = []
+        for column, (meta, populate_menu) in enumerate(menu_specs):
+            menu = tk.Menu(toolbar, tearoff=0)
+            populate_menu(menu)
+            menu_widgets.append(menu)
+            button = tk.Menubutton(
+                toolbar,
+                text=meta['label'],
+                relief=tk.FLAT,
+                borderwidth=0,
+                highlightthickness=0,
+                padx=10,
+                pady=6,
+                takefocus=0,
+                cursor='hand2',
+            )
+            button.configure(menu=menu)
+            button.grid(row=0, column=column, sticky='w', padx=(0, 2), pady=0)
+
+        toolbar.grid_columnconfigure(len(menu_specs), weight=1)
+        self._submenu_widgets = tuple(menu_widgets)
+        self.root.config(menu='')
 
     def _runtime_mode_value(self) -> str | None:
         runtime_mode = getattr(getattr(self.session, "runtime_context", None), "runtime_mode", None)
