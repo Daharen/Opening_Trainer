@@ -1134,8 +1134,20 @@ def test_settings_store_defaults_and_persists_training_panel_columns(tmp_path):
     assert reloaded.training_panel_visible_columns == ('position', 'side', 'due')
     assert reloaded.side_panel_visible is True
     assert reloaded.move_list_visible is False
-    assert reloaded.dark_mode_enabled is False
+    assert reloaded.dark_mode_enabled is True
     assert reloaded == saved
+
+
+def test_settings_store_defaults_dark_mode_only_when_preference_missing(tmp_path):
+    from opening_trainer.settings import TrainerSettingsStore
+    import json
+
+    store = TrainerSettingsStore(tmp_path)
+    store.path.write_text(json.dumps({'dark_mode_enabled': False}), encoding='utf-8')
+    assert store.load(maximum_depth=5).dark_mode_enabled is False
+
+    store.path.write_text(json.dumps({}), encoding='utf-8')
+    assert store.load(maximum_depth=5).dark_mode_enabled is True
 
 
 

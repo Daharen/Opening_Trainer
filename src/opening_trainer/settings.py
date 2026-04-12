@@ -31,7 +31,7 @@ class TrainerSettings:
     selected_time_control_id: str = '600+0'
     side_panel_visible: bool = False
     move_list_visible: bool = True
-    dark_mode_enabled: bool = False
+    dark_mode_enabled: bool = True
     allow_sharp_gambit_lines: bool = False
     training_panel_visible_columns: tuple[str, ...] = DEFAULT_TRAINING_PANEL_COLUMNS
     last_bundle_path: str | None = None
@@ -114,7 +114,7 @@ class TrainerSettingsStore:
             selected_time_control_id=str(payload.get('selected_time_control_id', '600+0')),
             side_panel_visible=bool(payload.get('side_panel_visible', False)),
             move_list_visible=bool(payload.get('move_list_visible', True)),
-            dark_mode_enabled=bool(payload.get('dark_mode_enabled', False)),
+            dark_mode_enabled=bool(payload.get('dark_mode_enabled', True)),
             allow_sharp_gambit_lines=bool(payload.get('allow_sharp_gambit_lines', False)),
             training_panel_visible_columns=tuple(payload.get('training_panel_visible_columns') or DEFAULT_TRAINING_PANEL_COLUMNS),
             last_bundle_path=payload.get('last_bundle_path') or None,
