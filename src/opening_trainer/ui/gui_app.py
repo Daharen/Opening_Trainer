@@ -1799,6 +1799,7 @@ class OpeningTrainerGUI:
         self.root.option_add('*Menu.foreground', palette['menu_fg'])
         self.root.option_add('*Menu.activeBackground', palette['menu_active_bg'])
         self.root.option_add('*Menu.activeForeground', palette['menu_fg'])
+        self._apply_menu_theme(palette)
         self.root.option_add('*Text.background', palette['field_bg'])
         self.root.option_add('*Text.foreground', palette['text_fg'])
         self.root.option_add('*Listbox.background', palette['field_bg'])
@@ -1816,6 +1817,40 @@ class OpeningTrainerGUI:
         for child in tuple(getattr(self, '_child_windows', [])):
             if child is not None and child.winfo_exists():
                 self._theme_toplevel(child, palette)
+
+    def _apply_menu_theme(self, palette: dict[str, str]) -> None:
+        menus = [getattr(self, '_menubar', None), *getattr(self, '_submenu_widgets', ())]
+        for menu in menus:
+            if menu is None:
+                continue
+            try:
+                menu.configure(
+                    background=palette['menu_bg'],
+                    foreground=palette['menu_fg'],
+                    activebackground=palette['menu_active_bg'],
+                    activeforeground=palette['menu_fg'],
+                    relief=tk.FLAT,
+                    borderwidth=0,
+                )
+            except tk.TclError:
+                continue
+            try:
+                end_index = menu.index('end')
+            except tk.TclError:
+                end_index = None
+            if end_index is None:
+                continue
+            for entry_index in range(end_index + 1):
+                try:
+                    menu.entryconfigure(
+                        entry_index,
+                        background=palette['menu_bg'],
+                        foreground=palette['menu_fg'],
+                        activebackground=palette['menu_active_bg'],
+                        activeforeground=palette['menu_fg'],
+                    )
+                except tk.TclError:
+                    continue
 
     def _ensure_live_flow_state(self) -> None:
         if not hasattr(self, 'paused'):
@@ -2554,6 +2589,16 @@ class OpeningTrainerGUI:
         dev_menu.add_command(label='Reset Smart Profile State', command=self._reset_smart_profile_state)
         dev_menu.add_command(label='Set Smart Profile Level…', command=self._set_smart_profile_level)
         menubar.add_cascade(label='Developer', menu=dev_menu)
+        self._menubar = menubar
+        self._submenu_widgets = (
+            file_menu,
+            options_menu,
+            profiles_menu,
+            corpus_menu,
+            update_menu,
+            report_menu,
+            dev_menu,
+        )
         self.root.config(menu=menubar)
 
     def _runtime_mode_value(self) -> str | None:
