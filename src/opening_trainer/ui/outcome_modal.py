@@ -10,7 +10,18 @@ from .board_view import BoardView
 
 
 class OutcomeModal:
-    def __init__(self, master: tk.Misc, contract: OutcomeModalContract, on_continue):
+    def __init__(self, master: tk.Misc, contract: OutcomeModalContract, on_continue, *, palette: dict[str, str] | None = None):
+        self._palette = palette or {
+            'app_bg': '#f0f0f0',
+            'panel_bg': '#f0f0f0',
+            'surface_bg': '#ffffff',
+            'field_bg': '#ffffff',
+            'text_fg': '#111111',
+            'muted_fg': '#555555',
+            'border_color': '#cfcfcf',
+            'button_bg': '#f0f0f0',
+            'button_active_bg': '#dfdfdf',
+        }
         self._on_continue = on_continue
         self._punishment_slides = contract.punishment_slides
         self._corrective_slides = contract.corrective_slides
@@ -25,14 +36,31 @@ class OutcomeModal:
         self.window.transient(master)
         self.window.resizable(False, False)
         self.window.protocol('WM_DELETE_WINDOW', self._close)
-        self.window.configure(padx=20, pady=20)
+        self.window.configure(padx=20, pady=20, bg=self._palette['app_bg'])
 
         container = ttk.Frame(self.window, padding=8)
         container.pack(fill='both', expand=True)
 
         headline_color = '#1b5e20' if contract.headline == 'SUCCESS' else '#b71c1c'
-        tk.Label(container, text=contract.headline, font=('TkDefaultFont', 24, 'bold'), fg=headline_color).pack(padx=16, pady=(8, 12))
-        tk.Label(container, text=contract.summary, font=('TkDefaultFont', 12, 'bold'), anchor='w', justify='left', wraplength=560).pack(fill='x', padx=16, pady=(0, 10))
+        tk.Label(
+            container,
+            text=contract.headline,
+            font=('TkDefaultFont', 24, 'bold'),
+            fg=headline_color,
+            bg=self._palette['panel_bg'],
+        ).pack(padx=16, pady=(8, 12))
+        tk.Label(
+            container,
+            text=contract.summary,
+            font=('TkDefaultFont', 12, 'bold'),
+            anchor='w',
+            justify='left',
+            wraplength=560,
+            bg=self._palette['field_bg'],
+            fg=self._palette['text_fg'],
+            padx=8,
+            pady=6,
+        ).pack(fill='x', padx=16, pady=(0, 10))
 
         if contract.review_boards or contract.punishment_slides or contract.corrective_slides:
             self._build_review_boards(container, contract)
@@ -45,7 +73,17 @@ class OutcomeModal:
             f'{contract.impact_summary}',
         ]
         for line in details:
-            tk.Label(container, text=line, anchor='w', justify='left', wraplength=560).pack(fill='x', padx=16, pady=2)
+            tk.Label(
+                container,
+                text=line,
+                anchor='w',
+                justify='left',
+                wraplength=560,
+                bg=self._palette['field_bg'],
+                fg=self._palette['muted_fg'],
+                padx=8,
+                pady=4,
+            ).pack(fill='x', padx=16, pady=2)
 
         ttk.Button(container, text='Continue', command=self._close).pack(pady=(18, 8))
 
@@ -78,6 +116,7 @@ class OutcomeModal:
             ttk.Label(card, text=f'{board_contract.arrow_label}: {board_contract.move_label or "—"}', wraplength=260, justify='left').pack(anchor='w', pady=(0, 6))
             board = BoardView(card, board_size=220, min_board_size=180)
             board.pack()
+            board.apply_theme(gutter_color=self._palette['surface_bg'], coordinate_color=self._palette['text_fg'])
             board.set_arrows([(arrow.move_uci, arrow.color, arrow.width_scale) for arrow in board_contract.arrows])
             board.render(chess.Board(board_contract.board_fen), board_contract.player_color)
         if has_punishment:
@@ -122,6 +161,7 @@ class OutcomeModal:
         ttk.Label(card, textvariable=label_var).pack(anchor='w', pady=(0, 6))
         board = BoardView(card, board_size=220, min_board_size=180)
         board.pack()
+        board.apply_theme(gutter_color=self._palette['surface_bg'], coordinate_color=self._palette['text_fg'])
         controls = ttk.Frame(card)
         controls.pack(anchor='w', pady=(8, 0))
         ttk.Button(controls, text='◀', command=on_prev).pack(side='left', padx=(0, 6))

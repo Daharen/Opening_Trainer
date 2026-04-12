@@ -1234,6 +1234,7 @@ class OpeningTrainerGUI:
             self._refresh_supporting_surfaces,
             switch_callback=self._refresh_after_profile_switch,
             reset_callback=self._reset_profile_from_dialog,
+            palette=self._theme_palette(),
         ).open()
 
     def _refresh_after_profile_switch(self) -> None:
@@ -1536,9 +1537,9 @@ class OpeningTrainerGUI:
             column: tk.BooleanVar(value=column in visible_columns)
             for column in self.inspector.columns
         }
-        ttk.Checkbutton(frame, text='Dark Mode', variable=dark_mode_var).pack(anchor='w')
-        ttk.Checkbutton(frame, text='Show Moves List', variable=move_list_var).pack(anchor='w')
-        ttk.Checkbutton(frame, text='Show Training Panel', variable=panel_var).pack(anchor='w', pady=(0, 8))
+        ttk.Checkbutton(frame, text='Dark Mode', variable=dark_mode_var, style='Options.TCheckbutton').pack(anchor='w')
+        ttk.Checkbutton(frame, text='Show Moves List', variable=move_list_var, style='Options.TCheckbutton').pack(anchor='w')
+        ttk.Checkbutton(frame, text='Show Training Panel', variable=panel_var, style='Options.TCheckbutton').pack(anchor='w', pady=(0, 8))
         ttk.Label(frame, text='Training Panel Columns', justify='left').pack(anchor='w')
         columns_frame = ttk.Frame(frame)
         columns_frame.pack(fill='x', pady=(0, 8))
@@ -1548,6 +1549,7 @@ class OpeningTrainerGUI:
                 columns_frame,
                 text=self.inspector.column_labels[column],
                 variable=column_vars[column],
+                style='Options.TCheckbutton',
             )
             checkbutton.grid(row=index // 3, column=index % 3, sticky='w', padx=(0, 12), pady=2)
             column_checkbuttons.append(checkbutton)
@@ -1595,8 +1597,8 @@ class OpeningTrainerGUI:
             self._apply_shell_layout(initializing=True)
             self._refresh_supporting_surfaces()
 
-        ttk.Button(frame, text='Save', command=save).pack(side='left')
-        ttk.Button(frame, text='Cancel', command=window.destroy).pack(side='left', padx=(8, 0))
+        ttk.Button(frame, text='Save', command=save, style='ReviewPanel.TButton').pack(side='left')
+        ttk.Button(frame, text='Cancel', command=window.destroy, style='ReviewPanel.TButton').pack(side='left', padx=(8, 0))
 
     def _bind_pause_hotkeys(self) -> None:
         self.root.bind_all('<KeyPress-p>', lambda event: self._on_pause_hotkey(event, source='key_p'))
@@ -1645,6 +1647,19 @@ class OpeningTrainerGUI:
         style.configure('TLabelframe.Label', background=palette['panel_bg'], foreground=palette['text_fg'])
         style.configure('TLabel', background=palette['panel_bg'], foreground=palette['text_fg'])
         style.configure('TCheckbutton', background=palette['panel_bg'], foreground=palette['text_fg'])
+        style.map(
+            'TCheckbutton',
+            background=[('disabled', palette['panel_bg'])],
+            foreground=[('disabled', palette['muted_fg'])],
+            indicatorcolor=[('disabled', palette['surface_bg'])],
+        )
+        style.configure('Options.TCheckbutton', background=palette['panel_bg'], foreground=palette['text_fg'])
+        style.map(
+            'Options.TCheckbutton',
+            background=[('disabled', palette['panel_bg'])],
+            foreground=[('disabled', palette['muted_fg'])],
+            indicatorcolor=[('disabled', palette['surface_bg'])],
+        )
         style.configure('TButton', background=palette['button_bg'], foreground=palette['text_fg'])
         style.map('TButton', background=[('active', palette['button_active_bg'])])
         style.configure(
@@ -1721,8 +1736,10 @@ class OpeningTrainerGUI:
             selectforeground=[('readonly', palette['text_fg'])],
             arrowcolor=[('readonly', palette['text_fg']), ('disabled', palette['muted_fg'])],
         )
-        style.configure('Vertical.TScrollbar', background=palette['surface_bg'], troughcolor=palette['panel_bg'])
-        style.configure('Horizontal.TScrollbar', background=palette['surface_bg'], troughcolor=palette['panel_bg'])
+        style.configure('Vertical.TScrollbar', background=palette['surface_bg'], troughcolor=palette['panel_bg'], bordercolor=palette['border_color'])
+        style.configure('Horizontal.TScrollbar', background=palette['surface_bg'], troughcolor=palette['panel_bg'], bordercolor=palette['border_color'])
+        style.map('Vertical.TScrollbar', background=[('active', palette['button_active_bg'])])
+        style.map('Horizontal.TScrollbar', background=[('active', palette['button_active_bg'])])
         style.configure('MoveList.TLabelframe', background=palette['surface_bg'], foreground=palette['text_fg'], bordercolor=palette['border_color'])
         style.configure('MoveList.TLabel', background=palette['surface_bg'], foreground=palette['muted_fg'])
         style.configure('Captured.TFrame', background=palette['surface_bg'])
@@ -1923,10 +1940,16 @@ class OpeningTrainerGUI:
         frame.place(relx=0.5, rely=0.5, anchor='center')
         ttk.Label(frame, text='Ready?', font=('TkDefaultFont', 14, 'bold')).pack(anchor='center', pady=(0, 4))
         ttk.Label(frame, text='Opponent starts. Click Begin to start live play.').pack(anchor='center', pady=(0, 12))
+        palette = self._theme_palette()
         tk.Button(
             frame,
             text='Begin',
             command=self._acknowledge_ready_overlay,
+            bg=palette['button_bg'],
+            fg=palette['text_fg'],
+            activebackground=palette['button_active_bg'],
+            activeforeground=palette['text_fg'],
+            highlightbackground=palette['border_color'],
         ).pack(fill='x')
         self._ready_overlay_frame = frame
 
@@ -2147,7 +2170,10 @@ class OpeningTrainerGUI:
             punishment_slides=tuple(punishment_slides),
             corrective_slides=tuple(corrective_slides),
         )
-        return OutcomeModal(self.root, contract, self._acknowledge_outcome)
+        try:
+            return OutcomeModal(self.root, contract, self._acknowledge_outcome, palette=self._theme_palette())
+        except TypeError:
+            return OutcomeModal(self.root, contract, self._acknowledge_outcome)
 
     def _acknowledge_outcome(self):
         self._cancel_pending_opponent_callback()
@@ -2561,7 +2587,12 @@ class OpeningTrainerGUI:
                 self.review_deck_inspector_window.focus()
                 return
             self.review_deck_inspector_window = None
-        self.review_deck_inspector_window = ReviewDeckInspectorWindow(self.root, self.session, on_close=lambda: setattr(self, 'review_deck_inspector_window', None))
+        self.review_deck_inspector_window = ReviewDeckInspectorWindow(
+            self.root,
+            self.session,
+            on_close=lambda: setattr(self, 'review_deck_inspector_window', None),
+            palette=self._theme_palette(),
+        )
         self._child_windows.append(self.review_deck_inspector_window.window)
 
     def _app_state_root(self) -> Path:

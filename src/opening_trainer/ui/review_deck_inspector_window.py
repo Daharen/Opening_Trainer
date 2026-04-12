@@ -72,12 +72,24 @@ class ReviewDeckInspectorWindow:
     HISTORY_LIMIT = 400
     POLL_MS = 350
 
-    def __init__(self, master: tk.Misc, session, *, on_close=None) -> None:
+    def __init__(self, master: tk.Misc, session, *, on_close=None, palette: dict[str, str] | None = None) -> None:
         self.session = session
         self.on_close = on_close
+        self.palette = palette or {
+            'app_bg': '#1e1e1e',
+            'panel_bg': '#2a2a2a',
+            'surface_bg': '#303030',
+            'header_bg': '#333333',
+            'text_fg': '#ffffff',
+            'muted_fg': '#cccccc',
+            'border_color': '#444444',
+            'select_bg': '#3a3a3a',
+            'button_active_bg': '#3a3a3a',
+        }
         self.window = tk.Toplevel(master)
         self.window.title('Review Deck Inspector')
         self.window.geometry('1200x700')
+        self.window.configure(bg=self.palette['app_bg'])
         self.window.rowconfigure(1, weight=1)
         self.window.columnconfigure(0, weight=1)
 
@@ -109,7 +121,19 @@ class ReviewDeckInspectorWindow:
             self.on_close()
 
     def _build_layout(self) -> None:
-        top = ttk.LabelFrame(self.window, text='Active Review Stack', padding=8)
+        style = ttk.Style(self.window)
+        style.configure('DeckInspector.TLabelframe', background=self.palette['panel_bg'], foreground=self.palette['text_fg'], bordercolor=self.palette['border_color'])
+        style.configure('DeckInspector.TLabelframe.Label', background=self.palette['panel_bg'], foreground=self.palette['text_fg'])
+        style.configure('DeckInspector.TFrame', background=self.palette['panel_bg'])
+        style.configure('DeckInspectorSurface.TFrame', background=self.palette['surface_bg'])
+        style.configure('DeckInspector.TLabel', background=self.palette['panel_bg'], foreground=self.palette['text_fg'])
+        style.configure('DeckInspector.Treeview', background=self.palette['surface_bg'], fieldbackground=self.palette['surface_bg'], foreground=self.palette['text_fg'])
+        style.configure('DeckInspector.Treeview.Heading', background=self.palette['header_bg'], foreground=self.palette['text_fg'])
+        style.map('DeckInspector.Treeview', background=[('selected', self.palette['select_bg'])], foreground=[('selected', self.palette['text_fg'])])
+        style.configure('DeckInspector.Vertical.TScrollbar', background=self.palette['surface_bg'], troughcolor=self.palette['panel_bg'], bordercolor=self.palette['border_color'])
+        style.map('DeckInspector.Vertical.TScrollbar', background=[('active', self.palette['button_active_bg'])])
+
+        top = ttk.LabelFrame(self.window, text='Active Review Stack', padding=8, style='DeckInspector.TLabelframe')
         top.grid(row=0, column=0, sticky='nsew', padx=8, pady=(8, 4))
         top.rowconfigure(0, weight=1)
         top.columnconfigure(0, weight=1)
@@ -119,6 +143,7 @@ class ReviewDeckInspectorWindow:
             show='headings',
             columns=('color', 'position', 'frequency', 'cards', 'fails', 'success_streak'),
             height=8,
+            style='DeckInspector.Treeview',
         )
         for column, label, width in (
             ('color', 'Color', 70),
@@ -130,18 +155,18 @@ class ReviewDeckInspectorWindow:
         ):
             self.active_table.heading(column, text=label)
             self.active_table.column(column, width=width, anchor='w')
-        active_scroll = ttk.Scrollbar(top, orient='vertical', command=self.active_table.yview)
+        active_scroll = ttk.Scrollbar(top, orient='vertical', command=self.active_table.yview, style='DeckInspector.Vertical.TScrollbar')
         self.active_table.configure(yscrollcommand=active_scroll.set)
         self.active_table.grid(row=0, column=0, sticky='nsew')
         active_scroll.grid(row=0, column=1, sticky='ns')
 
-        lower = ttk.Frame(self.window)
+        lower = ttk.Frame(self.window, style='DeckInspector.TFrame')
         lower.grid(row=1, column=0, sticky='nsew', padx=8, pady=(4, 8))
         lower.columnconfigure(0, weight=4)
         lower.columnconfigure(1, weight=2)
         lower.rowconfigure(0, weight=1)
 
-        history_frame = ttk.LabelFrame(lower, text='Running History (Corpus rows are black)', padding=8)
+        history_frame = ttk.LabelFrame(lower, text='Running History (Corpus rows are black)', padding=8, style='DeckInspector.TLabelframe')
         history_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 4))
         history_frame.rowconfigure(0, weight=1)
         history_frame.columnconfigure(0, weight=1)
@@ -151,6 +176,7 @@ class ReviewDeckInspectorWindow:
             show='headings',
             columns=('source', 'position', 'result'),
             height=20,
+            style='DeckInspector.Treeview',
         )
         for column, label, width in (
             ('source', 'Source', 120),
@@ -159,22 +185,27 @@ class ReviewDeckInspectorWindow:
         ):
             self.history_table.heading(column, text=label)
             self.history_table.column(column, width=width, anchor='w')
-        history_scroll = ttk.Scrollbar(history_frame, orient='vertical', command=self.history_table.yview)
+        history_scroll = ttk.Scrollbar(history_frame, orient='vertical', command=self.history_table.yview, style='DeckInspector.Vertical.TScrollbar')
         self.history_table.configure(yscrollcommand=history_scroll.set)
         self.history_table.grid(row=0, column=0, sticky='nsew')
         history_scroll.grid(row=0, column=1, sticky='ns')
         self._history_placeholder_iid = 'history_placeholder'
 
-        summary_frame = ttk.LabelFrame(lower, text='Live Summary', padding=8)
+        summary_frame = ttk.LabelFrame(lower, text='Live Summary', padding=8, style='DeckInspector.TLabelframe')
         summary_frame.grid(row=0, column=1, sticky='nsew')
         summary_frame.rowconfigure(0, weight=1)
         summary_frame.columnconfigure(0, weight=1)
-        self.summary_canvas = tk.Canvas(summary_frame, highlightthickness=0)
-        summary_scroll = ttk.Scrollbar(summary_frame, orient='vertical', command=self.summary_canvas.yview)
+        self.summary_canvas = tk.Canvas(
+            summary_frame,
+            highlightthickness=0,
+            bg=self.palette['surface_bg'],
+            bd=0,
+        )
+        summary_scroll = ttk.Scrollbar(summary_frame, orient='vertical', command=self.summary_canvas.yview, style='DeckInspector.Vertical.TScrollbar')
         self.summary_canvas.configure(yscrollcommand=summary_scroll.set)
         self.summary_canvas.grid(row=0, column=0, sticky='nsew')
         summary_scroll.grid(row=0, column=1, sticky='ns')
-        self.summary_content = ttk.Frame(self.summary_canvas)
+        self.summary_content = ttk.Frame(self.summary_canvas, style='DeckInspectorSurface.TFrame')
         self.summary_canvas_window = self.summary_canvas.create_window((0, 0), window=self.summary_content, anchor='nw')
         self.summary_content.bind('<Configure>', lambda _event: self.summary_canvas.configure(scrollregion=self.summary_canvas.bbox('all')))
         self.summary_canvas.bind(
@@ -220,10 +251,10 @@ class ReviewDeckInspectorWindow:
             var = tk.StringVar(value='—')
             self.summary_vars[key] = var
             if key.startswith('separator_'):
-                ttk.Label(self.summary_content, text=label).grid(row=row, column=0, columnspan=2, sticky='ew', pady=1)
+                ttk.Label(self.summary_content, text=label, style='DeckInspector.TLabel').grid(row=row, column=0, columnspan=2, sticky='ew', pady=1)
             else:
-                ttk.Label(self.summary_content, text=f'{label}:').grid(row=row, column=0, sticky='w', pady=1)
-                value_label = ttk.Label(self.summary_content, textvariable=var)
+                ttk.Label(self.summary_content, text=f'{label}:', style='DeckInspector.TLabel').grid(row=row, column=0, sticky='w', pady=1)
+                value_label = ttk.Label(self.summary_content, textvariable=var, style='DeckInspector.TLabel')
                 value_label.grid(row=row, column=1, sticky='w', pady=1)
                 if key == 'training_share':
                     self._training_share_row_widget = value_label

@@ -65,7 +65,7 @@ class ReviewInspector(ttk.Frame):
         self.tree_frame = ttk.Frame(self)
         self.tree_frame.pack(fill='both', expand=True)
         self.tree = ttk.Treeview(self.tree_frame, columns=self.columns, show='headings', height=8, displaycolumns=self.visible_columns)
-        self.scrollbar = ttk.Scrollbar(self.tree_frame, orient='vertical', command=self.tree.yview)
+        self.scrollbar = ttk.Scrollbar(self.tree_frame, orient='vertical', command=self.tree.yview, style='Vertical.TScrollbar')
         self.tree.configure(yscrollcommand=self.scrollbar.set)
         for column in self.columns:
             self.tree.heading(column, text=self.column_labels[column])
