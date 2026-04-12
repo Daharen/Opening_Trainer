@@ -88,22 +88,22 @@ class OpeningTrainerGUI:
         dark = bool(getattr(self, 'dark_mode_enabled', False))
         if dark:
             return {
-                'app_bg': '#161a1f',
-                'panel_bg': '#1f252c',
-                'surface_bg': '#262d36',
-                'header_bg': '#2d3641',
-                'field_bg': '#2a323c',
-                'text_fg': '#e6e9ee',
-                'muted_fg': '#aeb7c2',
-                'border_color': '#3a4654',
-                'menu_bg': '#1b2128',
-                'menu_active_bg': '#323b46',
-                'menu_fg': '#f1f3f5',
-                'select_bg': '#3d4f64',
+                'app_bg': '#1e1e1e',
+                'panel_bg': '#2a2a2a',
+                'surface_bg': '#303030',
+                'header_bg': '#333333',
+                'field_bg': '#333333',
+                'text_fg': '#ffffff',
+                'muted_fg': '#cccccc',
+                'border_color': '#444444',
+                'menu_bg': '#333333',
+                'menu_active_bg': '#3a3a3a',
+                'menu_fg': '#ffffff',
+                'select_bg': '#3a3a3a',
                 'accent_color': '#6ea8fe',
-                'button_bg': '#2d3742',
-                'button_active_bg': '#3b4653',
-                'board_coordinate_fg': '#d9e1ea',
+                'button_bg': '#333333',
+                'button_active_bg': '#3a3a3a',
+                'board_coordinate_fg': '#ffffff',
             }
         return {
             'app_bg': '#f0f0f0',
@@ -1654,11 +1654,29 @@ class OpeningTrainerGUI:
             insertcolor=palette['text_fg'],
         )
         style.configure(
+            'Dark.TCombobox',
+            fieldbackground=palette['field_bg'],
+            background=palette['field_bg'],
+            foreground=palette['text_fg'],
+            arrowcolor=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.map(
+            'Dark.TCombobox',
+            fieldbackground=[('readonly', palette['field_bg'])],
+            background=[('readonly', palette['field_bg'])],
+            foreground=[('readonly', palette['text_fg'])],
+            selectbackground=[('readonly', palette['select_bg'])],
+            selectforeground=[('readonly', palette['text_fg'])],
+            arrowcolor=[('readonly', palette['text_fg'])],
+        )
+        style.configure(
             'TCombobox',
             fieldbackground=palette['field_bg'],
             background=palette['field_bg'],
             foreground=palette['text_fg'],
             arrowcolor=palette['text_fg'],
+            bordercolor=palette['border_color'],
         )
         style.map(
             'TCombobox',
@@ -1725,6 +1743,7 @@ class OpeningTrainerGUI:
             getattr(self, 'top_depth_combo', None),
             getattr(self, 'top_good_combo', None),
             getattr(self, 'fallback_mode_combo', None),
+            getattr(self, 'opening_locked_opening_combo', None),
         ):
             if combo is not None:
                 combo.configure(style='TopStrip.TCombobox')
@@ -1768,6 +1787,10 @@ class OpeningTrainerGUI:
         self.root.option_add('*Listbox.background', palette['field_bg'])
         self.root.option_add('*Listbox.foreground', palette['text_fg'])
         self.root.option_add('*Listbox.selectBackground', palette['select_bg'])
+        self.root.option_add('*TCombobox*Listbox.background', palette['field_bg'])
+        self.root.option_add('*TCombobox*Listbox.foreground', palette['text_fg'])
+        self.root.option_add('*TCombobox*Listbox.selectBackground', palette['select_bg'])
+        self.root.option_add('*TCombobox*Listbox.selectForeground', palette['text_fg'])
         self.move_list_panel.apply_theme(dark=dark, palette=palette)
         self.inspector.apply_theme(palette=palette)
         self.top_captured_panel.apply_theme(palette=palette)

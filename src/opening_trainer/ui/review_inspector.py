@@ -376,18 +376,32 @@ class ReviewInspector(ttk.Frame):
 
     def apply_theme(self, *, palette: dict[str, str]) -> None:
         style = ttk.Style(self)
+        field_bg = palette.get('field_bg', palette.get('header_bg', palette['surface_bg']))
         style.configure('ReviewPanel.TFrame', background=palette['panel_bg'])
         style.configure('ReviewPanelSurface.TFrame', background=palette['surface_bg'])
         style.configure(
+            'Dark.Treeview',
+            background=palette['panel_bg'],
+            fieldbackground=palette['panel_bg'],
+            foreground=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.configure(
+            'Dark.Treeview.Heading',
+            background=field_bg,
+            foreground=palette['text_fg'],
+            bordercolor=palette['border_color'],
+        )
+        style.configure(
             'Review.Treeview',
-            background=palette['surface_bg'],
-            fieldbackground=palette['surface_bg'],
+            background=palette['panel_bg'],
+            fieldbackground=palette['panel_bg'],
             foreground=palette['text_fg'],
             bordercolor=palette['border_color'],
         )
         style.configure(
             'Review.Treeview.Heading',
-            background=palette['header_bg'],
+            background=field_bg,
             foreground=palette['text_fg'],
             bordercolor=palette['border_color'],
         )
