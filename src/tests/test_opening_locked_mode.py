@@ -13,7 +13,11 @@ from opening_trainer.opening_locked_mode import (
     discover_opening_locked_artifact,
 )
 from opening_trainer.opponent import OpponentMoveChoice
-from opening_trainer.runtime import RuntimeOverrides, load_runtime_config
+from opening_trainer.runtime import (
+    HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT,
+    RuntimeOverrides,
+    load_runtime_config,
+)
 from opening_trainer.session import TrainingSession
 from opening_trainer.settings import TrainerSettings
 
@@ -63,7 +67,55 @@ def test_dev_runtime_reports_opening_locked_unavailable_when_no_discovery_winner
     runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
 
     assert runtime.opening_locked_artifact.loaded is False
-    assert "dev discovery candidates checked" in runtime.opening_locked_artifact.detail
+    assert "checked content_root=" in runtime.opening_locked_artifact.detail
+    assert "checked dev hardcoded fallback content_root=" in runtime.opening_locked_artifact.detail
+
+
+def test_consumer_runtime_uses_content_root_without_hardcoded_dev_fallback(tmp_path, monkeypatch):
+    content_root = tmp_path / "localappdata" / "OpeningTrainerContent"
+    _write_opening_locked_artifact(content_root)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("OPENING_TRAINER_RUNTIME_MODE", "consumer")
+
+    runtime = load_runtime_config(RuntimeOverrides())
+
+    assert runtime.opening_locked_artifact.loaded is True
+    assert str(content_root / "opening_locked_mode") in runtime.opening_locked_artifact.detail
+    assert "dev hardcoded fallback" not in runtime.opening_locked_artifact.detail
+
+
+def test_dev_runtime_uses_hardcoded_fallback_when_primary_content_root_missing(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.chdir(repo_root)
+    fallback_content_root = tmp_path / "seed_content"
+    _write_opening_locked_artifact(fallback_content_root)
+    monkeypatch.setattr("opening_trainer.runtime.HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT", fallback_content_root)
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
+
+    assert runtime.opening_locked_artifact.loaded is True
+    assert runtime.opening_locked_artifact.manifest_path == fallback_content_root / "opening_locked_mode" / "manifest.json"
+    assert runtime.opening_locked_artifact.sqlite_path == fallback_content_root / "opening_locked_mode" / "opening_locked_openings.sqlite"
+    assert "dev hardcoded fallback" in runtime.opening_locked_artifact.detail
+    assert str(fallback_content_root / "opening_locked_mode") in runtime.opening_locked_artifact.detail
+
+
+def test_dev_runtime_hardcoded_fallback_failure_is_explicit(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.chdir(repo_root)
+    missing_fallback_root = tmp_path / "missing_seed_content"
+    assert HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT != missing_fallback_root
+    monkeypatch.setattr("opening_trainer.runtime.HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT", missing_fallback_root)
+
+    runtime = load_runtime_config(RuntimeOverrides(runtime_mode="dev"))
+
+    assert runtime.opening_locked_artifact.loaded is False
+    detail = runtime.opening_locked_artifact.detail
+    assert "checked content_root=" in detail
+    assert f"checked dev hardcoded fallback content_root={missing_fallback_root}" in detail
+    assert "opening-locked artifact unavailable" in detail
 
 
 def test_opening_transition_classification_states(tmp_path):
