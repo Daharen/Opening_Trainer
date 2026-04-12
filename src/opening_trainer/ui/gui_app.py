@@ -1864,7 +1864,7 @@ class OpeningTrainerGUI:
         if toolbar is None:
             return
         for child in toolbar.winfo_children():
-            if not isinstance(child, tk.Menubutton):
+            if not isinstance(child, (tk.Menubutton, tk.Button)):
                 continue
             try:
                 child.configure(
@@ -1878,6 +1878,12 @@ class OpeningTrainerGUI:
                 )
             except tk.TclError:
                 continue
+
+    def _post_toolbar_menu(self, menu: tk.Menu, anchor: tk.Widget) -> None:
+        try:
+            menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
+        finally:
+            menu.grab_release()
 
     def _ensure_live_flow_state(self) -> None:
         if not hasattr(self, 'paused'):
@@ -2627,7 +2633,7 @@ class OpeningTrainerGUI:
             menu = tk.Menu(toolbar, tearoff=0)
             populate_menu(menu)
             menu_widgets.append(menu)
-            button = tk.Menubutton(
+            button = tk.Button(
                 toolbar,
                 text=meta['label'],
                 relief=tk.FLAT,
@@ -2638,7 +2644,7 @@ class OpeningTrainerGUI:
                 takefocus=0,
                 cursor='hand2',
             )
-            button.configure(menu=menu)
+            button.configure(command=lambda m=menu, b=button: self._post_toolbar_menu(m, b))
             button.grid(row=0, column=column, sticky='w', padx=(0, 2), pady=0)
 
         toolbar.grid_columnconfigure(len(menu_specs), weight=1)
