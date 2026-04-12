@@ -70,6 +70,9 @@ ENV_OPPONENT_FALLBACK_MODE = "OPENING_TRAINER_OPPONENT_FALLBACK_MODE"
 ENV_PREDECESSOR_MASTER_DB_PATH = "OPENING_TRAINER_PREDECESSOR_MASTER_DB_PATH"
 ENV_PRACTICAL_RISK_RECONCILED_PATH = "OPENING_TRAINER_PRACTICAL_RISK_RECONCILED_PATH"
 ENV_OPENING_LOCKED_ARTIFACT_ROOT = "OPENING_TRAINER_OPENING_LOCKED_ARTIFACT_ROOT"
+HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT = Path(
+    r"F:\Opening Trainer Large Data File\Work Surface\opening_trainer_content_seed_rapid600_v1"
+)
 
 
 @dataclass(frozen=True)
@@ -428,29 +431,36 @@ def _resolve_opening_locked_artifact(
     if runtime_mode is RuntimeMode.CONSUMER:
         return discover_opening_locked_artifact(runtime_paths.content_root)
 
-    dev_candidates = (
-        runtime_paths.workspace_root / "runtime_assets" / "opening_locked_mode",
-        runtime_paths.workspace_root / "runtime" / "opening_locked_mode",
-        runtime_paths.repo_root / "runtime_assets" / "opening_locked_mode",
-        runtime_paths.repo_root / "runtime" / "opening_locked_mode",
-    )
-    for candidate in dev_candidates:
-        status = discover_opening_locked_artifact(runtime_paths.content_root, artifact_root_override=candidate)
-        if status.loaded:
-            return OpeningLockedArtifactStatus(
-                loaded=True,
-                manifest_path=status.manifest_path,
-                sqlite_path=status.sqlite_path,
-                opening_count=status.opening_count,
-                detail=f"{status.detail} (source=dev-conventional:{candidate})",
-            )
-    missing = "; ".join(str(path) for path in dev_candidates)
+    return _resolve_dev_opening_locked_artifact(runtime_paths)
+
+
+def _resolve_dev_opening_locked_artifact(runtime_paths: RuntimePaths) -> OpeningLockedArtifactStatus:
+    primary_status = discover_opening_locked_artifact(runtime_paths.content_root)
+    if primary_status.loaded:
+        return primary_status
+
+    fallback_status = discover_opening_locked_artifact(HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT)
+    if fallback_status.loaded:
+        fallback_root = HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT / "opening_locked_mode"
+        return OpeningLockedArtifactStatus(
+            loaded=True,
+            manifest_path=fallback_status.manifest_path,
+            sqlite_path=fallback_status.sqlite_path,
+            opening_count=fallback_status.opening_count,
+            detail=f"opening-locked artifact loaded from {fallback_root} (dev hardcoded fallback)",
+        )
+
     return OpeningLockedArtifactStatus(
         loaded=False,
-        manifest_path=None,
-        sqlite_path=None,
+        manifest_path=primary_status.manifest_path,
+        sqlite_path=primary_status.sqlite_path,
         opening_count=0,
-        detail=f"opening-locked artifact unavailable (dev discovery candidates checked: {missing})",
+        detail=(
+            "opening-locked artifact unavailable "
+            f"(checked content_root={runtime_paths.content_root}; "
+            f"checked dev hardcoded fallback content_root={HARDCODED_DEV_OPENING_LOCKED_CONTENT_ROOT}; "
+            f"primary={primary_status.detail}; fallback={fallback_status.detail})"
+        ),
     )
 
 
