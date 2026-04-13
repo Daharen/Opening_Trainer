@@ -1865,6 +1865,93 @@ def test_opening_locked_dropdown_enabled_when_artifact_available_even_if_toggle_
     assert gui.opening_locked_opening_var.get() == "Italian Game"
 
 
+def test_opening_locked_family_and_variation_states_for_family_aware_artifact():
+    gui = _build_control_strip_gui()
+    gui.opening_locked_enabled_var = FakeBoolVar(False)
+    gui.opening_locked_family_var = FakeStringVar("")
+    gui.opening_locked_opening_var = gui.opening_locked_family_var
+    gui.opening_locked_variation_var = FakeStringVar("")
+    gui.opening_locked_opening_combo = FakeCombo()
+    gui.opening_locked_variation_combo = FakeCombo()
+    gui.opening_locked_enabled_checkbutton = FakeCheckbutton()
+    gui.session.settings = TrainerSettings(training_mode="manual", smart_profile_enabled=False, opening_locked_mode_enabled=False)
+    gui.session.opening_locked_artifact_status = lambda: type("S", (), {"loaded": True, "detail": "loaded"})()
+    gui.session.opening_locked_supports_family_aware = lambda: True
+    gui.session.opening_locked_opening_names = lambda: ["French Defense", "London System"]
+    gui.session.opening_locked_variation_names = lambda family: ["London System: with Bd3", "London System: with Be2"] if family == "London System" else []
+    gui.session.smart_profile_status = lambda: type(
+        "Status",
+        (),
+        {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None},
+    )()
+
+    gui._refresh_top_control_strip()
+    assert gui.opening_locked_opening_combo.cget("state") == "readonly"
+    assert gui.opening_locked_variation_combo.cget("state") == "disabled"
+
+    gui.session.settings = TrainerSettings(
+        training_mode="manual",
+        smart_profile_enabled=False,
+        opening_locked_mode_enabled=False,
+        opening_locked_family_name="London System",
+    )
+    gui._refresh_top_control_strip()
+    assert gui.opening_locked_variation_combo.cget("state") == "readonly"
+    assert gui.opening_locked_variation_combo.cget("values") == (
+        "Any variation in family",
+        "London System: with Bd3",
+        "London System: with Be2",
+    )
+
+
+def test_opening_locked_family_variation_refresh_is_runtime_mode_agnostic_when_artifact_root_matches():
+    def _make_session():
+        return type(
+            "Session",
+            (),
+                {
+                    "settings": TrainerSettings(training_mode="manual", smart_profile_enabled=False, opening_locked_mode_enabled=False),
+                    "max_supported_training_depth": lambda self: 6,
+                    "opening_locked_artifact_status": lambda self: type("S", (), {"loaded": True, "detail": "loaded"})(),
+                "opening_locked_supports_family_aware": lambda self: True,
+                "opening_locked_opening_names": lambda self: ["French Defense", "London System"],
+                "opening_locked_variation_names": lambda self, family: ["French Defense: Exchange Variation"] if family == "French Defense" else [],
+                "smart_profile_status": lambda self: type(
+                    "Status",
+                    (),
+                    {"active": False, "level": None, "expected_rating_band": None, "contract_turns": None, "contract_good_accepted": None},
+                )(),
+            },
+        )()
+
+    gui_consumer = _build_control_strip_gui()
+    gui_consumer.opening_locked_enabled_var = FakeBoolVar(False)
+    gui_consumer.opening_locked_family_var = FakeStringVar("French Defense")
+    gui_consumer.opening_locked_opening_var = gui_consumer.opening_locked_family_var
+    gui_consumer.opening_locked_variation_var = FakeStringVar("")
+    gui_consumer.opening_locked_opening_combo = FakeCombo()
+    gui_consumer.opening_locked_variation_combo = FakeCombo()
+    gui_consumer.opening_locked_enabled_checkbutton = FakeCheckbutton()
+    gui_consumer.session = _make_session()
+
+    gui_dev = _build_control_strip_gui()
+    gui_dev.opening_locked_enabled_var = FakeBoolVar(False)
+    gui_dev.opening_locked_family_var = FakeStringVar("French Defense")
+    gui_dev.opening_locked_opening_var = gui_dev.opening_locked_family_var
+    gui_dev.opening_locked_variation_var = FakeStringVar("")
+    gui_dev.opening_locked_opening_combo = FakeCombo()
+    gui_dev.opening_locked_variation_combo = FakeCombo()
+    gui_dev.opening_locked_enabled_checkbutton = FakeCheckbutton()
+    gui_dev.session = _make_session()
+
+    gui_consumer._refresh_top_control_strip()
+    gui_dev._refresh_top_control_strip()
+
+    assert gui_consumer.opening_locked_opening_combo.cget("values") == gui_dev.opening_locked_opening_combo.cget("values")
+    assert gui_consumer.opening_locked_variation_combo.cget("values") == gui_dev.opening_locked_variation_combo.cget("values")
+    assert gui_consumer.opening_locked_variation_combo.cget("state") == gui_dev.opening_locked_variation_combo.cget("state")
+
+
 def test_opening_locked_controls_disabled_when_artifact_unavailable():
     gui = _build_control_strip_gui()
     gui.opening_locked_enabled_var = FakeBoolVar(True)
