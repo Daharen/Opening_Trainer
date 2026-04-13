@@ -1022,17 +1022,25 @@ def test_gear_button_is_attached_to_summary_strip():
     assert 'self.control_strip' not in button_init
 
 
-def test_training_settings_preview_method_contains_reopen_and_preview_sections():
+def test_training_settings_preview_method_routes_to_qt_qml_runtime():
     source = inspect.getsource(OpeningTrainerGUI._open_training_settings_preview)
 
     assert "def _open_training_settings_preview" in source
-    assert "tk.Toplevel(self.root)" in source
-    assert "if existing is not None and existing.winfo_exists()" in source
-    assert "existing.lift()" in source
-    assert "Preview only — controls are not wired yet." in source
-    assert "'Smart Profile'" in source
-    assert "'Manual'" in source
-    assert "'Locked Opening'" in source
+    assert "self._qt_training_settings_runtime.open_or_raise()" in source
+    assert "self._start_qt_event_pump()" in source
+    assert "tk.Toplevel(self.root)" not in source
+
+
+def test_training_settings_qt_runtime_module_exists():
+    runtime_module_path = Path(__file__).resolve().parents[1] / "opening_trainer" / "ui" / "qt_qml_runtime.py"
+
+    assert runtime_module_path.exists()
+
+
+def test_training_settings_qml_asset_exists():
+    qml_path = Path(__file__).resolve().parents[1] / "opening_trainer" / "ui" / "qml" / "training_settings_window.qml"
+
+    assert qml_path.exists()
 
 
 def test_window_title_avoids_visible_opening_trainer_caption():
