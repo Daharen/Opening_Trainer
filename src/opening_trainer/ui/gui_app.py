@@ -155,7 +155,10 @@ class OpeningTrainerGUI:
     def __init__(self, session: TrainingSession | None = None, runtime_context: RuntimeContext | None = None):
         self.session = session or TrainingSession(runtime_context=runtime_context, mode='gui')
         self.root = tk.Tk()
-        self.root.title('Opening Trainer')
+        try:
+            self.root.title('')
+        except tk.TclError:
+            self.root.title(' ')
         self.selected_square = None
         self.pending_restart = False
         self.panel_visible = self._load_panel_visibility_preference()
@@ -1911,7 +1914,19 @@ class OpeningTrainerGUI:
         toolbar = getattr(self, 'toolbar_row', None)
         if toolbar is None:
             return
+        brand_label = getattr(self, 'toolbar_brand_label', None)
+        if brand_label is not None:
+            try:
+                brand_label.configure(
+                    bg=palette['header_bg'],
+                    fg=palette['text_fg'],
+                    font=('TkDefaultFont', 10, 'bold'),
+                )
+            except tk.TclError:
+                pass
         for child in toolbar.winfo_children():
+            if child is brand_label:
+                continue
             if not isinstance(child, (tk.Menubutton, tk.Button)):
                 continue
             try:
@@ -2631,6 +2646,8 @@ class OpeningTrainerGUI:
 
 
     def _populate_file_menu(self, file_menu: tk.Menu) -> None:
+        file_menu.add_command(label='Open Options…', command=self._open_options)
+        file_menu.add_separator()
         file_menu.add_command(label='Exit', command=self._request_shutdown)
 
     def _populate_options_menu(self, options_menu: tk.Menu) -> None:
@@ -2667,9 +2684,18 @@ class OpeningTrainerGUI:
         toolbar.grid(row=0, column=0, sticky='ew')
         self.toolbar_row = toolbar
 
+        brand_label = tk.Label(
+            toolbar,
+            text='Opening Trainer',
+            anchor='w',
+            padx=10,
+            pady=6,
+        )
+        brand_label.grid(row=0, column=0, sticky='w', padx=(0, 8), pady=0)
+        self.toolbar_brand_label = brand_label
+
         menu_specs = (
             (dict(label='File'), self._populate_file_menu),
-            (dict(label='Options'), self._populate_options_menu),
             (dict(label='Profiles'), self._populate_profiles_menu),
             (dict(label='Corpus Selection'), self._populate_corpus_menu),
             (dict(label='Update'), self._populate_update_menu),
@@ -2677,7 +2703,7 @@ class OpeningTrainerGUI:
             (dict(label='Developer'), self._populate_dev_menu),
         )
         menu_widgets: list[tk.Menu] = []
-        for column, (meta, populate_menu) in enumerate(menu_specs):
+        for column, (meta, populate_menu) in enumerate(menu_specs, start=1):
             menu = tk.Menu(toolbar, tearoff=0)
             populate_menu(menu)
             menu_widgets.append(menu)
@@ -2695,7 +2721,7 @@ class OpeningTrainerGUI:
             button.configure(command=lambda m=menu, b=button: self._post_toolbar_menu(m, b))
             button.grid(row=0, column=column, sticky='w', padx=(0, 2), pady=0)
 
-        toolbar.grid_columnconfigure(len(menu_specs), weight=1)
+        toolbar.grid_columnconfigure(len(menu_specs) + 1, weight=1)
         self._submenu_widgets = tuple(menu_widgets)
         self.root.config(menu='')
 
