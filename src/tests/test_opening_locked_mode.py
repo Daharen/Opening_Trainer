@@ -58,6 +58,17 @@ def _add_family_aware_tables(sqlite_path: Path) -> None:
         conn.commit()
 
 
+def _add_family_aware_tables_with_id_tree(sqlite_path: Path) -> None:
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute(
+            "CREATE TABLE ui_tree(ui_parent_node_id INTEGER NOT NULL, child_node_id INTEGER NOT NULL, selection_depth INTEGER NOT NULL)"
+        )
+        conn.execute("CREATE TABLE family_edges(parent_node_name TEXT NOT NULL, child_node_name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE family_memberships(family_node_name TEXT NOT NULL, member_node_name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE transposition_edges(from_node_name TEXT NOT NULL, to_node_name TEXT NOT NULL)")
+        conn.commit()
+
+
 def test_opening_locked_artifact_discovery_present_and_missing(tmp_path):
     missing = discover_opening_locked_artifact(tmp_path)
     assert missing.loaded is False
@@ -174,6 +185,33 @@ def test_family_aware_detection_and_root_descendant_listing(tmp_path):
     assert provider.list_family_root_names() == ["French Defense", "London System"]
     assert provider.list_descendant_openings("London System") == ["London System: with Bd3", "London System: with Be2"]
     assert provider.list_variation_names_for_family("London System") == ["London System: with Bd3", "London System: with Be2"]
+
+
+def test_family_aware_ui_tree_with_ui_parent_node_id_schema(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    _add_family_aware_tables_with_id_tree(sqlite_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (11, 'English Opening', 'synthetic_family')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (12, 'English Opening: Agincourt', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (13, 'English Opening: Anglo-Indian', 'exact_opening')")
+        conn.execute("INSERT INTO ui_tree(ui_parent_node_id, child_node_id, selection_depth) VALUES (11, 12, 1)")
+        conn.execute("INSERT INTO ui_tree(ui_parent_node_id, child_node_id, selection_depth) VALUES (11, 13, 1)")
+        conn.execute("INSERT INTO family_memberships(family_node_name, member_node_name) VALUES ('English Opening', 'English Opening')")
+        conn.execute("INSERT INTO family_memberships(family_node_name, member_node_name) VALUES ('English Opening', 'English Opening: Agincourt')")
+        conn.execute("INSERT INTO family_memberships(family_node_name, member_node_name) VALUES ('English Opening', 'English Opening: Anglo-Indian')")
+        conn.commit()
+
+    assert provider.supports_family_ui() is True
+    assert provider.list_family_root_names() == ["English Opening"]
+    assert provider.list_descendant_openings("English Opening") == [
+        "English Opening: Agincourt",
+        "English Opening: Anglo-Indian",
+    ]
+    assert provider.list_variation_names_for_family("English Opening") == [
+        "English Opening: Agincourt",
+        "English Opening: Anglo-Indian",
+    ]
 
 
 def test_family_ui_detection_requires_ui_tree_family_memberships_and_transposition_edges(tmp_path):
