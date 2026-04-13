@@ -1004,6 +1004,37 @@ def test_file_menu_contains_open_options_entry():
     assert "label='Exit'" in source
 
 
+def test_summary_strip_places_gear_button_before_profile_summary_label():
+    source = inspect.getsource(OpeningTrainerGUI.__init__)
+
+    assert 'self.summary_settings_button = tk.Button(' in source
+    assert "text='⚙'" in source
+    assert 'self.summary_settings_button.grid(row=0, column=0' in source
+    assert 'ttk.Label(self.summary_strip, textvariable=self.top_summary_var).grid(row=0, column=1' in source
+
+
+def test_gear_button_is_attached_to_summary_strip():
+    source = inspect.getsource(OpeningTrainerGUI.__init__)
+    button_init = source.split('self.summary_settings_button = tk.Button(', 1)[1].split(')', 1)[0]
+
+    assert 'self.summary_strip' in button_init
+    assert 'self.toolbar_row' not in button_init
+    assert 'self.control_strip' not in button_init
+
+
+def test_training_settings_preview_method_contains_reopen_and_preview_sections():
+    source = inspect.getsource(OpeningTrainerGUI._open_training_settings_preview)
+
+    assert "def _open_training_settings_preview" in source
+    assert "tk.Toplevel(self.root)" in source
+    assert "if existing is not None and existing.winfo_exists()" in source
+    assert "existing.lift()" in source
+    assert "Preview only — controls are not wired yet." in source
+    assert "'Smart Profile'" in source
+    assert "'Manual'" in source
+    assert "'Locked Opening'" in source
+
+
 def test_window_title_avoids_visible_opening_trainer_caption():
     source = inspect.getsource(OpeningTrainerGUI.__init__)
 

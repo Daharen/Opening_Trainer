@@ -217,6 +217,7 @@ class OpeningTrainerGUI:
         self.dev_console = DevConsoleWindow(self.root, self.session_logger)
         self.timing_override_dialog = TimingOverrideDialog(self.root, self.session)
         self.review_deck_inspector_window: ReviewDeckInspectorWindow | None = None
+        self.training_settings_preview_window: tk.Toplevel | None = None
         self._shutdown_started = False
         self._is_shutting_down = False
         self._shutdown_finished = False
@@ -249,7 +250,17 @@ class OpeningTrainerGUI:
 
         self.summary_strip = ttk.Frame(self.root)
         self.summary_strip.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 2))
-        ttk.Label(self.summary_strip, textvariable=self.top_summary_var).grid(row=0, column=0, sticky='w')
+        self.summary_settings_button = tk.Button(
+            self.summary_strip,
+            text='⚙',
+            width=2,
+            command=self._open_training_settings_preview,
+            relief=tk.FLAT,
+            bd=0,
+            cursor='hand2',
+        )
+        self.summary_settings_button.grid(row=0, column=0, sticky='w', padx=(0, 6))
+        ttk.Label(self.summary_strip, textvariable=self.top_summary_var).grid(row=0, column=1, sticky='w')
         self.control_strip = ttk.Frame(self.root)
         self.control_strip.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 4))
         ttk.Checkbutton(self.control_strip, text='Smart', variable=self.smart_mode_var, command=self._on_top_mode_toggle).grid(row=0, column=0, sticky='w', padx=(8, 6), pady=6)
@@ -1651,6 +1662,148 @@ class OpeningTrainerGUI:
         ttk.Button(frame, text='Save', command=save, style='ReviewPanel.TButton').pack(side='left')
         ttk.Button(frame, text='Cancel', command=window.destroy, style='ReviewPanel.TButton').pack(side='left', padx=(8, 0))
 
+    def _open_training_settings_preview(self) -> None:
+        existing = getattr(self, 'training_settings_preview_window', None)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+        palette = self._theme_palette()
+        window = tk.Toplevel(self.root)
+        self.training_settings_preview_window = window
+        self._child_windows.append(window)
+        window.title('Training Settings Preview')
+        window.transient(self.root)
+        window.geometry('780x620')
+        self._theme_toplevel(window, palette)
+
+        def _close_preview() -> None:
+            if window in self._child_windows:
+                self._child_windows.remove(window)
+            self.training_settings_preview_window = None
+            window.destroy()
+
+        window.protocol('WM_DELETE_WINDOW', _close_preview)
+
+        root_frame = ttk.Frame(window, padding=12)
+        root_frame.pack(fill='both', expand=True)
+        root_frame.columnconfigure(0, weight=1)
+        root_frame.rowconfigure(3, weight=1)
+        ttk.Label(
+            root_frame,
+            text='Training settings scaffold (inspection only)',
+            font=('TkDefaultFont', 11, 'bold'),
+        ).grid(row=0, column=0, sticky='w')
+        ttk.Label(root_frame, text='Preview only — controls are not wired yet.').grid(row=1, column=0, sticky='w', pady=(4, 8))
+
+        tab_strip = tk.Frame(root_frame, bg=palette['panel_bg'])
+        tab_strip.grid(row=2, column=0, sticky='w')
+        content_frame = ttk.Frame(root_frame, padding=(0, 10, 0, 0))
+        content_frame.grid(row=3, column=0, sticky='nsew')
+        content_frame.columnconfigure(0, weight=1)
+        content_frame.rowconfigure(0, weight=1)
+
+        pages: dict[str, ttk.Frame] = {
+            'smart_profile': ttk.Frame(content_frame, padding=12),
+            'manual': ttk.Frame(content_frame, padding=12),
+            'locked_opening': ttk.Frame(content_frame, padding=12),
+        }
+        for page in pages.values():
+            page.grid(row=0, column=0, sticky='nsew')
+            page.columnconfigure(0, weight=1)
+
+        def _tab_button(label: str, value: str) -> tk.Button:
+            return tk.Button(
+                tab_strip,
+                text=label,
+                command=lambda: _show_page(value),
+                relief=tk.FLAT,
+                bd=0,
+                padx=10,
+                pady=6,
+                cursor='hand2',
+            )
+
+        tab_buttons = {
+            'smart_profile': _tab_button('Smart Profile', 'smart_profile'),
+            'manual': _tab_button('Manual', 'manual'),
+            'locked_opening': _tab_button('Locked Opening', 'locked_opening'),
+        }
+        tab_buttons['smart_profile'].pack(side='left', padx=(0, 6))
+        tab_buttons['manual'].pack(side='left', padx=6)
+        tab_buttons['locked_opening'].pack(side='left', padx=6)
+
+        smart = pages['smart_profile']
+        ttk.Label(smart, text='Smart Profile', font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, sticky='w')
+        smart_group = ttk.LabelFrame(smart, text='Profile progression preview', padding=10)
+        smart_group.grid(row=1, column=0, sticky='ew', pady=(8, 8))
+        smart_group.columnconfigure(1, weight=1)
+        ttk.Label(smart_group, text='Track').grid(row=0, column=0, sticky='w', pady=3)
+        ttk.Combobox(smart_group, state='readonly', values=('Rapid', 'Blitz', 'Classical')).grid(row=0, column=1, sticky='ew', pady=3)
+        ttk.Label(smart_group, text='Level').grid(row=1, column=0, sticky='w', pady=3)
+        ttk.Combobox(smart_group, state='readonly', values=('Level 1', 'Level 2', 'Level 3')).grid(row=1, column=1, sticky='ew', pady=3)
+        ttk.Label(smart_group, text='Time control').grid(row=2, column=0, sticky='w', pady=3)
+        ttk.Combobox(smart_group, state='readonly', values=('10+0', '5+0', '15+10')).grid(row=2, column=1, sticky='ew', pady=3)
+        ttk.Label(smart_group, text='ELO band').grid(row=3, column=0, sticky='w', pady=3)
+        ttk.Combobox(smart_group, state='readonly', values=('800-1000', '1000-1200', '1200-1400')).grid(row=3, column=1, sticky='ew', pady=3)
+        ttk.Label(smart_group, text='Turns to succeed').grid(row=4, column=0, sticky='w', pady=3)
+        ttk.Scale(smart_group, from_=2, to=8, orient='horizontal').grid(row=4, column=1, sticky='ew', pady=3)
+        ttk.Label(smart_group, text='Good-move acceptance').grid(row=5, column=0, sticky='w', pady=3)
+        ttk.Combobox(smart_group, state='readonly', values=('Yes', 'No')).grid(row=5, column=1, sticky='ew', pady=3)
+        ttk.Label(
+            smart,
+            text='Streak / promotion / demotion summary scaffold:\n• Eligible streak: 2\n• Demotion buffer: 1\n• Next level target: 3 wins',
+            justify='left',
+        ).grid(row=2, column=0, sticky='ew')
+
+        manual = pages['manual']
+        ttk.Label(manual, text='Manual', font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, sticky='w')
+        manual_group = ttk.LabelFrame(manual, text='Manual contract preview', padding=10)
+        manual_group.grid(row=1, column=0, sticky='ew', pady=(8, 8))
+        manual_group.columnconfigure(1, weight=1)
+        ttk.Label(manual_group, text='Time control').grid(row=0, column=0, sticky='w', pady=3)
+        ttk.Combobox(manual_group, state='readonly', values=('10+0', '5+0', '3+2')).grid(row=0, column=1, sticky='ew', pady=3)
+        ttk.Label(manual_group, text='ELO band').grid(row=1, column=0, sticky='w', pady=3)
+        ttk.Combobox(manual_group, state='readonly', values=('1000-1200', '1200-1400', '1400-1600')).grid(row=1, column=1, sticky='ew', pady=3)
+        ttk.Label(manual_group, text='Depth').grid(row=2, column=0, sticky='w', pady=3)
+        ttk.Combobox(manual_group, state='readonly', values=('3', '4', '5', '6')).grid(row=2, column=1, sticky='ew', pady=3)
+        ttk.Label(manual_group, text='Good moves allowed').grid(row=3, column=0, sticky='w', pady=3)
+        ttk.Combobox(manual_group, state='readonly', values=('Yes', 'No')).grid(row=3, column=1, sticky='ew', pady=3)
+        ttk.Checkbutton(manual_group, text='Allow sharp/gambit').grid(row=4, column=0, sticky='w', pady=3)
+        ttk.Label(manual_group, text='Human fallback').grid(row=5, column=0, sticky='w', pady=3)
+        ttk.Combobox(manual_group, state='readonly', values=('Current bundle only', 'Nearby human bundles')).grid(row=5, column=1, sticky='ew', pady=3)
+        ttk.Label(manual, text='Manual mode gives direct control over contract fields (preview scaffold).').grid(row=2, column=0, sticky='w')
+
+        locked = pages['locked_opening']
+        ttk.Label(locked, text='Locked Opening', font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, sticky='w')
+        locked_group = ttk.LabelFrame(locked, text='Opening-locked contract preview', padding=10)
+        locked_group.grid(row=1, column=0, sticky='ew', pady=(8, 8))
+        locked_group.columnconfigure(1, weight=1)
+        ttk.Checkbutton(locked_group, text='Opening-locked enabled').grid(row=0, column=0, columnspan=2, sticky='w', pady=3)
+        ttk.Label(locked_group, text='Opening family').grid(row=1, column=0, sticky='w', pady=3)
+        ttk.Combobox(locked_group, state='readonly', values=('English Opening', 'Sicilian Defense', 'French Defense')).grid(row=1, column=1, sticky='ew', pady=3)
+        ttk.Label(locked_group, text='Variation').grid(row=2, column=0, sticky='w', pady=3)
+        ttk.Combobox(locked_group, state='readonly', values=('Any variation in family', 'Main line', 'Sideline')).grid(row=2, column=1, sticky='ew', pady=3)
+        ttk.Label(
+            locked,
+            text='Family/variation intent preview:\nConstrain training lines to a selected opening family and optional variation.',
+            justify='left',
+        ).grid(row=2, column=0, sticky='ew')
+
+        def _show_page(value: str) -> None:
+            pages[value].tkraise()
+            for tab_name, button in tab_buttons.items():
+                selected = tab_name == value
+                button.configure(
+                    bg=palette['field_bg'] if selected else palette['panel_bg'],
+                    fg=palette['text_fg'],
+                    activebackground=palette['button_active_bg'],
+                    activeforeground=palette['text_fg'],
+                )
+
+        _show_page('smart_profile')
+
     def _bind_pause_hotkeys(self) -> None:
         self.root.bind_all('<KeyPress-p>', lambda event: self._on_pause_hotkey(event, source='key_p'))
         self.root.bind_all('<Escape>', lambda event: self._on_pause_hotkey(event, source='key_escape'))
@@ -1846,6 +1999,15 @@ class OpeningTrainerGUI:
                     activeforeground=palette['text_fg'],
                     highlightbackground=palette['border_color'],
                 )
+        summary_settings_button = getattr(self, 'summary_settings_button', None)
+        if summary_settings_button is not None:
+            summary_settings_button.configure(
+                bg=palette['panel_bg'],
+                fg=palette['muted_fg'],
+                activebackground=palette['button_active_bg'],
+                activeforeground=palette['text_fg'],
+                highlightbackground=palette['border_color'],
+            )
         if getattr(self, 'start_button', None) is not None:
             self.start_button.configure(
                 bg='#e6b800' if dark else '#ffd600',
