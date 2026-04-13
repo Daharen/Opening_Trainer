@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class OpeningTransitionClassification(str, Enum):
@@ -77,7 +80,9 @@ class OpeningLockedProvider:
     def supports_family_ui(self) -> bool:
         with self._connect() as conn:
             required = {"ui_tree", "family_memberships", "transposition_edges"}
-            return all(self._table_exists(conn, table_name) for table_name in required)
+            supported = all(self._table_exists(conn, table_name) for table_name in required)
+        logger.debug("Opening locked supports_family_ui=%s sqlite=%s", supported, self.sqlite_path)
+        return supported
 
     def supports_family_aware(self) -> bool:
         return self.supports_family_ui()
@@ -105,9 +110,9 @@ class OpeningLockedProvider:
 
     def _ui_tree_edges(self, conn: sqlite3.Connection) -> list[tuple[str, str]]:
         columns = self._table_columns(conn, "ui_tree")
-        parent_name_col = next((name for name in ("parent_node_name", "parent_name", "ancestor_node_name", "ancestor_name", "parent") if name in columns), None)
+        parent_name_col = next((name for name in ("ui_parent_node_name", "parent_node_name", "parent_name", "ancestor_node_name", "ancestor_name", "parent") if name in columns), None)
         child_name_col = next((name for name in ("child_node_name", "child_name", "descendant_node_name", "descendant_name", "child") if name in columns), None)
-        parent_id_col = next((name for name in ("parent_node_id", "ancestor_node_id", "parent_id") if name in columns), None)
+        parent_id_col = next((name for name in ("ui_parent_node_id", "parent_node_id", "ancestor_node_id", "parent_id") if name in columns), None)
         child_id_col = next((name for name in ("child_node_id", "descendant_node_id", "child_id") if name in columns), None)
         if parent_name_col and child_name_col:
             rows = conn.execute(f"SELECT {parent_name_col}, {child_name_col} FROM ui_tree").fetchall()
@@ -125,6 +130,7 @@ class OpeningLockedProvider:
                 if parent_name and child_name:
                     edges.append((parent_name, child_name))
             return edges
+        logger.debug("Opening locked ui_tree schema unsupported columns=%s sqlite=%s", sorted(columns), self.sqlite_path)
         return []
 
     def list_family_root_names(self) -> list[str]:
@@ -132,9 +138,12 @@ class OpeningLockedProvider:
             return self.list_exact_opening_names()
         with self._connect() as conn:
             edges = self._ui_tree_edges(conn)
+        logger.debug("Opening locked ui_tree edge_count=%d sqlite=%s", len(edges), self.sqlite_path)
         parents = {parent for parent, _child in edges}
         children = {child for _parent, child in edges}
-        return sorted((parents - children), key=lambda value: value.lower())
+        roots = sorted((parents - children), key=lambda value: value.lower())
+        logger.debug("Opening locked family_root_count=%d sqlite=%s", len(roots), self.sqlite_path)
+        return roots
 
     def list_root_openings(self) -> list[str]:
         return self.list_family_root_names()
@@ -163,7 +172,14 @@ class OpeningLockedProvider:
             visited.add(current)
             descendants.add(current)
             pending.extend(children_by_parent.get(current, set()))
-        return sorted(descendants, key=lambda value: value.lower())
+        results = sorted(descendants, key=lambda value: value.lower())
+        logger.debug(
+            "Opening locked selected_family=%s descendant_count=%d sqlite=%s",
+            root,
+            len(results),
+            self.sqlite_path,
+        )
+        return results
 
     def resolve_effective_selected_opening(self, family_name: str | None, variation_name: str | None) -> str | None:
         variation = str(variation_name or "").strip()
