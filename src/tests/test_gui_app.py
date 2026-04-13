@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import json
 import time
+
+import pytest
 from pathlib import Path
 
 import chess
@@ -1028,7 +1030,18 @@ def test_training_settings_preview_method_routes_to_qt_qml_runtime():
     assert "def _open_training_settings_preview" in source
     assert "self._qt_training_settings_runtime.open_or_raise()" in source
     assert "self._start_qt_event_pump()" in source
+    assert "GUI_QT_SETTINGS_GEAR_CLICK_RECEIVED" in source
+    assert "GUI_QT_SETTINGS_LAUNCH_ATTEMPT" in source
+    assert "GUI_QT_SETTINGS_LAUNCH_SUCCESS" in source
+    assert "GUI_QT_SETTINGS_LAUNCH_FAILURE" in source
+    assert "messagebox.showerror('Training Settings'" in source
     assert "tk.Toplevel(self.root)" not in source
+
+
+def test_training_settings_window_close_observer_logs_marker():
+    source = inspect.getsource(OpeningTrainerGUI._on_qt_training_settings_window_closed)
+
+    assert "GUI_QT_SETTINGS_WINDOW_CLOSE_OBSERVED" in source
 
 
 def test_training_settings_qt_runtime_module_exists():
@@ -1041,6 +1054,188 @@ def test_training_settings_qml_asset_exists():
     qml_path = Path(__file__).resolve().parents[1] / "opening_trainer" / "ui" / "qml" / "training_settings_window.qml"
 
     assert qml_path.exists()
+
+
+def test_training_settings_qml_is_top_level_visible_window():
+    qml_path = Path(__file__).resolve().parents[1] / "opening_trainer" / "ui" / "qml" / "training_settings_window.qml"
+    qml_source = qml_path.read_text(encoding='utf-8')
+
+    assert "ApplicationWindow {" in qml_source or "Window {" in qml_source
+    assert 'visible: true' in qml_source
+    assert 'title:' in qml_source
+    assert 'width:' in qml_source
+    assert 'height:' in qml_source
+
+
+
+
+def test_qt_runtime_raises_when_qml_load_creates_no_root(monkeypatch, tmp_path):
+    from opening_trainer.ui.qt_qml_runtime import QtQmlWindowRuntime
+
+    qml_file = tmp_path / 'blank.qml'
+    qml_file.write_text('import QtQuick\nItem {}', encoding='utf-8')
+
+    class FakeApp:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, _args):
+            pass
+
+        def processEvents(self):
+            return None
+
+    class FakeUrl:
+        @staticmethod
+        def fromLocalFile(value):
+            return value
+
+    class FakeEngine:
+        def load(self, _url):
+            return None
+
+        def rootObjects(self):
+            return []
+
+        def warnings(self):
+            return [type('W', (), {'toString': lambda self: 'boom'})()]
+
+    def fake_import_module(name):
+        if name == 'PySide6.QtGui':
+            return type('QtGui', (), {'QGuiApplication': FakeApp})
+        if name == 'PySide6.QtCore':
+            return type('QtCore', (), {'QUrl': FakeUrl})
+        if name == 'PySide6.QtQml':
+            return type('QtQml', (), {'QQmlApplicationEngine': FakeEngine})
+        raise AssertionError(name)
+
+    monkeypatch.setattr('opening_trainer.ui.qt_qml_runtime.importlib.util.find_spec', lambda _name: object())
+    monkeypatch.setattr('opening_trainer.ui.qt_qml_runtime.importlib.import_module', fake_import_module)
+
+    runtime = QtQmlWindowRuntime(qml_file)
+    with pytest.raises(RuntimeError, match='Root object list is empty'):
+        runtime.open_or_raise()
+
+
+
+def test_qt_runtime_raises_when_root_is_not_window_like(monkeypatch, tmp_path):
+    from opening_trainer.ui.qt_qml_runtime import QtQmlWindowRuntime
+
+    qml_file = tmp_path / 'root.qml'
+    qml_file.write_text('import QtQuick\nItem {}', encoding='utf-8')
+
+    class FakeApp:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, _args):
+            pass
+
+    class FakeUrl:
+        @staticmethod
+        def fromLocalFile(value):
+            return value
+
+    class NotWindow:
+        destroyed = type('Sig', (), {'connect': lambda _self, _fn: None})()
+
+    class FakeEngine:
+        def load(self, _url):
+            return None
+
+        def rootObjects(self):
+            return [NotWindow()]
+
+    def fake_import_module(name):
+        if name == 'PySide6.QtGui':
+            return type('QtGui', (), {'QGuiApplication': FakeApp})
+        if name == 'PySide6.QtCore':
+            return type('QtCore', (), {'QUrl': FakeUrl})
+        if name == 'PySide6.QtQml':
+            return type('QtQml', (), {'QQmlApplicationEngine': FakeEngine})
+        raise AssertionError(name)
+
+    monkeypatch.setattr('opening_trainer.ui.qt_qml_runtime.importlib.util.find_spec', lambda _name: object())
+    monkeypatch.setattr('opening_trainer.ui.qt_qml_runtime.importlib.import_module', fake_import_module)
+
+    runtime = QtQmlWindowRuntime(qml_file)
+    with pytest.raises(RuntimeError, match='not a usable top-level window'):
+        runtime.open_or_raise()
+
+
+def test_qt_runtime_reuses_existing_window_when_visible(monkeypatch, tmp_path):
+    from opening_trainer.ui.qt_qml_runtime import QtQmlWindowRuntime
+
+    qml_file = tmp_path / 'window.qml'
+    qml_file.write_text('import QtQuick\nItem {}', encoding='utf-8')
+
+    class FakeApp:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, _args):
+            pass
+
+        def processEvents(self):
+            return None
+
+    class FakeUrl:
+        @staticmethod
+        def fromLocalFile(value):
+            return value
+
+    class FakeWindow:
+        def __init__(self):
+            self.shown = 0
+            self.raised = 0
+            self.activated = 0
+            self.destroyed = type('Sig', (), {'connect': lambda _self, _fn: None})()
+
+        def isVisible(self):
+            return True
+
+        def show(self):
+            self.shown += 1
+
+        def raise_(self):
+            self.raised += 1
+
+        def requestActivate(self):
+            self.activated += 1
+
+    class FakeEngine:
+        instances = 0
+
+        def __init__(self):
+            FakeEngine.instances += 1
+            self.window = FakeWindow()
+
+        def load(self, _url):
+            return None
+
+        def rootObjects(self):
+            return [self.window]
+
+    def fake_import_module(name):
+        if name == 'PySide6.QtGui':
+            return type('QtGui', (), {'QGuiApplication': FakeApp})
+        if name == 'PySide6.QtCore':
+            return type('QtCore', (), {'QUrl': FakeUrl})
+        if name == 'PySide6.QtQml':
+            return type('QtQml', (), {'QQmlApplicationEngine': FakeEngine})
+        raise AssertionError(name)
+
+    monkeypatch.setattr('opening_trainer.ui.qt_qml_runtime.importlib.util.find_spec', lambda _name: object())
+    monkeypatch.setattr('opening_trainer.ui.qt_qml_runtime.importlib.import_module', fake_import_module)
+
+    runtime = QtQmlWindowRuntime(qml_file)
+    runtime.open_or_raise()
+    runtime.open_or_raise()
+
+    assert FakeEngine.instances == 1
 
 
 def test_window_title_avoids_visible_opening_trainer_caption():

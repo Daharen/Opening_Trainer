@@ -218,7 +218,10 @@ class OpeningTrainerGUI:
         self.dev_console = DevConsoleWindow(self.root, self.session_logger)
         self.timing_override_dialog = TimingOverrideDialog(self.root, self.session)
         self.review_deck_inspector_window: ReviewDeckInspectorWindow | None = None
-        self._qt_training_settings_runtime = QtQmlWindowRuntime(Path(__file__).with_name('qml') / 'training_settings_window.qml')
+        self._qt_training_settings_runtime = QtQmlWindowRuntime(
+            Path(__file__).with_name('qml') / 'training_settings_window.qml',
+            on_window_closed=self._on_qt_training_settings_window_closed,
+        )
         self._qt_event_pump_after_handle = None
         self._shutdown_started = False
         self._is_shutting_down = False
@@ -1665,12 +1668,19 @@ class OpeningTrainerGUI:
         ttk.Button(frame, text='Cancel', command=window.destroy, style='ReviewPanel.TButton').pack(side='left', padx=(8, 0))
 
     def _open_training_settings_preview(self) -> None:
+        log_line('GUI_QT_SETTINGS_GEAR_CLICK_RECEIVED', tag='startup')
+        log_line('GUI_QT_SETTINGS_LAUNCH_ATTEMPT', tag='startup')
         try:
             self._qt_training_settings_runtime.open_or_raise()
         except RuntimeError as exc:
+            log_line(f'GUI_QT_SETTINGS_LAUNCH_FAILURE: {exc}', tag='error')
             messagebox.showerror('Training Settings', str(exc), parent=self.root)
             return
+        log_line('GUI_QT_SETTINGS_LAUNCH_SUCCESS', tag='startup')
         self._start_qt_event_pump()
+
+    def _on_qt_training_settings_window_closed(self) -> None:
+        log_line('GUI_QT_SETTINGS_WINDOW_CLOSE_OBSERVED', tag='startup')
 
     def _start_qt_event_pump(self) -> None:
         if getattr(self, '_qt_event_pump_after_handle', None) is not None:
@@ -1680,7 +1690,8 @@ class OpeningTrainerGUI:
             self._qt_event_pump_after_handle = None
             if getattr(self, '_is_shutting_down', False):
                 return
-            self._qt_training_settings_runtime.process_events()
+            if not self._qt_training_settings_runtime.process_events():
+                return
             self._qt_event_pump_after_handle = self._schedule_after(16, _tick)
 
         self._qt_event_pump_after_handle = self._schedule_after(16, _tick)

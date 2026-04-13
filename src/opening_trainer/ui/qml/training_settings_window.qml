@@ -1,12 +1,12 @@
 import QtQuick
-import QtQuick.Window
+import QtQuick.Controls
 
-Window {
+ApplicationWindow {
     id: root
+    title: "Opening Trainer - Training Settings"
     width: 920
     height: 640
     visible: true
-    title: "Opening Trainer - Training Settings"
     color: "#1f1f1f"
 
     Rectangle {
