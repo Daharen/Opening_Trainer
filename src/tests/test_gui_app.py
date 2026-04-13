@@ -458,12 +458,12 @@ def test_apply_theme_restores_default_ttk_theme_when_dark_mode_disabled(monkeypa
 def test_gui_has_menu_shell_entries_and_bottom_actions():
     source = inspect.getsource(OpeningTrainerGUI)
     assert "label='File'" in source
-    assert "label='Options'" in source
     assert "label='Profiles'" in source
     assert "label='Corpus Selection'" in source
     assert "label='Update'" in source
     assert "label='Report'" in source
     assert "label='Developer'" in source
+    assert "text='Opening Trainer'" in source
     assert "text='Start Drill'" in source
     assert "text='Pause (P)'" in source
     assert "_show_report_placeholder" in source
@@ -985,9 +985,30 @@ def test_profile_switch_refresh_runs_smart_reconcile(tmp_path):
 def test_toolbar_has_single_corpus_selection_entrypoint():
     source = inspect.getsource(OpeningTrainerGUI._build_menubar)
 
+    assert "text='Opening Trainer'" in source
     assert "label='Corpus Selection'" in source
+    assert "label='File'" in source
+    assert "label='Profiles'" in source
+    assert "label='Update'" in source
+    assert "label='Report'" in source
+    assert "label='Developer'" in source
+    assert "label='Options'" not in source
     assert "Back to Corpus Selection" not in source
     assert "Corpus bundle" not in source
+
+
+def test_file_menu_contains_open_options_entry():
+    source = inspect.getsource(OpeningTrainerGUI._populate_file_menu)
+
+    assert "label='Open Options…'" in source
+    assert "label='Exit'" in source
+
+
+def test_window_title_avoids_visible_opening_trainer_caption():
+    source = inspect.getsource(OpeningTrainerGUI.__init__)
+
+    assert "self.root.title('Opening Trainer')" not in source
+    assert "self.root.title('')" in source
 
 
 def test_smart_mode_prefills_expected_catalog_coordinates_and_variant():
