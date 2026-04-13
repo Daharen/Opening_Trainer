@@ -33,6 +33,10 @@ class OpeningLockedArtifactStatus:
 class OpeningLockedSessionState:
     enabled: bool = False
     selected_opening_name: str | None = None
+    selected_family_name: str | None = None
+    selected_variation_name: str | None = None
+    effective_opening_lock_node: str | None = None
+    allowed_opening_space: tuple[str, ...] = ()
     lock_released_by_opponent: bool = False
     current_transition_state: OpeningLockedModeState = OpeningLockedModeState.OPENING_LOCKED
 
@@ -59,6 +63,22 @@ class OpeningLockedProvider:
     def _connect(self):
         return sqlite3.connect(self.sqlite_path)
 
+    def _table_exists(self, conn: sqlite3.Connection, table_name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone()
+        return bool(row)
+
+    def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row[1]) for row in rows if row and row[1]}
+
+    def supports_family_aware(self) -> bool:
+        with self._connect() as conn:
+            required = {"ui_tree", "family_edges", "family_memberships", "transposition_edges"}
+            return all(self._table_exists(conn, table_name) for table_name in required)
+
     def list_exact_opening_names(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -70,6 +90,117 @@ class OpeningLockedProvider:
                 """
             ).fetchall()
         return [str(row[0]) for row in rows if row and str(row[0]).strip()]
+
+    def _node_name_for_id(self, conn: sqlite3.Connection, node_id: int | None) -> str | None:
+        if node_id is None:
+            return None
+        row = conn.execute("SELECT node_name FROM opening_nodes WHERE node_id = ? LIMIT 1", (int(node_id),)).fetchone()
+        if not row:
+            return None
+        value = str(row[0]).strip() if row[0] is not None else ""
+        return value or None
+
+    def _ui_tree_edges(self, conn: sqlite3.Connection) -> list[tuple[str, str]]:
+        columns = self._table_columns(conn, "ui_tree")
+        parent_name_col = next((name for name in ("parent_node_name", "parent_name", "ancestor_node_name", "ancestor_name", "parent") if name in columns), None)
+        child_name_col = next((name for name in ("child_node_name", "child_name", "descendant_node_name", "descendant_name", "child") if name in columns), None)
+        parent_id_col = next((name for name in ("parent_node_id", "ancestor_node_id", "parent_id") if name in columns), None)
+        child_id_col = next((name for name in ("child_node_id", "descendant_node_id", "child_id") if name in columns), None)
+        if parent_name_col and child_name_col:
+            rows = conn.execute(f"SELECT {parent_name_col}, {child_name_col} FROM ui_tree").fetchall()
+            return [
+                (str(row[0]).strip(), str(row[1]).strip())
+                for row in rows
+                if row and row[0] is not None and row[1] is not None and str(row[0]).strip() and str(row[1]).strip()
+            ]
+        if parent_id_col and child_id_col:
+            rows = conn.execute(f"SELECT {parent_id_col}, {child_id_col} FROM ui_tree").fetchall()
+            edges: list[tuple[str, str]] = []
+            for row in rows:
+                parent_name = self._node_name_for_id(conn, int(row[0])) if row and row[0] is not None else None
+                child_name = self._node_name_for_id(conn, int(row[1])) if row and row[1] is not None else None
+                if parent_name and child_name:
+                    edges.append((parent_name, child_name))
+            return edges
+        return []
+
+    def list_root_openings(self) -> list[str]:
+        if not self.supports_family_aware():
+            return self.list_exact_opening_names()
+        with self._connect() as conn:
+            edges = self._ui_tree_edges(conn)
+        parents = {parent for parent, _child in edges}
+        children = {child for _parent, child in edges}
+        return sorted((parents - children), key=lambda value: value.lower())
+
+    def list_descendant_openings(self, root_name: str) -> list[str]:
+        root = str(root_name or "").strip()
+        if not root:
+            return []
+        if not self.supports_family_aware():
+            return []
+        with self._connect() as conn:
+            edges = self._ui_tree_edges(conn)
+        children_by_parent: dict[str, set[str]] = {}
+        for parent, child in edges:
+            children_by_parent.setdefault(parent, set()).add(child)
+        pending = list(children_by_parent.get(root, set()))
+        visited: set[str] = set()
+        descendants: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            descendants.add(current)
+            pending.extend(children_by_parent.get(current, set()))
+        return sorted(descendants, key=lambda value: value.lower())
+
+    def resolve_effective_opening_node(self, family_name: str | None, variation_name: str | None) -> str | None:
+        variation = str(variation_name or "").strip()
+        if variation:
+            return variation
+        family = str(family_name or "").strip()
+        return family or None
+
+    def resolve_allowed_opening_space(self, effective_node: str | None) -> tuple[str, ...]:
+        node_name = str(effective_node or "").strip()
+        if not node_name:
+            return ()
+        if not self.supports_family_aware():
+            return (node_name,)
+        with self._connect() as conn:
+            columns = self._table_columns(conn, "family_memberships")
+            family_name_col = next((name for name in ("family_node_name", "family_name", "ancestor_node_name", "node_name") if name in columns), None)
+            member_name_col = next((name for name in ("member_node_name", "member_name", "descendant_node_name", "exact_opening_name") if name in columns), None)
+            family_id_col = next((name for name in ("family_node_id", "ancestor_node_id", "node_id") if name in columns), None)
+            member_id_col = next((name for name in ("member_node_id", "descendant_node_id", "exact_opening_node_id") if name in columns), None)
+            members: set[str] = set()
+            if family_name_col and member_name_col:
+                rows = conn.execute(
+                    f"SELECT {member_name_col} FROM family_memberships WHERE {family_name_col} = ?",
+                    (node_name,),
+                ).fetchall()
+                members = {str(row[0]).strip() for row in rows if row and row[0] is not None and str(row[0]).strip()}
+            elif family_id_col and member_id_col:
+                row = conn.execute("SELECT node_id FROM opening_nodes WHERE node_name = ? LIMIT 1", (node_name,)).fetchone()
+                if row:
+                    family_id = int(row[0])
+                    rows = conn.execute(
+                        f"SELECT {member_id_col} FROM family_memberships WHERE {family_id_col} = ?",
+                        (family_id,),
+                    ).fetchall()
+                    for member_row in rows:
+                        member_name = self._node_name_for_id(conn, int(member_row[0])) if member_row and member_row[0] is not None else None
+                        if member_name:
+                            members.add(member_name)
+            if members:
+                return tuple(sorted(members, key=lambda value: value.lower()))
+        descendants = self.list_descendant_openings(node_name)
+        if not descendants:
+            return (node_name,)
+        descendants_set = set(descendants) | {node_name}
+        return tuple(sorted(descendants_set, key=lambda value: value.lower()))
 
     def opening_names_for_position(self, position_key: str) -> tuple[str, ...]:
         with self._connect() as conn:
@@ -91,10 +222,20 @@ class OpeningLockedProvider:
         names = self.opening_names_for_position(position_key)
         return selected_opening_name in names
 
-    def classify_transition(self, successor_position_key: str, selected_opening_name: str) -> OpeningTransitionResult:
+    def classify_transition(
+        self,
+        successor_position_key: str,
+        selected_opening_name: str,
+        *,
+        allowed_opening_space: set[str] | None = None,
+    ) -> OpeningTransitionResult:
         names = self.opening_names_for_position(successor_position_key)
         if not names:
             return OpeningTransitionResult(OpeningTransitionClassification.LEFT_TO_UNNAMED, names)
+        if allowed_opening_space:
+            if any(name in allowed_opening_space for name in names):
+                return OpeningTransitionResult(OpeningTransitionClassification.SELECTED_OPENING_PRESERVED, names)
+            return OpeningTransitionResult(OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING, names)
         if selected_opening_name in names:
             return OpeningTransitionResult(OpeningTransitionClassification.SELECTED_OPENING_PRESERVED, names)
         return OpeningTransitionResult(OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING, names)

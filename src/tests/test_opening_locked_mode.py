@@ -49,6 +49,15 @@ def _write_opening_locked_artifact(content_root: Path) -> Path:
     return sqlite_path
 
 
+def _add_family_aware_tables(sqlite_path: Path) -> None:
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("CREATE TABLE ui_tree(parent_node_name TEXT NOT NULL, child_node_name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE family_edges(parent_node_name TEXT NOT NULL, child_node_name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE family_memberships(family_node_name TEXT NOT NULL, member_node_name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE transposition_edges(from_node_name TEXT NOT NULL, to_node_name TEXT NOT NULL)")
+        conn.commit()
+
+
 def test_opening_locked_artifact_discovery_present_and_missing(tmp_path):
     missing = discover_opening_locked_artifact(tmp_path)
     assert missing.loaded is False
@@ -147,6 +156,47 @@ def test_opening_names_for_position_uses_positions_and_memberships(tmp_path):
         conn.commit()
 
     assert provider.opening_names_for_position("position-a") == ("Italian Game", "Open Games")
+
+
+def test_family_aware_detection_and_root_descendant_listing(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    _add_family_aware_tables(sqlite_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO ui_tree(parent_node_name, child_node_name) VALUES ('French Defense', 'French Defense: Exchange Variation')")
+        conn.execute("INSERT INTO ui_tree(parent_node_name, child_node_name) VALUES ('London System', 'London System: with Bd3')")
+        conn.execute("INSERT INTO ui_tree(parent_node_name, child_node_name) VALUES ('London System', 'London System: with Be2')")
+        conn.commit()
+
+    assert provider.supports_family_aware() is True
+    assert provider.list_root_openings() == ["French Defense", "London System"]
+    assert provider.list_descendant_openings("London System") == ["London System: with Bd3", "London System: with Be2"]
+
+
+def test_family_aware_allowed_space_and_transition_preservation(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    _add_family_aware_tables(sqlite_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO ui_tree(parent_node_name, child_node_name) VALUES ('English Opening', 'English Opening: Agincourt')")
+        conn.execute("INSERT INTO family_memberships(family_node_name, member_node_name) VALUES ('English Opening', 'English Opening')")
+        conn.execute("INSERT INTO family_memberships(family_node_name, member_node_name) VALUES ('English Opening', 'English Opening: Agincourt')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (1, 'k-english', 'white')")
+        conn.execute("INSERT INTO positions(position_id, position_key, side_to_move) VALUES (2, 'k-other', 'white')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'English Opening', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (2, 'English Opening: Agincourt', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (3, 'Sicilian Defense', 'exact_opening')")
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (1, 2, 6)")
+        conn.execute("INSERT INTO path_memberships(position_id, node_id, remaining_plies) VALUES (2, 3, 6)")
+        conn.commit()
+
+    assert "English Opening" in provider.list_root_openings()
+    family_allowed = set(provider.resolve_allowed_opening_space("English Opening"))
+    variation_allowed = set(provider.resolve_allowed_opening_space("English Opening: Agincourt"))
+    assert family_allowed == {"English Opening", "English Opening: Agincourt"}
+    assert variation_allowed == {"English Opening: Agincourt"}
+    assert provider.classify_transition("k-english", "English Opening", allowed_opening_space=family_allowed).classification == OpeningTransitionClassification.SELECTED_OPENING_PRESERVED
+    assert provider.classify_transition("k-other", "English Opening", allowed_opening_space=family_allowed).classification == OpeningTransitionClassification.LEFT_TO_OTHER_NAMED_OPENING
 
 
 def test_opponent_filter_rejects_other_named_and_allows_unnamed(tmp_path):

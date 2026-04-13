@@ -27,6 +27,8 @@ class TrainerSettings:
     training_mode: str = ''
     opening_locked_mode_enabled: bool = False
     selected_opening_name: str | None = None
+    opening_locked_family_name: str | None = None
+    opening_locked_variation_name: str | None = None
     selected_smart_track: str = 'rapid'
     selected_time_control_id: str = '600+0'
     side_panel_visible: bool = False
@@ -60,6 +62,16 @@ class TrainerSettings:
             if isinstance(column, str) and column.strip()
         ) or DEFAULT_TRAINING_PANEL_COLUMNS
         selected_opening_name = str(self.selected_opening_name).strip() if self.selected_opening_name is not None and str(self.selected_opening_name).strip() else None
+        opening_locked_family_name = (
+            str(self.opening_locked_family_name).strip()
+            if self.opening_locked_family_name is not None and str(self.opening_locked_family_name).strip()
+            else None
+        )
+        opening_locked_variation_name = (
+            str(self.opening_locked_variation_name).strip()
+            if self.opening_locked_variation_name is not None and str(self.opening_locked_variation_name).strip()
+            else None
+        )
         return TrainerSettings(
             good_moves_acceptable=bool(self.good_moves_acceptable),
             active_training_ply_depth=clamped_depth,
@@ -67,6 +79,8 @@ class TrainerSettings:
             training_mode=mode,
             opening_locked_mode_enabled=bool(self.opening_locked_mode_enabled),
             selected_opening_name=selected_opening_name,
+            opening_locked_family_name=opening_locked_family_name,
+            opening_locked_variation_name=opening_locked_variation_name,
             selected_smart_track=selected_track,
             selected_time_control_id=selected_time_control,
             side_panel_visible=bool(self.side_panel_visible),
@@ -110,6 +124,8 @@ class TrainerSettingsStore:
             training_mode=str(payload.get('training_mode') or ('smart_profile' if bool(payload.get('smart_profile_enabled', True)) else 'manual')),
             opening_locked_mode_enabled=bool(payload.get('opening_locked_mode_enabled', False)),
             selected_opening_name=payload.get('selected_opening_name') or None,
+            opening_locked_family_name=payload.get('opening_locked_family_name') or None,
+            opening_locked_variation_name=payload.get('opening_locked_variation_name') or None,
             selected_smart_track=str(payload.get('selected_smart_track', 'rapid')),
             selected_time_control_id=str(payload.get('selected_time_control_id', '600+0')),
             side_panel_visible=bool(payload.get('side_panel_visible', False)),

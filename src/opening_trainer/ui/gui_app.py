@@ -194,7 +194,11 @@ class OpeningTrainerGUI:
         self.allow_sharp_gambit_var = tk.BooleanVar(value=self.session.settings.allow_sharp_gambit_lines)
         self.opponent_fallback_mode_var = tk.StringVar(value=self.session.settings.opponent_fallback_mode)
         self.opening_locked_enabled_var = tk.BooleanVar(value=self.session.settings.opening_locked_mode_enabled)
-        self.opening_locked_opening_var = tk.StringVar(value=self.session.settings.selected_opening_name or '')
+        self.opening_locked_family_var = tk.StringVar(
+            value=self.session.settings.opening_locked_family_name or self.session.settings.selected_opening_name or ''
+        )
+        self.opening_locked_variation_var = tk.StringVar(value=self.session.settings.opening_locked_variation_name or '')
+        self.opening_locked_opening_var = self.opening_locked_family_var
         self.catalog_root_var = tk.StringVar()
         self.catalog_category_combo = None
         self.catalog_time_control_combo = None
@@ -290,15 +294,19 @@ class OpeningTrainerGUI:
             command=self._on_manual_contract_changed,
         )
         self.opening_locked_enabled_checkbutton.grid(row=0, column=16, sticky='w', padx=(0, 8))
-        ttk.Label(self.control_strip, text='Opening').grid(row=0, column=17, sticky='w')
-        self.opening_locked_opening_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.opening_locked_opening_var, width=24)
+        ttk.Label(self.control_strip, text='Opening Family').grid(row=0, column=17, sticky='w')
+        self.opening_locked_opening_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.opening_locked_family_var, width=20)
         self.opening_locked_opening_combo.grid(row=0, column=18, sticky='w', padx=(0, 8))
+        ttk.Label(self.control_strip, text='Variation').grid(row=0, column=19, sticky='w')
+        self.opening_locked_variation_combo = ttk.Combobox(self.control_strip, state='readonly', textvariable=self.opening_locked_variation_var, width=20)
+        self.opening_locked_variation_combo.grid(row=0, column=20, sticky='w', padx=(0, 8))
         self.top_time_control_combo.bind('<<ComboboxSelected>>', self._on_top_time_control_selected)
         self.top_elo_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_depth_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.top_good_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
         self.fallback_mode_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
-        self.opening_locked_opening_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
+        self.opening_locked_opening_combo.bind('<<ComboboxSelected>>', self._on_opening_locked_family_selected)
+        self.opening_locked_variation_combo.bind('<<ComboboxSelected>>', self._on_manual_contract_changed)
 
         self.root_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bd=0)
         self.root_pane.grid(row=3, column=0, sticky='nsew', padx=12, pady=(6, 12))
@@ -650,15 +658,26 @@ class OpeningTrainerGUI:
     def _on_manual_contract_changed(self, _event=None) -> None:
         current_fallback_mode = self._selected_opponent_fallback_mode()
         selected_sharp_toggle = bool(self.allow_sharp_gambit_var.get()) if hasattr(self, "allow_sharp_gambit_var") else self.session.settings.allow_sharp_gambit_lines
+        family_var = getattr(self, "opening_locked_family_var", getattr(self, "opening_locked_opening_var", None))
+        variation_var = getattr(self, "opening_locked_variation_var", None)
+        selected_family = (family_var.get().strip() or None) if family_var is not None else None
+        selected_variation = (variation_var.get().strip() or None) if variation_var is not None else None
         if (
             self.smart_mode_var.get()
             and current_fallback_mode == self.session.settings.opponent_fallback_mode
             and selected_sharp_toggle == self.session.settings.allow_sharp_gambit_lines
             and bool(self.opening_locked_enabled_var.get()) == bool(self.session.settings.opening_locked_mode_enabled)
-            and (self.opening_locked_opening_var.get().strip() or None) == self.session.settings.selected_opening_name
+            and selected_family == (self.session.settings.opening_locked_family_name or self.session.settings.selected_opening_name)
+            and selected_variation == self.session.settings.opening_locked_variation_name
         ):
             return
         self._apply_top_contract_change(reason='manual contract changed')
+
+    def _on_opening_locked_family_selected(self, _event=None) -> None:
+        if hasattr(self, "opening_locked_variation_var"):
+            self.opening_locked_variation_var.set("")
+        self._refresh_opening_locked_variation_combo()
+        self._on_manual_contract_changed()
 
     def _selected_opponent_fallback_mode(self) -> str:
         var = getattr(self, "opponent_fallback_mode_var", None)
@@ -670,7 +689,12 @@ class OpeningTrainerGUI:
     def _apply_top_contract_change(self, *, reason: str) -> None:
         settings = self.session.settings
         opening_lock_requested = bool(self.opening_locked_enabled_var.get()) if hasattr(self, "opening_locked_enabled_var") else False
-        opening_lock_name = self.opening_locked_opening_var.get().strip() if hasattr(self, "opening_locked_opening_var") else ""
+        family_var = getattr(self, "opening_locked_family_var", getattr(self, "opening_locked_opening_var", None))
+        family_name = family_var.get().strip() if family_var is not None else ""
+        variation_name = self.opening_locked_variation_var.get().strip() if hasattr(self, "opening_locked_variation_var") else ""
+        if variation_name == "Any variation in family":
+            variation_name = ""
+        opening_lock_name = variation_name or family_name
         artifact_status = self.session.opening_locked_artifact_status() if hasattr(self.session, "opening_locked_artifact_status") else None
         if opening_lock_requested and (artifact_status is None or not artifact_status.loaded):
             self._prepend_recent_status("Opening-locked mode unavailable: opening_locked_mode artifact is not available in the runtime content root.")
@@ -689,6 +713,8 @@ class OpeningTrainerGUI:
                 training_mode=mode,
                 opening_locked_mode_enabled=opening_lock_requested,
                 selected_opening_name=(opening_lock_name or None),
+                opening_locked_family_name=(family_name or None),
+                opening_locked_variation_name=(variation_name or None),
                 selected_smart_track=selected_track,
                 selected_time_control_id=selected_time_control_id,
                 side_panel_visible=self.panel_visible,
@@ -788,16 +814,27 @@ class OpeningTrainerGUI:
         status = self.session.smart_profile_status()
         self.smart_mode_var.set(status.active)
         opening_names = self.session.opening_locked_opening_names() if hasattr(self.session, "opening_locked_opening_names") else []
+        selected_family = self.session.settings.opening_locked_family_name or self.session.settings.selected_opening_name or ""
+        selected_variation = self.session.settings.opening_locked_variation_name or ""
         artifact_status = self.session.opening_locked_artifact_status() if hasattr(self.session, "opening_locked_artifact_status") else None
         artifact_available = bool(artifact_status is not None and bool(getattr(artifact_status, "loaded", False)))
-        selected_name = self.session.settings.selected_opening_name or ''
+        supports_family_aware = bool(
+            hasattr(self.session, "opening_locked_supports_family_aware") and self.session.opening_locked_supports_family_aware()
+        )
         if hasattr(self, "opening_locked_enabled_var"):
             self.opening_locked_enabled_var.set(bool(self.session.settings.opening_locked_mode_enabled))
         if hasattr(self, "opening_locked_opening_combo"):
             self.opening_locked_opening_combo.configure(values=opening_names)
-            self.opening_locked_opening_var.set(selected_name)
+            family_var = getattr(self, "opening_locked_family_var", getattr(self, "opening_locked_opening_var", None))
+            if family_var is not None:
+                family_var.set(selected_family)
             combo_state = 'readonly' if artifact_available and opening_names else 'disabled'
             self.opening_locked_opening_combo.configure(state=combo_state)
+        if hasattr(self, "opening_locked_variation_combo"):
+            self.opening_locked_variation_var.set(selected_variation)
+            self._refresh_opening_locked_variation_combo()
+            variation_state = "readonly" if (artifact_available and supports_family_aware and selected_family) else "disabled"
+            self.opening_locked_variation_combo.configure(state=variation_state)
         if hasattr(self, "opening_locked_enabled_checkbutton"):
             self.opening_locked_enabled_checkbutton.configure(state=('normal' if artifact_available else 'disabled'))
         bands = sorted(
@@ -830,6 +867,17 @@ class OpeningTrainerGUI:
             self.top_elo_combo.grid()
             self.top_depth_combo.grid()
             self.top_good_combo.grid()
+
+    def _refresh_opening_locked_variation_combo(self) -> None:
+        if not hasattr(self, "opening_locked_variation_combo"):
+            return
+        family_name = self.opening_locked_family_var.get().strip() if hasattr(self, "opening_locked_family_var") else ""
+        variations = self.session.opening_locked_variation_names(family_name) if hasattr(self.session, "opening_locked_variation_names") else []
+        values = ["Any variation in family", *variations] if variations else ["Any variation in family"]
+        self.opening_locked_variation_combo.configure(values=values)
+        current = self.opening_locked_variation_var.get().strip()
+        if current and current not in variations:
+            self.opening_locked_variation_var.set("")
 
     def _on_catalog_category_selected(self, _event=None) -> None:
         self._refresh_catalog_time_controls()
