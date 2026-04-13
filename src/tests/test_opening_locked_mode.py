@@ -169,8 +169,32 @@ def test_family_aware_detection_and_root_descendant_listing(tmp_path):
         conn.commit()
 
     assert provider.supports_family_aware() is True
+    assert provider.supports_family_ui() is True
     assert provider.list_root_openings() == ["French Defense", "London System"]
+    assert provider.list_family_root_names() == ["French Defense", "London System"]
     assert provider.list_descendant_openings("London System") == ["London System: with Bd3", "London System: with Be2"]
+    assert provider.list_variation_names_for_family("London System") == ["London System: with Bd3", "London System: with Be2"]
+
+
+def test_family_ui_detection_requires_ui_tree_family_memberships_and_transposition_edges(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("CREATE TABLE ui_tree(parent_node_name TEXT NOT NULL, child_node_name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE family_memberships(family_node_name TEXT NOT NULL, member_node_name TEXT NOT NULL)")
+        conn.execute("CREATE TABLE transposition_edges(from_node_name TEXT NOT NULL, to_node_name TEXT NOT NULL)")
+        conn.commit()
+
+    assert provider.supports_family_ui() is True
+    assert provider.supports_family_aware() is True
+
+
+def test_resolve_effective_selected_opening_blank_variation_means_family_level(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    provider = OpeningLockedProvider(sqlite_path)
+
+    assert provider.resolve_effective_selected_opening("London System", "") == "London System"
+    assert provider.resolve_effective_selected_opening("London System", "London System: with Bd3") == "London System: with Bd3"
 
 
 def test_family_aware_allowed_space_and_transition_preservation(tmp_path):
@@ -395,6 +419,19 @@ def test_list_exact_openings_excludes_synthetic_family_nodes(tmp_path):
         conn.commit()
 
     assert provider.list_exact_opening_names() == ["Italian Game", "Ruy Lopez"]
+
+
+def test_legacy_flat_artifact_roots_fallback_to_exact_openings(tmp_path):
+    sqlite_path = _write_opening_locked_artifact(tmp_path)
+    provider = OpeningLockedProvider(sqlite_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (1, 'Italian Game', 'exact_opening')")
+        conn.execute("INSERT INTO opening_nodes(node_id, node_name, node_kind) VALUES (2, 'Ruy Lopez', 'exact_opening')")
+        conn.commit()
+
+    assert provider.supports_family_ui() is False
+    assert provider.list_family_root_names() == ["Italian Game", "Ruy Lopez"]
+    assert provider.list_variation_names_for_family("Italian Game") == []
 
 
 def test_canonical_continuation_follows_builder_node_moves(tmp_path):

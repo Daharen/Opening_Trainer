@@ -74,10 +74,13 @@ class OpeningLockedProvider:
         rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         return {str(row[1]) for row in rows if row and row[1]}
 
-    def supports_family_aware(self) -> bool:
+    def supports_family_ui(self) -> bool:
         with self._connect() as conn:
-            required = {"ui_tree", "family_edges", "family_memberships", "transposition_edges"}
+            required = {"ui_tree", "family_memberships", "transposition_edges"}
             return all(self._table_exists(conn, table_name) for table_name in required)
+
+    def supports_family_aware(self) -> bool:
+        return self.supports_family_ui()
 
     def list_exact_opening_names(self) -> list[str]:
         with self._connect() as conn:
@@ -124,8 +127,8 @@ class OpeningLockedProvider:
             return edges
         return []
 
-    def list_root_openings(self) -> list[str]:
-        if not self.supports_family_aware():
+    def list_family_root_names(self) -> list[str]:
+        if not self.supports_family_ui():
             return self.list_exact_opening_names()
         with self._connect() as conn:
             edges = self._ui_tree_edges(conn)
@@ -133,11 +136,17 @@ class OpeningLockedProvider:
         children = {child for _parent, child in edges}
         return sorted((parents - children), key=lambda value: value.lower())
 
+    def list_root_openings(self) -> list[str]:
+        return self.list_family_root_names()
+
+    def list_variation_names_for_family(self, family_name: str) -> list[str]:
+        return self.list_descendant_openings(family_name)
+
     def list_descendant_openings(self, root_name: str) -> list[str]:
         root = str(root_name or "").strip()
         if not root:
             return []
-        if not self.supports_family_aware():
+        if not self.supports_family_ui():
             return []
         with self._connect() as conn:
             edges = self._ui_tree_edges(conn)
@@ -156,12 +165,15 @@ class OpeningLockedProvider:
             pending.extend(children_by_parent.get(current, set()))
         return sorted(descendants, key=lambda value: value.lower())
 
-    def resolve_effective_opening_node(self, family_name: str | None, variation_name: str | None) -> str | None:
+    def resolve_effective_selected_opening(self, family_name: str | None, variation_name: str | None) -> str | None:
         variation = str(variation_name or "").strip()
         if variation:
             return variation
         family = str(family_name or "").strip()
         return family or None
+
+    def resolve_effective_opening_node(self, family_name: str | None, variation_name: str | None) -> str | None:
+        return self.resolve_effective_selected_opening(family_name, variation_name)
 
     def resolve_allowed_opening_space(self, effective_node: str | None) -> tuple[str, ...]:
         node_name = str(effective_node or "").strip()

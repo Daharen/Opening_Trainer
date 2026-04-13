@@ -431,19 +431,19 @@ class TrainingSession:
         selected_variation = self.settings.opening_locked_variation_name
         effective_node = selected_name
         allowed_space: tuple[str, ...] = ()
-        if self.opening_locked_provider is not None and self.opening_locked_provider.supports_family_aware():
-            family_roots = self.opening_locked_provider.list_root_openings()
+        if self.opening_locked_provider is not None and self.opening_locked_provider.supports_family_ui():
+            family_roots = self.opening_locked_provider.list_family_root_names()
             if not selected_family and selected_name:
                 if selected_name in family_roots:
                     selected_family = selected_name
                 else:
                     for family_name in family_roots:
-                        descendants = set(self.opening_locked_provider.list_descendant_openings(family_name))
+                        descendants = set(self.opening_locked_provider.list_variation_names_for_family(family_name))
                         if selected_name in descendants:
                             selected_family = family_name
                             selected_variation = selected_name
                             break
-            effective_node = self.opening_locked_provider.resolve_effective_opening_node(selected_family, selected_variation) or selected_name
+            effective_node = self.opening_locked_provider.resolve_effective_selected_opening(selected_family, selected_variation) or selected_name
             allowed_space = self.opening_locked_provider.resolve_allowed_opening_space(effective_node)
             if effective_node and not selected_name:
                 selected_name = effective_node
@@ -1165,8 +1165,8 @@ class TrainingSession:
         if self.opening_locked_provider is None:
             return []
         try:
-            if self.opening_locked_provider.supports_family_aware():
-                return self.opening_locked_provider.list_root_openings()
+            if self.opening_locked_provider.supports_family_ui():
+                return self.opening_locked_provider.list_family_root_names()
             return self.opening_locked_provider.list_exact_opening_names()
         except Exception:
             return []
@@ -1177,9 +1177,9 @@ class TrainingSession:
         if not family_name:
             return []
         try:
-            if not self.opening_locked_provider.supports_family_aware():
+            if not self.opening_locked_provider.supports_family_ui():
                 return []
-            return self.opening_locked_provider.list_descendant_openings(str(family_name))
+            return self.opening_locked_provider.list_variation_names_for_family(str(family_name))
         except Exception:
             return []
 
